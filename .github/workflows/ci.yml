@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          pip install ruff
+
+      - name: Ruff check
+        run: ruff check hooks/ scripts/
+
+      - name: Ruff format check
+        run: ruff format --check hooks/ scripts/
+
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Syntax check all Python files
+        run: |
+          python -c "
+          import py_compile, pathlib, sys
+          errors = 0
+          for f in sorted(pathlib.Path('.').rglob('*.py')):
+              try:
+                  py_compile.compile(str(f), doraise=True)
+              except py_compile.PyCompileError as e:
+                  print(f'FAIL: {f}: {e}')
+                  errors += 1
+          print(f'{errors} errors found' if errors else 'All files OK')
+          sys.exit(errors)
+          "
+
+  build-profiles:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build profiles
+        run: python scripts/build_profiles.py
