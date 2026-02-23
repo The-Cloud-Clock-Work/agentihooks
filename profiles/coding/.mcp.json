@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "hooks-utils": {
+      "command": "python",
+      "args": [
+        "-m",
+        "hooks.mcp"
+      ],
+      "cwd": "/app",
+      "env": {
+        "MCP_CATEGORIES": "all"
+      }
+    }
+  }
+}

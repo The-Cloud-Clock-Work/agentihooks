@@ -1,0 +1,540 @@
+#!/usr/bin/env python3
+"""
+Hook Manager - Centralized entry point for all Claude Code hooks.
+
+All hooks in settings.json point to this file.
+The event name is passed via stdin JSON payload (hook_event_name field).
+
+Supported events:
+    - PreToolUse
+    - PostToolUse
+    - UserPromptSubmit
+    - Stop
+    - SubagentStop
+    - SessionStart
+    - SessionEnd
+    - Notification
+    - PreCompact
+    - PermissionRequest
+
+PERFORMANCE NOTE: Heavy imports (email, transcript) are lazy-loaded only when needed
+to reduce startup time for frequent events like PreToolUse/PostToolUse.
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+# Add parent directory to path for direct execution
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Only import lightweight common module at startup
+from hooks.common import log, run_script
+
+# Heavy imports are lazy-loaded in functions that need them:
+# - hooks.integrations.email.send_email -> only in notify_on_error()
+# - hooks.observability.transcript.log_new_entries -> only in handlers that need it
+
+
+# =============================================================================
+# TRANSCRIPT METRICS PARSER
+# =============================================================================
+
+
+def log_claude_max_output_tokens():
+    """Inject the output token limit into Claude's context window.
+
+    This makes Claude aware of response size constraints so it can proactively
+    keep responses under the limit to avoid 'exceeded output token maximum' errors.
+    """
+    try:
+        max_tokens = os.getenv("CLAUDE_CODE_MAX_OUTPUT_TOKENS")
+
+        if max_tokens:
+            # Use inject_banner to output to STDOUT (Claude sees this!)
+            from hooks.common import inject_banner
+
+            content = f"""Your responses MUST stay under {max_tokens} tokens to avoid errors.
+
+RULES:
+• Be concise - no verbose explanations
+• Skip unnecessary comments in code
+• Break large outputs into smaller chunks
+• Prefer summaries over exhaustive details"""
+
+            inject_banner(f"⚠️ OUTPUT TOKEN LIMIT: {max_tokens} tokens", content)
+    except Exception as e:
+        log("Failed to inject output token limit", {"error": str(e)})
+
+
+def inject_session_context_awareness(session_id: str, context_path: str):
+    """Inject session working directory awareness into Claude's context.
+
+    This makes Claude aware of the session-specific working directory where
+    ALL file creation and modification operations MUST occur.
+
+    Args:
+        session_id: The UUID session identifier
+        context_path: The absolute path to the session context directory (e.g., /tmp/<session_id>/)
+    """
+    try:
+        from hooks.common import inject_banner
+
+        content = f"""# IMPORTANT!!!
+THIS IS THE Session ID: {session_id}
+Working Directory: {context_path}
+
+RULES:
+• ALL file operations (create, modify, clone) MUST happen inside
+• Clone repositories to: {context_path}/
+• Create artifacts in: {context_path}/
+• ANY path outside {context_path}/ is FORBIDDEN
+• This directory is automatically cleaned up when session ends"""
+
+        inject_banner("📁 SESSION WORKING DIRECTORY", content)
+        log(
+            "Injected session context awareness",
+            {"session_id": session_id, "path": context_path},
+        )
+
+    except Exception as e:
+        log("Failed to inject session context awareness", {"error": str(e)})
+
+
+def parse_transcript_metrics(transcript_path: str) -> dict:
+    """
+    Parse transcript JSONL to extract session metrics.
+
+    Returns:
+        dict with num_turns, duration_ms, last_response
+    """
+    from datetime import datetime  # Lazy import
+
+    metrics = {
+        "num_turns": 0,
+        "duration_ms": None,
+        "last_response": None,
+    }
+
+    try:
+        path = Path(transcript_path)
+        if not path.exists():
+            return metrics
+
+        first_timestamp = None
+        last_timestamp = None
+        user_count = 0
+        last_assistant_text = None
+
+        with open(path, "r") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line.strip())
+                    entry_type = entry.get("type")
+
+                    # Track timestamps for duration
+                    timestamp_str = entry.get("timestamp")
+                    if timestamp_str:
+                        try:
+                            ts = datetime.fromisoformat(
+                                timestamp_str.replace("Z", "+00:00")
+                            )
+                            if first_timestamp is None:
+                                first_timestamp = ts
+                            last_timestamp = ts
+                        except (ValueError, TypeError):
+                            pass
+
+                    # Count user messages (turns)
+                    if entry_type == "user":
+                        user_count += 1
+
+                    # Track last assistant response
+                    elif entry_type == "assistant":
+                        message = entry.get("message", {})
+                        content = message.get("content", [])
+                        for block in content:
+                            if block.get("type") == "text":
+                                last_assistant_text = block.get("text")
+
+                except json.JSONDecodeError:
+                    continue
+
+        metrics["num_turns"] = user_count
+        metrics["last_response"] = last_assistant_text
+
+        # Calculate duration
+        if first_timestamp and last_timestamp:
+            duration = last_timestamp - first_timestamp
+            metrics["duration_ms"] = int(duration.total_seconds() * 1000)
+
+    except Exception:
+        pass  # Return partial metrics on error
+
+    return metrics
+
+
+# =============================================================================
+# ERROR NOTIFICATION
+# =============================================================================
+
+# Error patterns to detect (case-insensitive)
+ERROR_PATTERNS = [
+    "api error",
+    "error:",
+    "exception",
+    "failed",
+    "traceback",
+    "rate limit",
+    "timeout",
+    "connection refused",
+]
+
+
+def notify_on_error(transcript_path: str) -> None:
+    """
+    Check transcript for errors and send email notification if found.
+
+    Scans the entire transcript for error patterns and sends notification
+    to recipients specified in email.json (if found in working directory).
+
+    Args:
+        transcript_path: Path to the JSONL transcript file.
+    """
+    if not transcript_path:
+        return
+
+    try:
+        path = Path(transcript_path)
+        if not path.exists():
+            return
+
+        # Read entire transcript
+        content = path.read_text(encoding="utf-8")
+        content_lower = content.lower()
+
+        # Check if any error pattern exists
+        detected_patterns = [p for p in ERROR_PATTERNS if p in content_lower]
+        if not detected_patterns:
+            return  # No errors found
+
+        # Extract error context from transcript lines
+        error_lines = []
+        for line in content.split("\n"):
+            line_lower = line.lower()
+            if any(p in line_lower for p in ERROR_PATTERNS):
+                try:
+                    entry = json.loads(line)
+                    msg = entry.get("message", {})
+                    if isinstance(msg, dict):
+                        for block in msg.get("content", []):
+                            if block.get("type") == "text":
+                                text = block.get("text", "")
+                                if any(p in text.lower() for p in ERROR_PATTERNS):
+                                    error_lines.append(text[:500])
+                    elif isinstance(msg, str):
+                        error_lines.append(msg[:500])
+                except json.JSONDecodeError:
+                    error_lines.append(line[:500])
+
+        # Build error report
+        error_context = "\n\n---\n\n".join(error_lines[:5])  # Max 5 errors
+        patterns_found = ", ".join(detected_patterns)
+
+        # Lazy import mailer module (only needed here)
+        from hooks.integrations.mailer import (
+            scan_for_config_files,
+            send_error_notification,
+        )
+
+        # Scan for email.json configuration file and template
+        email_config, template = scan_for_config_files()
+
+        if not email_config:
+            log("Email notification skipped: email.json not found in working directory")
+            return
+
+        # Get agent name from environment or use default
+        agent_name = os.getenv("AGENT_NAME", "Agent")
+
+        # Build notification content
+        notification_content = f"""# Error Detected in Agent Session
+
+**Agent:** {agent_name}
+**Transcript:** `{transcript_path}`
+**Patterns Detected:** {patterns_found}
+
+## Error Details
+
+{error_context if error_context else "Error detected in transcript (see logs for full details)"}
+
+---
+*Automated notification from {agent_name} hook system.*
+"""
+
+        # Send notification using error_recipients category with template support
+        result = send_error_notification(
+            config=email_config,
+            template=template,
+            content=notification_content,
+            subject=f"{agent_name} - Error Detected",
+            # Extra template variables
+            error_type="transcript_scan",
+            patterns=patterns_found,
+            agent_name=agent_name,
+        )
+
+        if result.success:
+            log(
+                "Error notification sent",
+                {
+                    "category": "error_recipients",
+                    "recipients_count": result.recipients_count,
+                    "patterns": detected_patterns,
+                },
+            )
+        else:
+            log("Failed to send error notification", {"error": result.error})
+
+    except Exception as e:
+        # Silent failure - never break the agent
+        log("notify_on_error failed", {"error": str(e)})
+
+
+# =============================================================================
+# EVENT HANDLERS
+# =============================================================================
+
+
+def on_session_start(payload: dict) -> None:
+    """Handle SessionStart event."""
+    session_id = payload.get("session_id", "")
+    log("Session started", {"session_id": session_id})
+
+    # Create session context directory in /tmp/<session_id>/
+    context_path = None
+    if session_id:
+        from hooks.integrations.file_system import set_context_dir
+
+        success, result = set_context_dir(session_id)
+        if success:
+            context_path = result
+            log("Session context directory ready", {"path": result})
+        else:
+            log("Failed to create session context directory", {"error": result})
+
+    # Inject session context awareness into Claude's context window
+    if session_id and context_path:
+        inject_session_context_awareness(session_id, context_path)
+
+    # Log output token limit so Claude is aware of response size constraints
+    log_claude_max_output_tokens()
+
+
+def on_session_end(payload: dict) -> None:
+    """Handle SessionEnd event."""
+    session_id = payload.get("session_id", "")
+    transcript_path = payload.get("transcript_path", "")
+
+    # Parse transcript to get metrics (Claude Code doesn't include these in hook payload)
+    metrics = parse_transcript_metrics(transcript_path) if transcript_path else {}
+
+    log(
+        "Session ended",
+        {
+            "session_id": session_id,
+            "num_turns": metrics.get("num_turns"),
+            "duration_ms": metrics.get("duration_ms"),
+        },
+    )
+
+    # Log transcript entries to hooks.log (for debugging)
+    if session_id and transcript_path:
+        from hooks.observability.transcript import log_new_entries
+
+        log_new_entries(session_id, transcript_path)
+
+    # Clean up session context directory from /tmp/<session_id>/
+    if session_id:
+        from hooks.integrations.file_system import delete_context_dir
+
+        success, result = delete_context_dir(session_id)
+        if success:
+            log(
+                "Session context directory cleaned",
+                {"result": result, "session_id": session_id},
+            )
+        else:
+            log("Failed to delete session context directory", {"error": result})
+
+
+def on_user_prompt_submit(payload: dict) -> None:
+    """Handle UserPromptSubmit event."""
+    session_id = payload.get("session_id", "")
+    log("User prompt submitted", {"session_id": session_id})
+
+
+def on_pre_tool_use(payload: dict) -> None:
+    """Handle PreToolUse event."""
+    tool_name = payload.get("tool_name", "unknown")
+    tool_input = payload.get("tool_input", {})
+
+    # Log command details for Bash
+    if tool_name == "Bash":
+        command = tool_input.get("command", "")[:500]  # First 500 chars
+        log(f"Pre tool use: {tool_name}", {"tool": tool_name, "command": command})
+    else:
+        log(f"Pre tool use: {tool_name}", {"tool": tool_name})
+
+    # Log transcript entries to hooks.log (for debugging)
+    session_id = payload.get("session_id", "")
+    transcript_path = payload.get("transcript_path", "")
+
+    if session_id and transcript_path:
+        from hooks.observability.transcript import log_new_entries
+
+        log_new_entries(session_id, transcript_path)
+
+    # Inject tool memory (past errors) into Claude's context
+    # Only injects once per tool per session to avoid noise
+    from hooks.tool_memory import inject_memory
+
+    inject_memory(tool_name=tool_name, session_id=session_id)
+
+
+def on_post_tool_use(payload: dict) -> None:
+    """Handle PostToolUse event."""
+    tool_name = payload.get("tool_name", "unknown")
+    log(f"Post tool use: {tool_name}", {"tool": tool_name})
+
+    # Log transcript entries to hooks.log (for debugging)
+    session_id = payload.get("session_id", "")
+    transcript_path = payload.get("transcript_path", "")
+    if session_id and transcript_path:
+        from hooks.observability.transcript import log_new_entries
+
+        log_new_entries(session_id, transcript_path)
+
+    # Record tool errors to memory file
+    from hooks.tool_memory import record_error
+
+    record_error(payload)
+
+
+def on_stop(payload: dict) -> None:
+    """Handle Stop event."""
+    session_id = payload.get("session_id", "")
+    transcript_path = payload.get("transcript_path", "")
+
+    # Parse transcript to get metrics (Claude Code doesn't include these in hook payload)
+    metrics = parse_transcript_metrics(transcript_path) if transcript_path else {}
+
+    log(
+        "Claude stopped",
+        {
+            "session_id": session_id,
+            "num_turns": metrics.get("num_turns"),
+            "duration_ms": metrics.get("duration_ms"),
+        },
+    )
+
+    # Check for errors and notify
+    notify_on_error(transcript_path)
+
+    # Scan transcript for MCP errors missed by PostToolUse
+    from hooks.tool_memory import scan_transcript
+
+    scan_transcript(payload)
+
+    # Log transcript entries to hooks.log (for debugging)
+    if session_id and transcript_path:
+        from hooks.observability.transcript import log_new_entries
+
+        log_new_entries(session_id, transcript_path)
+
+    # Auto-save session memory
+    try:
+        from hooks.config import MEMORY_AUTO_SAVE
+
+        if MEMORY_AUTO_SAVE and session_id and transcript_path:
+            from hooks.memory.auto_save import auto_save_session
+
+            auto_save_session(session_id, transcript_path)
+    except Exception as e:
+        log("Memory auto-save failed", {"error": str(e)})
+
+
+def on_subagent_stop(payload: dict) -> None:
+    """Handle SubagentStop event."""
+    session_id = payload.get("session_id", "")
+    log("Subagent stopped", {"session_id": session_id})
+
+    # Log transcript entries to hooks.log (for debugging)
+    transcript_path = payload.get("transcript_path", "")
+    if session_id and transcript_path:
+        from hooks.observability.transcript import log_new_entries
+
+        log_new_entries(session_id, transcript_path)
+
+
+def on_notification(payload: dict) -> None:
+    """Handle Notification event."""
+    log("Notification", payload)
+
+
+def on_pre_compact(payload: dict) -> None:
+    """Handle PreCompact event."""
+    session_id = payload.get("session_id", "")
+    log("Pre compact", {"session_id": session_id})
+
+
+def on_permission_request(payload: dict) -> None:
+    """Handle PermissionRequest event."""
+    tool_name = payload.get("tool_name", "unknown")
+    log(f"Permission requested: {tool_name}", {"tool": tool_name})
+
+
+# =============================================================================
+# EVENT ROUTER
+# =============================================================================
+
+EVENT_HANDLERS = {
+    "SessionStart": on_session_start,
+    "SessionEnd": on_session_end,
+    "UserPromptSubmit": on_user_prompt_submit,
+    "PreToolUse": on_pre_tool_use,
+    "PostToolUse": on_post_tool_use,
+    "Stop": on_stop,
+    "SubagentStop": on_subagent_stop,
+    "Notification": on_notification,
+    "PreCompact": on_pre_compact,
+    "PermissionRequest": on_permission_request,
+}
+
+
+def main() -> None:
+    """Main entry point - routes events to handlers."""
+    try:
+        # Read payload from stdin
+        payload: dict[str, Any] = json.load(sys.stdin)
+
+        # Get event name from payload
+        event_name = payload.get("hook_event_name", "Unknown")
+
+        # Route to handler
+        handler = EVENT_HANDLERS.get(event_name)
+        if handler:
+            handler(payload)
+        else:
+            log(f"Unknown event: {event_name}", payload)
+
+    except json.JSONDecodeError:
+        log("Failed to parse JSON payload")
+    except Exception as e:
+        log(f"Hook manager error: {str(e)}")
+
+
+if __name__ == "__main__":
+    main()
