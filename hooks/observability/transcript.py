@@ -24,7 +24,7 @@ def get_last_position(session_id: str) -> int:
             if val is not None:
                 return int(val)
             return 0
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass  # Silent fallback
 
     # File fallback
@@ -51,7 +51,7 @@ def save_position(session_id: str, position: int) -> None:
         if r is not None:
             r.setex(redis_key("pos:transcript", session_id), POSITION_TTL, str(position))
             return
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass  # Silent fallback
 
     # File fallback
@@ -98,7 +98,7 @@ def log_new_entries(session_id: str, transcript_path: str) -> None:
         # Save new position
         save_position(session_id, len(lines))
 
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass  # Silent failure - never break Claude
 
 

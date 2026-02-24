@@ -229,7 +229,7 @@ class PostgresClient:
         if cls._instance and cls._instance._connection:
             try:
                 cls._instance._connection.close()
-            except Exception:
+            except Exception:  # NOSONAR — hooks must never crash the parent process
                 pass
         cls._instance = None
 
@@ -402,7 +402,7 @@ class PostgresClient:
             if self._connection and not self._connection.closed:
                 try:
                     self._connection.rollback()
-                except Exception:
+                except Exception:  # NOSONAR — hooks must never crash the parent process
                     pass
 
             # Silent failure - log but don't raise
@@ -475,7 +475,7 @@ class PostgresClient:
             if self._connection and not self._connection.closed:
                 try:
                     self._connection.rollback()
-                except Exception:
+                except Exception:  # NOSONAR — hooks must never crash the parent process
                     pass
 
             error_msg = str(e)

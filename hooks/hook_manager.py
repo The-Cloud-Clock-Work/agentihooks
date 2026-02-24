@@ -168,7 +168,7 @@ def parse_transcript_metrics(transcript_path: str) -> dict:
             duration = last_timestamp - first_timestamp
             metrics["duration_ms"] = int(duration.total_seconds() * 1000)
 
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass  # Return partial metrics on error
 
     return metrics

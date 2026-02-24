@@ -124,7 +124,7 @@ def get_session(session_id: str) -> Optional[Dict[str, Any]]:
                     except (json.JSONDecodeError, TypeError):
                         result[k] = v
                 return result
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass  # Silent fallback
 
     # File fallback
@@ -160,7 +160,7 @@ def enrich_session(session_id: str, data: Dict[str, Any]) -> bool:
                 {"session_id": session_id, "keys_added": list(data.keys())},
             )
             return True
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass  # Silent fallback to file
 
     # File fallback
@@ -219,7 +219,7 @@ def delete_session(session_id: str) -> bool:
             r.delete(key)
             log("Deleted session (Redis)", {"session_id": session_id})
             return True
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass  # Silent fallback to file
 
     # File fallback

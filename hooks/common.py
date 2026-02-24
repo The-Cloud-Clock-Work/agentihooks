@@ -172,7 +172,7 @@ def log(message: str, payload: dict | None = None) -> None:
 
         with open(log_path, "a") as f:
             f.write(json.dumps(entry) + "\n")
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass  # Silent failure - never break Claude
 
 
@@ -198,7 +198,7 @@ def log_command(script_name: str, output: str) -> None:
 """
         with open(log_path, "a") as f:
             f.write(log_entry)
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass  # Silent failure - never break Claude
 
 
@@ -234,7 +234,7 @@ def log_transcript(conversation_id: str, entry_type: str, content: str) -> None:
 """
         with open(log_path, "a") as f:
             f.write(log_entry)
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass  # Silent failure - never break Claude
 
 

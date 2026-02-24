@@ -322,7 +322,7 @@ class LambdaClient:
                 if response_data:
                     try:
                         response_payload = json.loads(response_data.read())
-                    except Exception:
+                    except Exception:  # NOSONAR — hooks must never crash the parent process
                         pass
 
                 # Check for function error

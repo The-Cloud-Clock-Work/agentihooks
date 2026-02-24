@@ -35,7 +35,7 @@ def get_last_position(session_id: str) -> int:
             if val is not None:
                 return int(val)
             return 0
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass  # Silent fallback
 
     # File fallback
@@ -62,7 +62,7 @@ def save_position(session_id: str, position: int) -> None:
         if r is not None:
             r.setex(redis_key("pos:agentstream", session_id), POSITION_TTL, str(position))
             return
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass  # Silent fallback
 
     # File fallback
@@ -122,7 +122,7 @@ def stream_to_agent_log(session_id: str, transcript_path: str) -> None:
             # Update position
             save_position(session_id, len(lines))
 
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass  # Silent failure - never break Claude
 
 
@@ -137,7 +137,7 @@ def clear_agent_log() -> None:
         agent_log = Path(AGENT_LOG_FILE)
         if agent_log.exists():
             agent_log.unlink()
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass  # Silent failure
 
 

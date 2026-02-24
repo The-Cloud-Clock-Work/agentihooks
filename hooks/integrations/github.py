@@ -367,7 +367,7 @@ class GitOperations:
             )
             if result.returncode == 0:
                 return "master"
-        except Exception:
+        except Exception:  # NOSONAR — hooks must never crash the parent process
             pass
 
         return "main"

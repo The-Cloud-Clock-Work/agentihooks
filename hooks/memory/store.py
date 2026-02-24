@@ -68,7 +68,7 @@ class MemoryStore:
             from hooks._redis import get_redis
 
             self._redis = get_redis()
-        except Exception:
+        except Exception:  # NOSONAR — hooks must never crash the parent process
             self._redis = None
         return self._redis
 

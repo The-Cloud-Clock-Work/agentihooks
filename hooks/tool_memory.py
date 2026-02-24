@@ -142,7 +142,7 @@ def _read_entries():
                         entries.append(json.loads(line))
                     except json.JSONDecodeError:
                         continue
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         return []
     return entries
 
@@ -167,7 +167,7 @@ def _append_entry(entry):
             # Just append
             with open(MEMORY_PATH, "a") as f:
                 f.write(json.dumps(entry, separators=(",", ":")) + "\n")
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass  # Silent failure - never break the agent
 
 
@@ -188,7 +188,7 @@ def _append_entries(new_entries):
         with open(MEMORY_PATH, "w") as f:
             for e in entries:
                 f.write(json.dumps(e, separators=(",", ":")) + "\n")
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass
 
 
@@ -323,7 +323,7 @@ def _scan_transcript_for_errors(transcript_path, session_id=""):
                             }
                         )
 
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass
 
     return new_entries
@@ -361,7 +361,7 @@ def _mark_tool_seen(session_id, tool_name):
         path = _seen_tools_path(session_id)
         with open(path, "a") as f:
             f.write(tool_name + "\n")
-    except Exception:
+    except Exception:  # NOSONAR — hooks must never crash the parent process
         pass
 
 
