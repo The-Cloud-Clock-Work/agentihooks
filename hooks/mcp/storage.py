@@ -36,12 +36,14 @@ def register(mcp):
                 match_uuid=match_uuid,
             )
 
-            return json.dumps({
-                "success": result.success,
-                "s3_url": result.s3_url,
-                "files_uploaded": result.files_uploaded,
-                "error": result.error,
-            })
+            return json.dumps(
+                {
+                    "success": result.success,
+                    "s3_url": result.s3_url,
+                    "files_uploaded": result.files_uploaded,
+                    "error": result.error,
+                }
+            )
 
         except Exception as e:
             log("MCP storage_upload_path failed", {"path": path, "error": str(e)})
@@ -86,13 +88,15 @@ def register(mcp):
 
             result = delete(path_list, force=force)
 
-            return json.dumps({
-                "success": result.success,
-                "deleted_count": result.deleted_count,
-                "deleted_paths": result.deleted_paths,
-                "failed_paths": result.failed_paths,
-                "errors": result.errors,
-            })
+            return json.dumps(
+                {
+                    "success": result.success,
+                    "deleted_count": result.deleted_count,
+                    "deleted_paths": result.deleted_paths,
+                    "failed_paths": result.failed_paths,
+                    "errors": result.errors,
+                }
+            )
 
         except Exception as e:
             log("MCP filesystem_delete failed", {"paths": paths, "error": str(e)})

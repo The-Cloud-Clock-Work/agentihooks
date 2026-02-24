@@ -155,9 +155,7 @@ class ConfluenceClient:
             missing.append("CONFLUENCE_TOKEN")
 
         if missing:
-            raise ValueError(
-                f"Missing required environment variables: {', '.join(missing)}"
-            )
+            raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
 
         cls._instance = cls(base_url, token, space_key, parent_id)
         log(
@@ -277,9 +275,7 @@ class ConfluenceClient:
     # PAGE OPERATIONS
     # =========================================================================
 
-    def get_page(
-        self, page_id: str, expand: str = "body.storage,version,space"
-    ) -> Dict[str, Any]:
+    def get_page(self, page_id: str, expand: str = "body.storage,version,space") -> Dict[str, Any]:
         """
         Get page by ID.
 
@@ -329,16 +325,10 @@ class ConfluenceClient:
         issues: List[Dict[str, str]] = []
 
         # 1. Validate code blocks
-        code_macro_pattern = (
-            r'<ac:structured-macro[^>]*ac:name="code"[^>]*>(.*?)</ac:structured-macro>'
-        )
+        code_macro_pattern = r'<ac:structured-macro[^>]*ac:name="code"[^>]*>(.*?)</ac:structured-macro>'
         for match in re.finditer(code_macro_pattern, content, re.DOTALL):
             macro_content = match.group(1)
-            snippet = (
-                match.group(0)[:100] + "..."
-                if len(match.group(0)) > 100
-                else match.group(0)
-            )
+            snippet = match.group(0)[:100] + "..." if len(match.group(0)) > 100 else match.group(0)
 
             # Check for CDATA wrapper
             if "<![CDATA[" not in macro_content:
@@ -372,9 +362,7 @@ class ConfluenceClient:
                 if body_match:
                     body_content = body_match.group(1).strip()
                     # Remove CDATA wrapper if present
-                    body_content = re.sub(
-                        r"<!\[CDATA\[(.*?)\]\]>", r"\1", body_content, flags=re.DOTALL
-                    ).strip()
+                    body_content = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", body_content, flags=re.DOTALL).strip()
                     if not body_content:
                         issues.append(
                             {
@@ -389,11 +377,7 @@ class ConfluenceClient:
         plantuml_pattern = r'<ac:structured-macro[^>]*ac:name="plantuml"[^>]*>(.*?)</ac:structured-macro>'
         for match in re.finditer(plantuml_pattern, content, re.DOTALL):
             macro_content = match.group(1)
-            snippet = (
-                match.group(0)[:100] + "..."
-                if len(match.group(0)) > 100
-                else match.group(0)
-            )
+            snippet = match.group(0)[:100] + "..." if len(match.group(0)) > 100 else match.group(0)
 
             # Check for CDATA wrapper
             if "<![CDATA[" not in macro_content:
@@ -436,13 +420,9 @@ class ConfluenceClient:
             )
             if body_match:
                 body_content = body_match.group(1).strip()
-                body_content = re.sub(
-                    r"<!\[CDATA\[(.*?)\]\]>", r"\1", body_content, flags=re.DOTALL
-                ).strip()
+                body_content = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", body_content, flags=re.DOTALL).strip()
                 # Remove markers and check if empty
-                body_content = (
-                    body_content.replace("@startuml", "").replace("@enduml", "").strip()
-                )
+                body_content = body_content.replace("@startuml", "").replace("@enduml", "").strip()
                 if not body_content:
                     issues.append(
                         {
@@ -475,25 +455,15 @@ class ConfluenceClient:
                         "type": "cdata",
                         "severity": "error",
                         "message": "CDATA block contains unescaped ']]>' - will break XML parsing",
-                        "snippet": (
-                            match.group(0)[:100] + "..."
-                            if len(match.group(0)) > 100
-                            else match.group(0)
-                        ),
+                        "snippet": (match.group(0)[:100] + "..." if len(match.group(0)) > 100 else match.group(0)),
                     }
                 )
 
         # 5. Validate table structure
-        table_pattern = (
-            r'<table[^>]*class="[^"]*confluenceTable[^"]*"[^>]*>(.*?)</table>'
-        )
+        table_pattern = r'<table[^>]*class="[^"]*confluenceTable[^"]*"[^>]*>(.*?)</table>'
         for match in re.finditer(table_pattern, content, re.DOTALL):
             table_content = match.group(1)
-            snippet = (
-                match.group(0)[:100] + "..."
-                if len(match.group(0)) > 100
-                else match.group(0)
-            )
+            snippet = match.group(0)[:100] + "..." if len(match.group(0)) > 100 else match.group(0)
 
             # Count opening and closing tags
             tr_open = len(re.findall(r"<tr[^>]*>", table_content))
@@ -645,9 +615,7 @@ class ConfluenceClient:
             raise FileNotFoundError(f"Markdown file not found: {filepath}")
 
         if path.suffix.lower() not in (".md", ".markdown"):
-            raise ValueError(
-                f"File must be a markdown file (.md or .markdown): {filepath}"
-            )
+            raise ValueError(f"File must be a markdown file (.md or .markdown): {filepath}")
 
         content = path.read_text(encoding="utf-8")
 
@@ -765,7 +733,7 @@ class ConfluenceClient:
 
         url = f"{self.base_url}/rest/api/content/{page_id}"
         response = self._make_request("PUT", url, json=data)
-        page_data = response.json()
+        response.json()
 
         log("ConfluenceClient: Page updated", {"id": page_id, "title": title})
 
@@ -1180,7 +1148,7 @@ class ConfluenceClient:
             result += f'rectangle "{section_name}" as section{i} #f0f0f0\n'
 
         for i in range(len(sections) - 1):
-            result += f"section{i} -right-> section{i+1}\n"
+            result += f"section{i} -right-> section{i + 1}\n"
 
         result += "\n"
 
@@ -1237,9 +1205,7 @@ class ConfluenceClient:
                 clean_line = re.sub(r"\[[^\]]+\]", "", clean_line)
                 clean_line = re.sub(r"\([^\)]+\)", "", clean_line)
 
-                conn_match = re.match(
-                    r"(\w+)\s*-->\s*(\w+)(?:\s*:\s*(.+))?", clean_line.strip()
-                )
+                conn_match = re.match(r"(\w+)\s*-->\s*(\w+)(?:\s*:\s*(.+))?", clean_line.strip())
                 if conn_match:
                     connections.append(
                         (
@@ -1295,9 +1261,7 @@ class ConfluenceClient:
                 result += line + "\n"
 
             elif "->>" in line or "-->>" in line or "->" in line or "-->" in line:
-                arrow_match = re.match(
-                    r"(\w+)\s*(--?>>?[\+\-]?)\s*(\w+)\s*:\s*(.+)", line
-                )
+                arrow_match = re.match(r"(\w+)\s*(--?>>?[\+\-]?)\s*(\w+)\s*:\s*(.+)", line)
                 if arrow_match:
                     source = arrow_match.group(1)
                     arrow = arrow_match.group(2)
@@ -1381,9 +1345,7 @@ class ConfluenceClient:
         mermaid_pattern = r"```\s*mermaid\s*(.*?)\s*```"
         mermaid_placeholders: Dict[str, str] = {}
 
-        for i, match in enumerate(
-            re.finditer(mermaid_pattern, html_content, re.DOTALL)
-        ):
+        for i, match in enumerate(re.finditer(mermaid_pattern, html_content, re.DOTALL)):
             mermaid = match.group(1).strip()
             placeholder = f"__MERMAID_PLACEHOLDER_{i}__"
             # Use native Mermaid rendering via HTML macro (no conversion needed)
@@ -1411,9 +1373,7 @@ class ConfluenceClient:
         for match in re.finditer(table_pattern, html_content):
             table_text = match.group(0).strip()
             table_lines = table_text.split("\n")
-            if len(table_lines) >= 2 and any(
-                re.match(r"^\|[\s\-:|]+\|$", line.strip()) for line in table_lines
-            ):
+            if len(table_lines) >= 2 and any(re.match(r"^\|[\s\-:|]+\|$", line.strip()) for line in table_lines):
                 placeholder = f"__TABLE_PLACEHOLDER_{table_idx}__"
                 table_placeholders[placeholder] = self._convert_table(table_lines)
                 html_content = html_content.replace(match.group(0), placeholder + "\n")
@@ -1451,22 +1411,12 @@ class ConfluenceClient:
         html_content = "\n".join(escaped_lines)
 
         # Step 6: Convert markdown syntax
-        html_content = re.sub(
-            r"^#### (.+)$", r"<h4>\1</h4>", html_content, flags=re.MULTILINE
-        )
-        html_content = re.sub(
-            r"^### (.+)$", r"<h3>\1</h3>", html_content, flags=re.MULTILINE
-        )
-        html_content = re.sub(
-            r"^## (.+)$", r"<h2>\1</h2>", html_content, flags=re.MULTILINE
-        )
-        html_content = re.sub(
-            r"^# (.+)$", r"<h1>\1</h1>", html_content, flags=re.MULTILINE
-        )
+        html_content = re.sub(r"^#### (.+)$", r"<h4>\1</h4>", html_content, flags=re.MULTILINE)
+        html_content = re.sub(r"^### (.+)$", r"<h3>\1</h3>", html_content, flags=re.MULTILINE)
+        html_content = re.sub(r"^## (.+)$", r"<h2>\1</h2>", html_content, flags=re.MULTILINE)
+        html_content = re.sub(r"^# (.+)$", r"<h1>\1</h1>", html_content, flags=re.MULTILINE)
 
-        html_content = re.sub(
-            r"\*\*\*(.+?)\*\*\*", r"<strong><em>\1</em></strong>", html_content
-        )
+        html_content = re.sub(r"\*\*\*(.+?)\*\*\*", r"<strong><em>\1</em></strong>", html_content)
         html_content = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html_content)
         html_content = re.sub(r"\*(.+?)\*", r"<em>\1</em>", html_content)
 
@@ -1477,12 +1427,8 @@ class ConfluenceClient:
 
         html_content = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", replace_link, html_content)
 
-        html_content = re.sub(
-            r"^- (.+)$", r"<li>\1</li>", html_content, flags=re.MULTILINE
-        )
-        html_content = re.sub(
-            r"^\d+\. (.+)$", r"<li>\1</li>", html_content, flags=re.MULTILINE
-        )
+        html_content = re.sub(r"^- (.+)$", r"<li>\1</li>", html_content, flags=re.MULTILINE)
+        html_content = re.sub(r"^\d+\. (.+)$", r"<li>\1</li>", html_content, flags=re.MULTILINE)
         html_content = re.sub(
             r"^&gt; (.+)$",
             r"<blockquote>\1</blockquote>",

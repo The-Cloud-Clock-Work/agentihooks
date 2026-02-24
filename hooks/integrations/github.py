@@ -243,9 +243,7 @@ class GitHubAuth:
             return cls._pem_key
 
         except Exception as e:
-            raise RuntimeError(
-                f"Failed to fetch PEM key from Secrets Manager: {e}"
-            ) from e
+            raise RuntimeError(f"Failed to fetch PEM key from Secrets Manager: {e}") from e
 
     @classmethod
     def _generate_jwt(cls, pem_key: str) -> str:
@@ -279,9 +277,7 @@ class GitHubAuth:
         )
 
         if response.status_code != 201:
-            raise RuntimeError(
-                f"GitHub API error: {response.status_code} - {response.text}"
-            )
+            raise RuntimeError(f"GitHub API error: {response.status_code} - {response.text}")
 
         data = response.json()
         token = data["token"]
@@ -290,9 +286,7 @@ class GitHubAuth:
         if expires_at_str:
             expires_at = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
         else:
-            expires_at = datetime.now(timezone.utc).replace(
-                hour=datetime.now(timezone.utc).hour + 1
-            )
+            expires_at = datetime.now(timezone.utc).replace(hour=datetime.now(timezone.utc).hour + 1)
 
         return token, expires_at
 
@@ -416,9 +410,7 @@ class GitOperations:
 
         # Check if already cloned
         if (target_path / ".git").exists():
-            log(
-                "GitOperations: Repository exists, pulling latest", {"path": target_dir}
-            )
+            log("GitOperations: Repository exists, pulling latest", {"path": target_dir})
 
             try:
                 # Get authenticated URL for fetch operations

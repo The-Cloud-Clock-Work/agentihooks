@@ -26,13 +26,15 @@ def register(mcp):
             message_dict = json.loads(message_body)
             result = send_message(message_dict, enrich_from_state=enrich)
 
-            return json.dumps({
-                "success": result.success,
-                "message_id": result.message_id,
-                "enriched": result.enriched,
-                "state_fields": result.state_fields,
-                "error": result.error,
-            })
+            return json.dumps(
+                {
+                    "success": result.success,
+                    "message_id": result.message_id,
+                    "enriched": result.enriched,
+                    "state_fields": result.state_fields,
+                    "error": result.error,
+                }
+            )
 
         except json.JSONDecodeError as e:
             log("MCP sqs_send_message JSON parse failed", {"error": str(e)})
@@ -57,17 +59,21 @@ def register(mcp):
             state = load_state(session_id)
 
             if state:
-                return json.dumps({
-                    "success": True,
-                    "found": True,
-                    "state": state,
-                })
+                return json.dumps(
+                    {
+                        "success": True,
+                        "found": True,
+                        "state": state,
+                    }
+                )
             else:
-                return json.dumps({
-                    "success": True,
-                    "found": False,
-                    "error": ".agent-state.json not found",
-                })
+                return json.dumps(
+                    {
+                        "success": True,
+                        "found": False,
+                        "error": ".agent-state.json not found",
+                    }
+                )
 
         except Exception as e:
             log("MCP sqs_load_state failed", {"error": str(e)})
@@ -106,13 +112,15 @@ def register(mcp):
                 enrich_from_state=enrich,
             )
 
-            return json.dumps({
-                "success": result.success,
-                "status_code": result.status_code,
-                "response_body": result.response_body,
-                "webhook_url": result.webhook_url,
-                "error": result.error,
-            })
+            return json.dumps(
+                {
+                    "success": result.success,
+                    "status_code": result.status_code,
+                    "response_body": result.response_body,
+                    "webhook_url": result.webhook_url,
+                    "error": result.error,
+                }
+            )
 
         except json.JSONDecodeError as e:
             log("MCP webhook_send JSON parse failed", {"error": str(e)})

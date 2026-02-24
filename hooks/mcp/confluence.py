@@ -22,14 +22,16 @@ def register(mcp):
             client = ConfluenceClient.get_client()
             page = client.get_page(page_id)
 
-            return json.dumps({
-                "success": True,
-                "id": page.get("id"),
-                "title": page.get("title"),
-                "space_key": page.get("space", {}).get("key"),
-                "version": page.get("version", {}).get("number"),
-                "url": f"{client.base_url}/wiki/spaces/{page.get('space', {}).get('key')}/pages/{page.get('id')}",
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "id": page.get("id"),
+                    "title": page.get("title"),
+                    "space_key": page.get("space", {}).get("key"),
+                    "version": page.get("version", {}).get("number"),
+                    "url": f"{client.base_url}/wiki/spaces/{page.get('space', {}).get('key')}/pages/{page.get('id')}",
+                }
+            )
 
         except Exception as e:
             log("MCP confluence_get_page failed", {"page_id": page_id, "error": str(e)})
@@ -55,21 +57,25 @@ def register(mcp):
             page_id = client.find_page(title, space)
 
             if page_id:
-                return json.dumps({
-                    "success": True,
-                    "found": True,
-                    "id": page_id,
-                    "title": title,
-                    "space_key": space,
-                    "url": f"{client.base_url}/wiki/spaces/{space}/pages/{page_id}",
-                })
+                return json.dumps(
+                    {
+                        "success": True,
+                        "found": True,
+                        "id": page_id,
+                        "title": title,
+                        "space_key": space,
+                        "url": f"{client.base_url}/wiki/spaces/{space}/pages/{page_id}",
+                    }
+                )
             else:
-                return json.dumps({
-                    "success": True,
-                    "found": False,
-                    "title": title,
-                    "space_key": space,
-                })
+                return json.dumps(
+                    {
+                        "success": True,
+                        "found": False,
+                        "title": title,
+                        "space_key": space,
+                    }
+                )
 
         except Exception as e:
             log("MCP confluence_find_page failed", {"title": title, "error": str(e)})
@@ -117,14 +123,16 @@ def register(mcp):
                 convert_markdown=convert_markdown,
             )
 
-            return json.dumps({
-                "success": True,
-                "id": page_info.id,
-                "title": page_info.title,
-                "space_key": page_info.space_key,
-                "url": page_info.url,
-                "version": page_info.version,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "id": page_info.id,
+                    "title": page_info.title,
+                    "space_key": page_info.space_key,
+                    "url": page_info.url,
+                    "version": page_info.version,
+                }
+            )
 
         except Exception as e:
             log("MCP confluence_create_page failed", {"title": title, "error": str(e)})
@@ -159,14 +167,16 @@ def register(mcp):
                 convert_markdown=convert_markdown,
             )
 
-            return json.dumps({
-                "success": True,
-                "id": page_info.id,
-                "title": page_info.title,
-                "space_key": page_info.space_key,
-                "url": page_info.url,
-                "version": page_info.version,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "id": page_info.id,
+                    "title": page_info.title,
+                    "space_key": page_info.space_key,
+                    "url": page_info.url,
+                    "version": page_info.version,
+                }
+            )
 
         except Exception as e:
             log("MCP confluence_update_page failed", {"page_id": page_id, "error": str(e)})
@@ -193,11 +203,13 @@ def register(mcp):
             else:
                 client.delete_page(page_id)
 
-            return json.dumps({
-                "success": True,
-                "page_id": page_id,
-                "recursive": recursive,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "page_id": page_id,
+                    "recursive": recursive,
+                }
+            )
 
         except Exception as e:
             log("MCP confluence_delete_page failed", {"page_id": page_id, "error": str(e)})
@@ -219,20 +231,22 @@ def register(mcp):
             client = ConfluenceClient.get_client()
             children = client.get_children(parent_id)
 
-            return json.dumps({
-                "success": True,
-                "parent_id": parent_id,
-                "count": len(children),
-                "children": [
-                    {
-                        "id": child.id,
-                        "title": child.title,
-                        "space_key": child.space_key,
-                        "url": child.url,
-                    }
-                    for child in children
-                ],
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "parent_id": parent_id,
+                    "count": len(children),
+                    "children": [
+                        {
+                            "id": child.id,
+                            "title": child.title,
+                            "space_key": child.space_key,
+                            "url": child.url,
+                        }
+                        for child in children
+                    ],
+                }
+            )
 
         except Exception as e:
             log("MCP confluence_get_child_pages failed", {"parent_id": parent_id, "error": str(e)})
@@ -281,14 +295,16 @@ def register(mcp):
                 space_key=space_key if space_key else None,
             )
 
-            return json.dumps({
-                "success": True,
-                "id": page_info.id,
-                "title": page_info.title,
-                "space_key": page_info.space_key,
-                "url": page_info.url,
-                "version": page_info.version,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "id": page_info.id,
+                    "title": page_info.title,
+                    "space_key": page_info.space_key,
+                    "url": page_info.url,
+                    "version": page_info.version,
+                }
+            )
 
         except FileNotFoundError as e:
             log("MCP confluence_docgen file not found", {"filepath": filepath, "error": str(e)})
@@ -327,14 +343,16 @@ def register(mcp):
             client = ConfluenceClient.get_client()
             result = client.validate_page_content(page_id)
 
-            return json.dumps({
-                "success": True,
-                "valid": result["valid"],
-                "page_id": result["page_id"],
-                "title": result["title"],
-                "url": result["url"],
-                "issues": result["issues"],
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "valid": result["valid"],
+                    "page_id": result["page_id"],
+                    "title": result["title"],
+                    "url": result["url"],
+                    "issues": result["issues"],
+                }
+            )
 
         except Exception as e:
             log("MCP confluence_validate_page failed", {"page_id": page_id, "error": str(e)})
@@ -353,13 +371,15 @@ def register(mcp):
             client = ConfluenceClient.get_client()
             connected = client.test_connection()
 
-            return json.dumps({
-                "success": True,
-                "connected": connected,
-                "base_url": client.base_url,
-                "space_key": client.space_key,
-                "default_parent_id": client.default_parent_id,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "connected": connected,
+                    "base_url": client.base_url,
+                    "space_key": client.space_key,
+                    "default_parent_id": client.default_parent_id,
+                }
+            )
 
         except Exception as e:
             log("MCP confluence_test_connection failed", {"error": str(e)})

@@ -34,6 +34,9 @@ all = [
 ]
 dev = ["pytest>=8.0", "pytest-cov>=5.0", "pytest-asyncio>=0.23", "ruff>=0.4"]
 
+[tool.setuptools.packages.find]
+include = ["hooks*"]
+
 [project.urls]
 Homepage = "https://github.com/The-Cloud-Clock-Work/agentihooks"
 Repository = "https://github.com/The-Cloud-Clock-Work/agentihooks"
@@ -50,7 +53,12 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
-ignore = ["E501"]
+ignore = [
+    "E501",   # line too long
+    "F822",   # lazy-loaded names in __all__ (intentional for circular import avoidance)
+    "E402",   # module-level imports not at top (conditional imports by design)
+    "E741",   # ambiguous variable names (l, O, I) used in compact code
+]
 
 [tool.ruff.format]
 quote-style = "double"

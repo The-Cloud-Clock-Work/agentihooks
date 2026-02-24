@@ -18,7 +18,6 @@ Available tools:
 """
 
 import json
-import os
 
 from mcp.server.fastmcp import FastMCP
 
@@ -38,6 +37,7 @@ def _get_store():
     global _store
     if _store is None:
         from hooks.memory.store import MemoryStore
+
         _store = MemoryStore()
     return _store
 
@@ -80,13 +80,15 @@ def memory_save(
             source="manual",
         )
 
-        return json.dumps({
-            "success": True,
-            "id": mem.id,
-            "summary": mem.summary,
-            "tags": mem.tags,
-            "created_at": mem.created_at,
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "id": mem.id,
+                "summary": mem.summary,
+                "tags": mem.tags,
+                "created_at": mem.created_at,
+            }
+        )
 
     except Exception as e:
         log("MCP memory_save failed", {"error": str(e)})
@@ -116,11 +118,13 @@ def memory_search(
 
         results = store.search(query=query, tags=tag_list, limit=limit)
 
-        return json.dumps({
-            "success": True,
-            "count": len(results),
-            "memories": [m.to_dict() for m in results],
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "count": len(results),
+                "memories": [m.to_dict() for m in results],
+            }
+        )
 
     except Exception as e:
         log("MCP memory_search failed", {"query": query, "error": str(e)})
@@ -157,11 +161,13 @@ def memory_recall(
             since_hours=since_hours if since_hours > 0 else None,
         )
 
-        return json.dumps({
-            "success": True,
-            "count": len(results),
-            "memories": [m.to_dict() for m in results],
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "count": len(results),
+                "memories": [m.to_dict() for m in results],
+            }
+        )
 
     except Exception as e:
         log("MCP memory_recall failed", {"error": str(e)})
@@ -182,11 +188,13 @@ def memory_delete(memory_id: str) -> str:
         store = _get_store()
         deleted = store.delete(memory_id)
 
-        return json.dumps({
-            "success": True,
-            "deleted": deleted,
-            "memory_id": memory_id,
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "deleted": deleted,
+                "memory_id": memory_id,
+            }
+        )
 
     except Exception as e:
         log("MCP memory_delete failed", {"memory_id": memory_id, "error": str(e)})
@@ -204,19 +212,23 @@ def memory_clear(confirm: bool = False) -> str:
         JSON with count of deleted memories
     """
     if not confirm:
-        return json.dumps({
-            "success": False,
-            "error": "Set confirm=true to clear all memories",
-        })
+        return json.dumps(
+            {
+                "success": False,
+                "error": "Set confirm=true to clear all memories",
+            }
+        )
 
     try:
         store = _get_store()
         count = store.clear()
 
-        return json.dumps({
-            "success": True,
-            "cleared": count,
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "cleared": count,
+            }
+        )
 
     except Exception as e:
         log("MCP memory_clear failed", {"error": str(e)})
@@ -253,11 +265,13 @@ def transcript_search(
             limit=limit,
         )
 
-        return json.dumps({
-            "success": True,
-            "count": len(results),
-            "entries": results,
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "count": len(results),
+                "entries": results,
+            }
+        )
 
     except Exception as e:
         log("MCP transcript_search failed", {"query": query, "error": str(e)})
@@ -286,12 +300,14 @@ def transcript_get(
             last_n=last_n,
         )
 
-        return json.dumps({
-            "success": True,
-            "session_id": session_id,
-            "count": len(entries),
-            "entries": entries,
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "session_id": session_id,
+                "count": len(entries),
+                "entries": entries,
+            }
+        )
 
     except Exception as e:
         log("MCP transcript_get failed", {"session_id": session_id, "error": str(e)})
@@ -306,6 +322,7 @@ def transcript_get(
 def main():
     """Run the memory MCP server."""
     import sys
+
     print("Starting memory-mcp server...", file=sys.stderr)
     print("=" * 60, file=sys.stderr)
 

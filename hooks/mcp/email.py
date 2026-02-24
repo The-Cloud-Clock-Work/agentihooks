@@ -34,7 +34,7 @@ def register(mcp):
             JSON with success status and recipients_count
         """
         try:
-            from hooks.integrations.mailer import send_email, EmailConfig, send_from_config
+            from hooks.integrations.mailer import EmailConfig, send_email, send_from_config
 
             if template:
                 recipient_list = [r.strip() for r in to.replace(";", ",").split(",") if r.strip()]
@@ -57,11 +57,13 @@ def register(mcp):
                     title=title if title else None,
                 )
 
-            return json.dumps({
-                "success": result.success,
-                "recipients_count": result.recipients_count,
-                "error": result.error,
-            })
+            return json.dumps(
+                {
+                    "success": result.success,
+                    "recipients_count": result.recipients_count,
+                    "error": result.error,
+                }
+            )
 
         except Exception as e:
             log("MCP email_send failed", {"to": to, "subject": subject, "error": str(e)})
@@ -95,11 +97,13 @@ def register(mcp):
                 title=title if title else None,
             )
 
-            return json.dumps({
-                "success": result.success,
-                "recipients_count": result.recipients_count,
-                "error": result.error,
-            })
+            return json.dumps(
+                {
+                    "success": result.success,
+                    "recipients_count": result.recipients_count,
+                    "error": result.error,
+                }
+            )
 
         except Exception as e:
             log("MCP email_send_markdown_file failed", {"to": to, "file_path": file_path, "error": str(e)})

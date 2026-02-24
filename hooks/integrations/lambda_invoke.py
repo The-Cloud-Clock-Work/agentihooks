@@ -45,7 +45,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 # Add parent directories to path for direct script execution
 _script_dir = Path(__file__).resolve().parent
@@ -60,9 +60,8 @@ try:
 except ImportError:
     BOTO3_AVAILABLE = False
 
-from hooks.common import log, get_correlation_id
+from hooks.common import get_correlation_id, log
 from hooks.integrations.base import IntegrationBase, IntegrationRegistry
-
 
 # =============================================================================
 # INTEGRATION DEFINITION
@@ -175,9 +174,7 @@ class LambdaClient:
             state_file: Custom state file path (default: ~/conversation_map.json)
         """
         self._function_name = function_name or os.getenv("LAMBDA_FUNCTION_NAME", "")
-        self._invocation_type = invocation_type or os.getenv(
-            "LAMBDA_INVOCATION_TYPE", "RequestResponse"
-        )
+        self._invocation_type = invocation_type or os.getenv("LAMBDA_INVOCATION_TYPE", "RequestResponse")
         self._skip_evaluation = skip_evaluation
         self._state_file = state_file or DEFAULT_STATE_FILE
         self._lambda_client = None
@@ -511,9 +508,9 @@ def main():
                 error_msg = f"Lambda hook SKIPPED - missing env vars: {missing}"
                 log(error_msg, {"integration": "lambda", "missing": missing})
                 # Print to STDOUT so Claude Code shows it
-                print(f"\n{'='*60}")
+                print(f"\n{'=' * 60}")
                 print(f"[LAMBDA] ERROR: {error_msg}")
-                print(f"{'='*60}\n")
+                print(f"{'=' * 60}\n")
                 sys.exit(0)  # Exit cleanly but warn
 
             payload = json.load(sys.stdin)

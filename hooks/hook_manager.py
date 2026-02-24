@@ -31,7 +31,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Only import lightweight common module at startup
-from hooks.common import log, run_script
+from hooks.common import log
 
 # Heavy imports are lazy-loaded in functions that need them:
 # - hooks.integrations.email.send_email -> only in notify_on_error()
@@ -138,9 +138,7 @@ def parse_transcript_metrics(transcript_path: str) -> dict:
                     timestamp_str = entry.get("timestamp")
                     if timestamp_str:
                         try:
-                            ts = datetime.fromisoformat(
-                                timestamp_str.replace("Z", "+00:00")
-                            )
+                            ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
                             if first_timestamp is None:
                                 first_timestamp = ts
                             last_timestamp = ts

@@ -54,7 +54,6 @@ if str(_app_dir) not in sys.path:
 from hooks.common import log
 from hooks.integrations.base import IntegrationBase, IntegrationRegistry
 
-
 # =============================================================================
 # INTEGRATION DEFINITION
 # =============================================================================
@@ -423,7 +422,9 @@ def markdown_to_html(content: str) -> str:
     def restore_code_block(match):
         code = match.group(2)
         code = code.replace("&lt;", "<").replace("&gt;", ">")
-        return f'<pre style="background:#f4f4f4;padding:10px;border-radius:4px;overflow-x:auto;"><code>{code}</code></pre>'
+        return (
+            f'<pre style="background:#f4f4f4;padding:10px;border-radius:4px;overflow-x:auto;"><code>{code}</code></pre>'
+        )
 
     html = re.sub(r"```(\w*)\n(.*?)```", restore_code_block, html, flags=re.DOTALL)
 
@@ -552,6 +553,7 @@ def parse_recipients(recipients_str: str) -> List[str]:
 @dataclass
 class EmailRecipientCategories:
     """Recipient categories for different notification types."""
+
     error_recipients: List[str]
     success_recipients: List[str]
     notifications_recipients: List[str]
@@ -564,6 +566,7 @@ class EmailRecipientCategories:
 @dataclass
 class EmailConfig:
     """Email configuration from JSON file (V2 format)."""
+
     version: str
     categories: EmailRecipientCategories
     recipients: List[str]  # Fallback recipients
@@ -588,7 +591,7 @@ class EmailConfig:
             raise ValueError(
                 "Missing 'version' field. This appears to be V1 format. "
                 "Please migrate to V2 format with recipient categories. "
-                "V2 format requires: {\"version\": \"2.0\", \"categories\": {...}, \"recipients\": [...], \"defaults\": {...}}"
+                'V2 format requires: {"version": "2.0", "categories": {...}, "recipients": [...], "defaults": {...}}'
             )
         if version != "2.0":
             raise ValueError(f"Unsupported version: {version}. Expected '2.0'")
@@ -598,7 +601,7 @@ class EmailConfig:
         categories = EmailRecipientCategories(
             error_recipients=categories_data.get("error_recipients", []),
             success_recipients=categories_data.get("success_recipients", []),
-            notifications_recipients=categories_data.get("notifications_recipients", [])
+            notifications_recipients=categories_data.get("notifications_recipients", []),
         )
 
         # Parse fallback recipients
@@ -607,12 +610,7 @@ class EmailConfig:
         # Parse defaults (now optional)
         defaults = data.get("defaults", {})
 
-        return cls(
-            version=version,
-            categories=categories,
-            recipients=recipients,
-            defaults=defaults
-        )
+        return cls(version=version, categories=categories, recipients=recipients, defaults=defaults)
 
     def get_recipients_for_category(self, category: str) -> List[str]:
         """Get recipients for category with fallback to flat list.
@@ -646,11 +644,14 @@ def load_email_config(config_path: Path) -> Optional[EmailConfig]:
         data = json.loads(config_path.read_text(encoding="utf-8"))
         config = EmailConfig.from_dict(data)
 
-        log("Loaded email config", {
-            "path": str(config_path),
-            "recipients_count": len(config.recipients),
-            "version": config.version,
-        })
+        log(
+            "Loaded email config",
+            {
+                "path": str(config_path),
+                "recipients_count": len(config.recipients),
+                "version": config.version,
+            },
+        )
 
         return config
 
@@ -681,10 +682,13 @@ def load_html_template(template_path: Path) -> Optional[str]:
 
         template = template_path.read_text(encoding="utf-8")
 
-        log("Loaded HTML template", {
-            "path": str(template_path),
-            "size": len(template),
-        })
+        log(
+            "Loaded HTML template",
+            {
+                "path": str(template_path),
+                "size": len(template),
+            },
+        )
 
         return template
 
@@ -831,9 +835,7 @@ def send_from_config_with_category(
         recipients = config.get_recipients_for_category(category)
         if not recipients:
             return EmailResult(
-                success=False,
-                recipients_count=0,
-                error=f"No recipients configured for category: {category}"
+                success=False, recipients_count=0, error=f"No recipients configured for category: {category}"
             )
 
         # Determine content and subject
@@ -1090,6 +1092,7 @@ def send_markdown_file(
 # CLI INTERFACE
 # =============================================================================
 
+
 def main():
     """CLI entry point for email operations."""
     import json as json_module  # Avoid shadowing json variable
@@ -1120,7 +1123,7 @@ def main():
         print("  /app/hooks/integrations/mailer.py check")
         print("")
         print("  # Send with CLI args")
-        print('  /app/hooks/integrations/mailer.py send \\')
+        print("  /app/hooks/integrations/mailer.py send \\")
         print('    --recipients "user@example.com,team@example.com" \\')
         print('    --subject "Report" \\')
         print('    --content "# Report\\n\\nDetails here..."')
@@ -1187,29 +1190,41 @@ def main():
                 config, template = scan_for_config_files(working_dir)
 
                 if not config:
-                    print(json_module.dumps({
-                        "success": False,
-                        "error": "email.json not found or invalid",
-                    }))
+                    print(
+                        json_module.dumps(
+                            {
+                                "success": False,
+                                "error": "email.json not found or invalid",
+                            }
+                        )
+                    )
                     sys.exit(1)
 
                 result = send_from_config(config, template)
 
-                print(json_module.dumps({
-                    "success": result.success,
-                    "recipients_count": result.recipients_count,
-                    "error": result.error,
-                }))
+                print(
+                    json_module.dumps(
+                        {
+                            "success": result.success,
+                            "recipients_count": result.recipients_count,
+                            "error": result.error,
+                        }
+                    )
+                )
 
                 sys.exit(0 if result.success else 1)
 
             # Mode 2: CLI arguments
             else:
                 if not recipients or not subject or not content:
-                    print(json_module.dumps({
-                        "success": False,
-                        "error": "--recipients, --subject, and --content are required",
-                    }))
+                    print(
+                        json_module.dumps(
+                            {
+                                "success": False,
+                                "error": "--recipients, --subject, and --content are required",
+                            }
+                        )
+                    )
                     sys.exit(1)
 
                 # Parse recipients (comma-separated string)
@@ -1222,19 +1237,27 @@ def main():
                     markdown=content,  # Treat content as markdown
                 )
 
-                print(json_module.dumps({
-                    "success": result.success,
-                    "recipients_count": result.recipients_count,
-                    "error": result.error,
-                }))
+                print(
+                    json_module.dumps(
+                        {
+                            "success": result.success,
+                            "recipients_count": result.recipients_count,
+                            "error": result.error,
+                        }
+                    )
+                )
 
                 sys.exit(0 if result.success else 1)
 
         except Exception as e:
-            print(json_module.dumps({
-                "success": False,
-                "error": str(e),
-            }))
+            print(
+                json_module.dumps(
+                    {
+                        "success": False,
+                        "error": str(e),
+                    }
+                )
+            )
             sys.exit(1)
 
     else:

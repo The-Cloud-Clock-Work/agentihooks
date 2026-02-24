@@ -17,9 +17,9 @@ Usage:
 """
 
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -225,9 +225,7 @@ class MermaidValidator:
         else:
             valid = len([i for i in issues if i.severity == "error"]) == 0
 
-        return ValidationResult(
-            valid=valid, diagram_count=1, issues=issues, diagrams=[diagram]
-        )
+        return ValidationResult(valid=valid, diagram_count=1, issues=issues, diagrams=[diagram])
 
     def _extract_mermaid_blocks(self, content: str) -> List[DiagramInfo]:
         """Extract all Mermaid code blocks from markdown content.
@@ -266,8 +264,7 @@ class MermaidValidator:
                     diagram = DiagramInfo(
                         index=diagram_index,
                         diagram_type=self._detect_diagram_type(diagram_lines),
-                        start_line=block_start_line
-                        + 1,  # +1 because first line is after ```mermaid
+                        start_line=block_start_line + 1,  # +1 because first line is after ```mermaid
                         end_line=i,  # Line before closing ```
                         content=diagram_content,
                         lines=diagram_lines,
@@ -358,11 +355,7 @@ class MermaidValidator:
         issues = []
 
         # GENERIC_001: Empty diagram
-        non_empty_lines = [
-            line
-            for line in diagram.lines
-            if line.strip() and not line.strip().startswith("%%")
-        ]
+        non_empty_lines = [line for line in diagram.lines if line.strip() and not line.strip().startswith("%%")]
         if len(non_empty_lines) == 0:
             issues.append(
                 ValidationIssue(
@@ -385,7 +378,7 @@ class MermaidValidator:
                     line_number=diagram.start_line,
                     severity="error",
                     rule="GENERIC_002",
-                    message=f"Unknown or missing diagram type declaration",
+                    message="Unknown or missing diagram type declaration",
                     snippet=first_line[:50] + ("..." if len(first_line) > 50 else ""),
                     suggestion="Start with a valid diagram type: graph, flowchart, sequenceDiagram, timeline, gantt, classDiagram, etc.",
                 )
@@ -553,15 +546,12 @@ class MermaidValidator:
 
         # Patterns
         node_def_pattern = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)[\[\(\{]")
-        connection_pattern = re.compile(
-            r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:-->|---|-\.->|==>|-.->|--x|--o|<-->)"
-        )
+        connection_pattern = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:-->|---|-\.->|==>|-.->|--x|--o|<-->)")
         target_pattern = re.compile(
             r"(?:-->|---|-\.->|==>|-.->|--x|--o|<-->)\s*(?:\|[^|]*\|)?\s*([A-Za-z_][A-Za-z0-9_]*)"
         )
 
         # Track bracket balance
-        bracket_stack = []
         bracket_types = {"[": "]", "(": ")", "{": "}", "[[": "]]", "((": "))"}
 
         for i, line in enumerate(diagram.lines):
@@ -623,9 +613,7 @@ class MermaidValidator:
                 if bracket in ["[", "[[", "(", "((", "{"]:
                     line_stack.append(bracket)
                 elif bracket in ["]", "]]", ")", "))", "}"]:
-                    expected_open = {"[": "]", "[[": "]]", "(": ")", "((": "))", "{": "}"}.get(
-                        line_stack[-1] if line_stack else "", ""
-                    )
+                    {"[": "]", "[[": "]]", "(": ")", "((": "))", "{": "}"}.get(line_stack[-1] if line_stack else "", "")
                     if line_stack and bracket_types.get(line_stack[-1]) == bracket:
                         line_stack.pop()
                     elif not line_stack:
@@ -706,11 +694,7 @@ class MermaidValidator:
             line_num = diagram.start_line + i
 
             # Skip empty lines, comments, and diagram declaration
-            if (
-                not stripped
-                or stripped.startswith("%%")
-                or stripped.lower() == "sequencediagram"
-            ):
+            if not stripped or stripped.startswith("%%") or stripped.lower() == "sequencediagram":
                 continue
 
             # Track block openings
@@ -739,15 +723,10 @@ class MermaidValidator:
                     block_stack.pop()
 
             # SEQ_003: Check arrow syntax
-            arrow_pattern = re.compile(
-                r"[A-Za-z0-9_]+\s*(->>|-->>|->|-->|-x|--x|-\)|--\))\s*[A-Za-z0-9_]+"
-            )
+            arrow_pattern = re.compile(r"[A-Za-z0-9_]+\s*(->>|-->>|->|-->|-x|--x|-\)|--\))\s*[A-Za-z0-9_]+")
             if "-" in stripped and not stripped.lower().startswith("note"):
                 # Line looks like it might have an arrow
-                has_participant = (
-                    stripped.lower().startswith("participant")
-                    or stripped.lower().startswith("actor")
-                )
+                has_participant = stripped.lower().startswith("participant") or stripped.lower().startswith("actor")
                 if not has_participant and not any(
                     stripped.lower().startswith(k) for k in block_keywords + ["end", "activate", "deactivate"]
                 ):
@@ -794,7 +773,6 @@ class MermaidValidator:
         """
         issues = []
         has_section = False
-        has_date_format = False
         has_tasks = False
 
         for i, line in enumerate(diagram.lines):
@@ -807,7 +785,6 @@ class MermaidValidator:
 
             # Check for dateFormat
             if stripped.lower().startswith("dateformat"):
-                has_date_format = True
                 # GANTT_001: Validate date format string
                 parts = stripped.split(":", 1) if ":" in stripped else stripped.split(None, 1)
                 if len(parts) < 2 or not parts[1].strip():
@@ -885,7 +862,7 @@ class MermaidValidator:
 
         for i, line in enumerate(diagram.lines):
             stripped = line.strip()
-            line_num = diagram.start_line + i
+            diagram.start_line + i
 
             # Skip empty lines, comments, and diagram declaration
             if not stripped or stripped.startswith("%%") or stripped.lower() == "classdiagram":
@@ -916,7 +893,7 @@ class MermaidValidator:
 
         for i, line in enumerate(diagram.lines):
             stripped = line.strip()
-            line_num = diagram.start_line + i
+            diagram.start_line + i
 
             # Skip empty lines, comments, and diagram declarations
             if not stripped or stripped.startswith("%%"):

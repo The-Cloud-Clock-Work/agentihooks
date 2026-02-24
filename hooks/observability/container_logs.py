@@ -39,9 +39,7 @@ class ContainerLogTailer:
         """
         # Validate runtime
         if runtime not in self.SUPPORTED_RUNTIMES:
-            raise ValueError(
-                f"Invalid runtime '{runtime}'. Must be one of: {', '.join(self.SUPPORTED_RUNTIMES)}"
-            )
+            raise ValueError(f"Invalid runtime '{runtime}'. Must be one of: {', '.join(self.SUPPORTED_RUNTIMES)}")
 
         # Validate target
         if not target:
@@ -57,9 +55,7 @@ class ContainerLogTailer:
             log_group = kwargs.get("log_group")
 
             if not cluster or not log_group:
-                raise ValueError(
-                    "ECS runtime requires both 'cluster' and 'log_group' parameters"
-                )
+                raise ValueError("ECS runtime requires both 'cluster' and 'log_group' parameters")
 
         log(
             "ContainerLogTailer initialized",
@@ -109,9 +105,7 @@ class ContainerLogTailer:
 
         return logs
 
-    def _build_command(
-        self, follow: bool, limit_lines: int, since: Optional[str]
-    ) -> List[str]:
+    def _build_command(self, follow: bool, limit_lines: int, since: Optional[str]) -> List[str]:
         """
         Build the platform-specific command for tailing logs.
 
@@ -132,9 +126,7 @@ class ContainerLogTailer:
         else:
             raise ValueError(f"Unsupported runtime: {self.runtime}")
 
-    def _build_docker_cmd(
-        self, follow: bool, limit_lines: int, since: Optional[str]
-    ) -> List[str]:
+    def _build_docker_cmd(self, follow: bool, limit_lines: int, since: Optional[str]) -> List[str]:
         """Build Docker logs command."""
         cmd = ["docker", "logs", "--tail", str(limit_lines)]
 
@@ -149,9 +141,7 @@ class ContainerLogTailer:
 
         return cmd
 
-    def _build_k8s_cmd(
-        self, follow: bool, limit_lines: int, since: Optional[str]
-    ) -> List[str]:
+    def _build_k8s_cmd(self, follow: bool, limit_lines: int, since: Optional[str]) -> List[str]:
         """Build Kubernetes logs command."""
         namespace = self.kwargs.get("namespace", "default")
         container = self.kwargs.get("container")
@@ -172,9 +162,7 @@ class ContainerLogTailer:
 
         return cmd
 
-    def _build_ecs_cmd(
-        self, follow: bool, limit_lines: int, since: Optional[str]
-    ) -> List[str]:
+    def _build_ecs_cmd(self, follow: bool, limit_lines: int, since: Optional[str]) -> List[str]:
         """
         Build AWS ECS (CloudWatch) logs command.
 
@@ -247,7 +235,6 @@ class ContainerLogTailer:
             return_code = process.wait()
 
             if return_code != 0:
-                error_msg = f"Command failed with exit code {return_code}"
                 log(
                     "Container log tail command failed",
                     {"exit_code": return_code, "command": cmd},
@@ -272,9 +259,7 @@ class ContainerLogTailer:
                 "Container log tail command not found",
                 {"command": cmd[0], "error": str(e)},
             )
-            raise FileNotFoundError(
-                f"Command '{cmd[0]}' not found. Is it installed and in PATH?"
-            )
+            raise FileNotFoundError(f"Command '{cmd[0]}' not found. Is it installed and in PATH?")
 
         except Exception as e:
             log("Container log stream error", {"error": str(e), "command": cmd})

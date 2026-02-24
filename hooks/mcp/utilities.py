@@ -29,16 +29,10 @@ def register(mcp):
             )
 
             if filepath and content:
-                return json.dumps({
-                    "success": False,
-                    "error": "Provide either 'filepath' OR 'content', not both"
-                })
+                return json.dumps({"success": False, "error": "Provide either 'filepath' OR 'content', not both"})
 
             if not filepath and not content:
-                return json.dumps({
-                    "success": False,
-                    "error": "Provide either 'filepath' or 'content' parameter"
-                })
+                return json.dumps({"success": False, "error": "Provide either 'filepath' or 'content' parameter"})
 
             if filepath:
                 result = validate_markdown_file(filepath, strict=strict)
@@ -59,11 +53,10 @@ def register(mcp):
             return json.dumps(response)
 
         except Exception as e:
-            log("MCP validate_mermaid failed", {
-                "filepath": filepath,
-                "content_length": len(content) if content else 0,
-                "error": str(e)
-            })
+            log(
+                "MCP validate_mermaid failed",
+                {"filepath": filepath, "content_length": len(content) if content else 0, "error": str(e)},
+            )
             return json.dumps({"success": False, "error": str(e)})
 
     @mcp.tool()
@@ -83,22 +76,19 @@ def register(mcp):
         """
         try:
             from pathlib import Path
+
             from hooks.integrations.mermaid_validator import validate_mermaid_content
 
             path = Path(filepath)
             if path.suffix.lower() != ".md":
-                return json.dumps({
-                    "success": False,
-                    "error": f"Only .md files allowed, got: '{path.suffix}'"
-                })
+                return json.dumps({"success": False, "error": f"Only .md files allowed, got: '{path.suffix}'"})
 
             resolved = path.resolve()
             allowed_prefixes = ["/app/package", "/tmp"]
             if not any(str(resolved).startswith(p) for p in allowed_prefixes):
-                return json.dumps({
-                    "success": False,
-                    "error": f"Path not allowed. Must be under: {allowed_prefixes}. Got: {resolved}"
-                })
+                return json.dumps(
+                    {"success": False, "error": f"Path not allowed. Must be under: {allowed_prefixes}. Got: {resolved}"}
+                )
 
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
@@ -113,20 +103,25 @@ def register(mcp):
                     "issues": [issue.to_dict() for issue in result.issues],
                 }
 
-            log("MCP write_markdown completed", {
-                "filepath": str(path),
-                "bytes_written": bytes_written,
-                "mermaid_valid": mermaid_result["valid"] if mermaid_result else "skipped",
-                "mermaid_diagram_count": mermaid_result["diagram_count"] if mermaid_result else 0,
-                "mermaid_issues_count": len(mermaid_result["issues"]) if mermaid_result else 0,
-            })
+            log(
+                "MCP write_markdown completed",
+                {
+                    "filepath": str(path),
+                    "bytes_written": bytes_written,
+                    "mermaid_valid": mermaid_result["valid"] if mermaid_result else "skipped",
+                    "mermaid_diagram_count": mermaid_result["diagram_count"] if mermaid_result else 0,
+                    "mermaid_issues_count": len(mermaid_result["issues"]) if mermaid_result else 0,
+                },
+            )
 
-            return json.dumps({
-                "success": True,
-                "filepath": str(path),
-                "bytes_written": bytes_written,
-                "mermaid_validation": mermaid_result,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "filepath": str(path),
+                    "bytes_written": bytes_written,
+                    "mermaid_validation": mermaid_result,
+                }
+            )
 
         except Exception as e:
             log("MCP write_markdown failed", {"filepath": filepath, "error": str(e)})
@@ -150,19 +145,18 @@ def register(mcp):
 
             if filter:
                 filter_lower = filter.lower()
-                filtered_vars = {
-                    k: v for k, v in env_vars.items()
-                    if filter_lower in k.lower()
-                }
+                filtered_vars = {k: v for k, v in env_vars.items() if filter_lower in k.lower()}
             else:
                 filtered_vars = env_vars
 
-            return json.dumps({
-                "success": True,
-                "filter": filter if filter else None,
-                "count": len(filtered_vars),
-                "variables": filtered_vars,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "filter": filter if filter else None,
+                    "count": len(filtered_vars),
+                    "variables": filtered_vars,
+                }
+            )
 
         except Exception as e:
             log("MCP get_env failed", {"filter": filter, "error": str(e)})
@@ -259,9 +253,11 @@ def register(mcp):
 
         total = sum(len(t) for t in active.values())
 
-        return json.dumps({
-            "success": True,
-            "total_tools": total,
-            "available_categories": list(CATEGORY_MODULES.keys()),
-            "categories": active,
-        })
+        return json.dumps(
+            {
+                "success": True,
+                "total_tools": total,
+                "available_categories": list(CATEGORY_MODULES.keys()),
+                "categories": active,
+            }
+        )

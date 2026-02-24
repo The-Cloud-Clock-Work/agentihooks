@@ -33,7 +33,7 @@ from abc import ABC
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
 # Add parent directories to path for direct script execution
 _script_dir = Path(__file__).resolve().parent
@@ -229,9 +229,7 @@ class IntegrationBase(ABC):
                 "status": "misconfigured",
                 "missing_required": status.missing_required,
                 "missing_optional": status.missing_optional,
-                "required_vars": {
-                    name: desc for name, desc in self.REQUIRED_ENV_VARS.items()
-                },
+                "required_vars": {name: desc for name, desc in self.REQUIRED_ENV_VARS.items()},
             }
 
         # Log to agent log (hooks.log)
@@ -242,9 +240,7 @@ class IntegrationBase(ABC):
         if status.is_configured:
             log_func(f"{self.INTEGRATION_NAME}: configured")
         else:
-            log_func(
-                f"{self.INTEGRATION_NAME}: MISSING ENV VARS: {', '.join(status.missing_required)}"
-            )
+            log_func(f"{self.INTEGRATION_NAME}: MISSING ENV VARS: {', '.join(status.missing_required)}")
 
     def check(self) -> ConfigStatus:
         """Validate configuration and log status. Returns ConfigStatus."""
@@ -265,9 +261,9 @@ class IntegrationBase(ABC):
             return
 
         # Human-readable format
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"  {self.INTEGRATION_NAME.upper()} CONFIGURATION STATUS")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         status_icon = "✓" if status.is_configured else "✗"
         status_text = "CONFIGURED" if status.is_configured else "NOT CONFIGURED"
@@ -300,7 +296,7 @@ class IntegrationBase(ABC):
                 print(f"    ✓ {var.name} {req}")
             print()
 
-        print(f"{'='*60}\n")
+        print(f"{'=' * 60}\n")
 
 
 # =============================================================================
@@ -343,9 +339,9 @@ class IntegrationRegistry:
         results = {}
 
         if print_output:
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print("  INTEGRATION CONFIGURATION CHECK")
-            print(f"{'='*60}\n")
+            print(f"{'=' * 60}\n")
 
         for name, integration_class in cls._integrations.items():
             try:
@@ -366,7 +362,7 @@ class IntegrationRegistry:
                     print(f"  ! {name}: ERROR - {e}")
 
         if print_output:
-            print(f"\n{'='*60}\n")
+            print(f"\n{'=' * 60}\n")
 
         return results
 
@@ -395,19 +391,17 @@ def main():
         if as_json:
             # Import all integrations to register them
             try:
-                from hooks.integrations import sqs, mailer
+                from hooks.integrations import mailer, sqs
             except ImportError:
                 pass
 
             results = IntegrationRegistry.check_all(print_output=False)
-            output = {
-                name: status.to_dict() for name, status in results.items()
-            }
+            output = {name: status.to_dict() for name, status in results.items()}
             print(json.dumps(output, indent=2))
         else:
             # Import all integrations to register them
             try:
-                from hooks.integrations import sqs, mailer
+                from hooks.integrations import mailer, sqs  # noqa: F401
             except ImportError:
                 pass
 

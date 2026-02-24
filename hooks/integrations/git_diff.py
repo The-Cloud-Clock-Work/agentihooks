@@ -1,4 +1,5 @@
 """Git diff summary for a repository."""
+
 import subprocess
 
 
@@ -15,12 +16,7 @@ def get_git_summary(repo_path: str, num_commits: int = 10) -> str:
     """
     try:
         # Get commit log
-        log_cmd = [
-            "git", "-C", repo_path, "log",
-            f"-{num_commits}",
-            "--pretty=format:%h | %ad | %s",
-            "--date=short"
-        ]
+        log_cmd = ["git", "-C", repo_path, "log", f"-{num_commits}", "--pretty=format:%h | %ad | %s", "--date=short"]
         log_result = subprocess.run(log_cmd, capture_output=True, text=True, timeout=30)
 
         if log_result.returncode != 0:
@@ -29,11 +25,7 @@ def get_git_summary(repo_path: str, num_commits: int = 10) -> str:
         commits = log_result.stdout.strip()
 
         # Get diff stats for those commits
-        stats_cmd = [
-            "git", "-C", repo_path, "diff",
-            "--stat",
-            f"HEAD~{num_commits}..HEAD"
-        ]
+        stats_cmd = ["git", "-C", repo_path, "diff", "--stat", f"HEAD~{num_commits}..HEAD"]
         stats_result = subprocess.run(stats_cmd, capture_output=True, text=True, timeout=30)
         stats = stats_result.stdout.strip() if stats_result.returncode == 0 else ""
 

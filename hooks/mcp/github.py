@@ -49,11 +49,13 @@ def register(mcp):
 
             token = GitHubAuth.get_token(force_refresh=force_refresh)
 
-            return json.dumps({
-                "success": True,
-                "token": token,
-                "expires_at": GitHubAuth._token_expires_at.isoformat() if GitHubAuth._token_expires_at else None,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "token": token,
+                    "expires_at": GitHubAuth._token_expires_at.isoformat() if GitHubAuth._token_expires_at else None,
+                }
+            )
 
         except Exception as e:
             log("MCP github_get_token failed", {"error": str(e)})
@@ -81,16 +83,18 @@ def register(mcp):
             JSON with path, status (cloned/updated), and repo_name
         """
         try:
-            from hooks.integrations.github import clone_repo, GitHubAuth
+            from hooks.integrations.github import GitHubAuth, clone_repo
 
             GitHubAuth.get_token()
 
             is_valid, error_msg = _validate_clone_target_dir(target_dir)
             if not is_valid:
-                return json.dumps({
-                    "success": False,
-                    "error": f"{error_msg}. Example: /tmp/550e8400-e29b-41d4-a716-446655440000/my-repo"
-                })
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": f"{error_msg}. Example: /tmp/550e8400-e29b-41d4-a716-446655440000/my-repo",
+                    }
+                )
 
             result = clone_repo(
                 url=url,
@@ -98,12 +102,14 @@ def register(mcp):
                 depth=depth,
             )
 
-            return json.dumps({
-                "success": True,
-                "path": result.path,
-                "status": result.status,
-                "repo_name": result.repo_name,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "path": result.path,
+                    "status": result.status,
+                    "repo_name": result.repo_name,
+                }
+            )
 
         except Exception as e:
             log("MCP github_clone_repo failed", {"url": url, "error": str(e)})
@@ -134,7 +140,7 @@ def register(mcp):
             JSON with PR url, branch, title, and repo
         """
         try:
-            from hooks.integrations.github import create_pr, GitHubAuth
+            from hooks.integrations.github import GitHubAuth, create_pr
 
             GitHubAuth.get_token()
 
@@ -154,13 +160,15 @@ def register(mcp):
                 commit_message=commit_message if commit_message else None,
             )
 
-            return json.dumps({
-                "success": True,
-                "url": result.url,
-                "branch": result.branch,
-                "title": result.title,
-                "repo": result.repo,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "url": result.url,
+                    "branch": result.branch,
+                    "title": result.title,
+                    "repo": result.repo,
+                }
+            )
 
         except Exception as e:
             log("MCP github_create_pr failed", {"repo_path": repo_path, "error": str(e)})
@@ -183,12 +191,14 @@ def register(mcp):
 
             info = GitOperations.parse_repo_url(url)
 
-            return json.dumps({
-                "success": True,
-                "org": info.org,
-                "name": info.name,
-                "full_name": info.full_name,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "org": info.org,
+                    "name": info.name,
+                    "full_name": info.full_name,
+                }
+            )
 
         except Exception as e:
             log("MCP github_get_repo_info failed", {"url": url, "error": str(e)})

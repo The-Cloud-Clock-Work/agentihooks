@@ -127,6 +127,7 @@ def _is_error(tool_result, strict=False):
 # File I/O
 # ---------------------------------------------------------------------------
 
+
 def _read_entries():
     """Read all NDJSON entries from memory file."""
     if not MEMORY_PATH.exists():
@@ -195,6 +196,7 @@ def _append_entries(new_entries):
 # Input summary extraction
 # ---------------------------------------------------------------------------
 
+
 def _extract_input_summary(tool_input):
     """Extract a compact input summary from tool_input dict."""
     if isinstance(tool_input, dict):
@@ -210,6 +212,7 @@ def _extract_input_summary(tool_input):
 # ---------------------------------------------------------------------------
 # Transcript scanning
 # ---------------------------------------------------------------------------
+
 
 def _scan_transcript_for_errors(transcript_path, session_id=""):
     """Scan transcript JSONL for tool errors. Returns list of memory entries."""
@@ -308,16 +311,17 @@ def _scan_transcript_for_errors(transcript_path, session_id=""):
                         tool_name = tool_info.get("tool_name", "unknown")
                         tool_input = tool_info.get("tool_input", {})
 
-                        ts = entry.get("timestamp",
-                                       datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+                        ts = entry.get("timestamp", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 
-                        new_entries.append({
-                            "ts": ts[:19] + "Z" if len(ts) > 19 else ts,
-                            "tool": tool_name,
-                            "error": error_text.strip()[:200],
-                            "input": _extract_input_summary(tool_input),
-                            "session": session_id,
-                        })
+                        new_entries.append(
+                            {
+                                "ts": ts[:19] + "Z" if len(ts) > 19 else ts,
+                                "tool": tool_name,
+                                "error": error_text.strip()[:200],
+                                "input": _extract_input_summary(tool_input),
+                                "session": session_id,
+                            }
+                        )
 
     except Exception:
         pass
@@ -328,6 +332,7 @@ def _scan_transcript_for_errors(transcript_path, session_id=""):
 # ---------------------------------------------------------------------------
 # Public API (called from hook_manager.py)
 # ---------------------------------------------------------------------------
+
 
 def _seen_tools_path(session_id):
     """Return path to session-scoped file tracking which tools have been shown memory."""
@@ -398,6 +403,7 @@ def inject_memory(tool_name="", session_id=""):
     # Use inject_banner from common.py — same pattern as all other hooks
     # This prints to STDOUT (Claude sees it) AND logs to hooks.log for debugging
     from hooks.common import inject_banner
+
     inject_banner("TOOL MEMORY: Lessons from past sessions", "\n".join(lines))
 
     # Mark as seen so we don't inject again for this tool in this session

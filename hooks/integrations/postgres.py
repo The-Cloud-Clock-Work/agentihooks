@@ -44,7 +44,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 # Add parent directories to path for direct script execution
 _script_dir = Path(__file__).resolve().parent
@@ -61,9 +61,8 @@ except ImportError:
     PSYCOPG2_AVAILABLE = False
     Json = None  # type: ignore
 
-from hooks.common import log, get_correlation_id
+from hooks.common import get_correlation_id, log
 from hooks.integrations.base import IntegrationBase, IntegrationRegistry
-
 
 # =============================================================================
 # INTEGRATION DEFINITION
@@ -666,9 +665,9 @@ def main():
                 error_msg = f"PostgreSQL hook SKIPPED - missing env vars: {missing}"
                 log(error_msg, {"integration": "postgres", "missing": missing})
                 # Print to STDOUT so Claude Code shows it
-                print(f"\n{'='*60}")
+                print(f"\n{'=' * 60}")
                 print(f"[POSTGRES] ERROR: {error_msg}")
-                print(f"{'='*60}\n")
+                print(f"{'=' * 60}\n")
                 sys.exit(0)  # Exit cleanly but warn
 
             # Parse --table flag

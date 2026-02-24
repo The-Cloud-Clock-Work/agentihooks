@@ -301,9 +301,7 @@ def get_aws_profiles(config_path: Optional[str] = None) -> List[str]:
     return AWSConfigParser.get_parser(config_path).get_profiles()
 
 
-def get_aws_account_id(
-    profile: str, config_path: Optional[str] = None
-) -> Optional[str]:
+def get_aws_account_id(profile: str, config_path: Optional[str] = None) -> Optional[str]:
     """
     Get account ID for a specific profile.
 

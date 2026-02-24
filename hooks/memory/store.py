@@ -8,7 +8,7 @@ when Redis is unavailable (same pattern as session_registry.py).
 import json
 import os
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import time
 from typing import List, Optional
@@ -21,7 +21,7 @@ class Memory:
     summary: str
     tags: List[str]
     session_id: str
-    source: str          # "manual" | "auto" | "transcript"
+    source: str  # "manual" | "auto" | "transcript"
     agent: str
     created_at: float
 
@@ -66,6 +66,7 @@ class MemoryStore:
         self._redis_checked = True
         try:
             from hooks._redis import get_redis
+
             self._redis = get_redis()
         except Exception:
             self._redis = None
@@ -161,16 +162,19 @@ class MemoryStore:
     def _redis_save(self, r, mem: Memory) -> None:
         pipe = r.pipeline()
         hash_key = _rkey(mem.id)
-        pipe.hset(hash_key, mapping={
-            "id": mem.id,
-            "content": mem.content,
-            "summary": mem.summary,
-            "tags": json.dumps(mem.tags),
-            "session_id": mem.session_id,
-            "source": mem.source,
-            "agent": mem.agent,
-            "created_at": str(mem.created_at),
-        })
+        pipe.hset(
+            hash_key,
+            mapping={
+                "id": mem.id,
+                "content": mem.content,
+                "summary": mem.summary,
+                "tags": json.dumps(mem.tags),
+                "session_id": mem.session_id,
+                "source": mem.source,
+                "agent": mem.agent,
+                "created_at": str(mem.created_at),
+            },
+        )
         pipe.zadd(_rkey("idx:all"), {mem.id: mem.created_at})
         for tag in mem.tags:
             pipe.zadd(_rkey(f"idx:tag:{tag}"), {mem.id: mem.created_at})
@@ -317,7 +321,9 @@ class MemoryStore:
         entries = self._file_read_all()
         results = []
         for entry in reversed(entries):  # newest first
-            searchable = f"{entry.get('content', '')} {entry.get('summary', '')} {json.dumps(entry.get('tags', []))}".lower()
+            searchable = (
+                f"{entry.get('content', '')} {entry.get('summary', '')} {json.dumps(entry.get('tags', []))}".lower()
+            )
             if query_lower not in searchable:
                 continue
             if tags and not set(tags).issubset(set(entry.get("tags", []))):
@@ -368,5 +374,5 @@ class MemoryStore:
     def _file_list(self, limit: int, offset: int) -> List[Memory]:
         entries = self._file_read_all()
         entries.sort(key=lambda e: float(e.get("created_at", 0)), reverse=True)
-        sliced = entries[offset:offset + limit]
+        sliced = entries[offset : offset + limit]
         return [Memory.from_dict(e) for e in sliced]

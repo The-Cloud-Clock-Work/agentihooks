@@ -14,14 +14,13 @@ Usage::
 """
 
 import os
-from typing import Optional
 
 # Lazy singleton
 _redis_client = None
 _redis_checked = False
 
 # TTLs from environment (matching agenticore settings defaults)
-SESSION_TTL: int = int(os.getenv("REDIS_SESSION_TTL", "86400"))   # 24h
+SESSION_TTL: int = int(os.getenv("REDIS_SESSION_TTL", "86400"))  # 24h
 POSITION_TTL: int = int(os.getenv("REDIS_POSITION_TTL", "3600"))  # 1h
 _KEY_PREFIX: str = os.getenv("REDIS_KEY_PREFIX", "agenticore")
 

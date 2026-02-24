@@ -83,7 +83,6 @@ def build_mcp_json(mcp_categories: str) -> dict:
 
 def build_profile(profile_dir: Path, base_settings: dict) -> None:
     """Build artifacts for a single profile."""
-    profile_name = profile_dir.name
     profile_yml = profile_dir / "profile.yml"
 
     if not profile_yml.exists():
@@ -121,10 +120,7 @@ def main() -> None:
     print(f"Base settings loaded: {BASE_SETTINGS.relative_to(PROFILES_DIR.parent)}")
     print()
 
-    profile_dirs = sorted(
-        d for d in PROFILES_DIR.iterdir()
-        if d.is_dir() and not d.name.startswith("_")
-    )
+    profile_dirs = sorted(d for d in PROFILES_DIR.iterdir() if d.is_dir() and not d.name.startswith("_"))
 
     if not profile_dirs:
         print("No profiles found.")

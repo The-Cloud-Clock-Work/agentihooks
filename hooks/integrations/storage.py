@@ -41,7 +41,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional
 
 # Add parent directories to path for direct script execution
 _script_dir = Path(__file__).resolve().parent
@@ -51,11 +51,12 @@ if str(_app_dir) not in sys.path:
 
 try:
     import boto3
+
     BOTO3_AVAILABLE = True
 except ImportError:
     BOTO3_AVAILABLE = False
 
-from hooks.common import log, get_correlation_id
+from hooks.common import get_correlation_id, log
 from hooks.integrations.base import IntegrationBase, IntegrationRegistry
 
 # State file for session metadata enrichment
@@ -86,6 +87,7 @@ class StorageIntegration(IntegrationBase):
 # STATE LOADING (for metadata enrichment)
 # =============================================================================
 
+
 def load_state_for_session(
     session_id: str,
     state_file: Path = DEFAULT_STATE_FILE,
@@ -111,20 +113,26 @@ def load_state_for_session(
         # Use correlation ID (external UUID) for lookup - API stores state under this key
         correlation_id = get_correlation_id(session_id)
 
-        log("Session ID mapping for state lookup", {
-            "claude_session_id": session_id,
-            "correlation_id": correlation_id,
-            "same": session_id == correlation_id,
-        })
+        log(
+            "Session ID mapping for state lookup",
+            {
+                "claude_session_id": session_id,
+                "correlation_id": correlation_id,
+                "same": session_id == correlation_id,
+            },
+        )
 
         mappings = json.loads(state_file.read_text())
         state = mappings.get(correlation_id)
 
         if state:
-            log("Loaded session state", {
-                "correlation_id": correlation_id,
-                "fields": list(state.keys()),
-            })
+            log(
+                "Loaded session state",
+                {
+                    "correlation_id": correlation_id,
+                    "fields": list(state.keys()),
+                },
+            )
         else:
             log("Session not found in state file", {"correlation_id": correlation_id})
 
@@ -173,9 +181,11 @@ def state_to_s3_metadata(state: Optional[Dict[str, Any]]) -> Dict[str, str]:
 # DATA CLASSES
 # =============================================================================
 
+
 @dataclass
 class UploadResult:
     """Result of S3 upload operation."""
+
     success: bool
     files_uploaded: int = 0
     storage_url: Optional[str] = None
@@ -183,9 +193,11 @@ class UploadResult:
     prefix: Optional[str] = None
     error: Optional[str] = None
 
+
 # =============================================================================
 # S3 CLIENT
 # =============================================================================
+
 
 class S3StorageClient:
     """AWS S3 storage client using boto3."""
@@ -231,10 +243,13 @@ class S3StorageClient:
         self._bucket = parts[0]
         self._base_prefix = parts[1] if len(parts) > 1 else ""
 
-        log("Parsed STORAGE_URL", {
-            "bucket": self._bucket,
-            "base_prefix": self._base_prefix,
-        })
+        log(
+            "Parsed STORAGE_URL",
+            {
+                "bucket": self._bucket,
+                "base_prefix": self._base_prefix,
+            },
+        )
 
     @classmethod
     def get_client(
@@ -343,14 +358,17 @@ class S3StorageClient:
 
             s3_prefix = "/".join(key_parts)
 
-            log("Starting S3 upload", {
-                "session_id": session_id,
-                "local_path": str(local_path),
-                "bucket": self._bucket,
-                "s3_prefix": s3_prefix,
-                "match_uuid": match_uuid,
-                "has_metadata": bool(metadata),
-            })
+            log(
+                "Starting S3 upload",
+                {
+                    "session_id": session_id,
+                    "local_path": str(local_path),
+                    "bucket": self._bucket,
+                    "s3_prefix": s3_prefix,
+                    "match_uuid": match_uuid,
+                    "has_metadata": bool(metadata),
+                },
+            )
 
             # Upload based on path type
             if local_path.is_file():
@@ -373,11 +391,14 @@ class S3StorageClient:
                     error=error_msg,
                 )
 
-            log("S3 upload succeeded", {
-                "files_uploaded": files_uploaded,
-                "session_id": session_id,
-                "s3_prefix": s3_prefix,
-            })
+            log(
+                "S3 upload succeeded",
+                {
+                    "files_uploaded": files_uploaded,
+                    "session_id": session_id,
+                    "s3_prefix": s3_prefix,
+                },
+            )
 
             return UploadResult(
                 success=True,
@@ -390,11 +411,14 @@ class S3StorageClient:
         except Exception as e:
             # Silent failure - log but don't raise
             error_msg = str(e)
-            log("S3 upload failed", {
-                "error": error_msg,
-                "session_id": session_id,
-                "path": path,
-            })
+            log(
+                "S3 upload failed",
+                {
+                    "error": error_msg,
+                    "session_id": session_id,
+                    "path": path,
+                },
+            )
 
             return UploadResult(
                 success=False,
@@ -435,12 +459,15 @@ class S3StorageClient:
         # S3 key: prefix/filename
         s3_key = f"{s3_prefix}/{file_path.name}"
 
-        log("Uploading file", {
-            "file": str(file_path),
-            "s3_key": s3_key,
-            "size_bytes": file_path.stat().st_size,
-            "has_metadata": bool(metadata),
-        })
+        log(
+            "Uploading file",
+            {
+                "file": str(file_path),
+                "s3_key": s3_key,
+                "size_bytes": file_path.stat().st_size,
+                "has_metadata": bool(metadata),
+            },
+        )
 
         put_params = {
             "Bucket": self._bucket,
@@ -499,12 +526,15 @@ class S3StorageClient:
             # S3 key: prefix/relative/path/to/file
             s3_key = f"{s3_prefix}/{relative_path}".replace("\\", "/")  # Handle Windows paths
 
-            log("Uploading file", {
-                "file": str(file_path),
-                "s3_key": s3_key,
-                "size_bytes": file_path.stat().st_size,
-                "has_metadata": bool(metadata),
-            })
+            log(
+                "Uploading file",
+                {
+                    "file": str(file_path),
+                    "s3_key": s3_key,
+                    "size_bytes": file_path.stat().st_size,
+                    "has_metadata": bool(metadata),
+                },
+            )
 
             try:
                 put_params = {
@@ -523,23 +553,31 @@ class S3StorageClient:
                 files_uploaded += 1
                 log("File uploaded", {"s3_key": s3_key, "metadata_fields": list(metadata.keys()) if metadata else []})
             except Exception as e:
-                log("File upload failed", {
-                    "file": str(file_path),
-                    "error": str(e),
-                })
+                log(
+                    "File upload failed",
+                    {
+                        "file": str(file_path),
+                        "error": str(e),
+                    },
+                )
 
         if files_skipped > 0:
-            log("UUID filtering summary", {
-                "files_uploaded": files_uploaded,
-                "files_skipped": files_skipped,
-                "session_id": session_id,
-            })
+            log(
+                "UUID filtering summary",
+                {
+                    "files_uploaded": files_uploaded,
+                    "files_skipped": files_skipped,
+                    "session_id": session_id,
+                },
+            )
 
         return files_uploaded
+
 
 # =============================================================================
 # CONVENIENCE FUNCTIONS
 # =============================================================================
+
 
 def upload_path(
     session_id: str,
@@ -590,9 +628,11 @@ def upload_path(
     client = S3StorageClient.get_client(storage_url=storage_url)
     return client.upload_path(session_id, path, prefix, match_uuid, metadata)
 
+
 # =============================================================================
 # CLI INTERFACE
 # =============================================================================
+
 
 def main():
     """CLI entry point for S3 storage operations."""
@@ -624,23 +664,31 @@ def main():
         print("  /app/hooks/integrations/storage.py check")
         print("")
         print("  # As Claude Code hook")
-        print('  /app/hooks/integrations/storage.py hook --path /app/transcript.jsonl --prefix transcripts < stop_event.json')
+        print(
+            "  /app/hooks/integrations/storage.py hook --path /app/transcript.jsonl --prefix transcripts < stop_event.json"
+        )
         print("")
         print("  # As hook with metadata enrichment (attaches conversation_id, platform to S3 objects)")
-        print('  /app/hooks/integrations/storage.py hook --path /app/artifacts --prefix diagrams --match-uuid --enrich < stop_event.json')
+        print(
+            "  /app/hooks/integrations/storage.py hook --path /app/artifacts --prefix diagrams --match-uuid --enrich < stop_event.json"
+        )
         print("")
         print("  # Test mode (no actual upload)")
-        print('  /app/hooks/integrations/storage.py hook --demo')
+        print("  /app/hooks/integrations/storage.py hook --demo")
         print("")
         print("  # As hook with UUID matching (only upload files with UUID in name)")
-        print('  /app/hooks/integrations/storage.py hook --path /app/outputs --prefix results --match-uuid < stop_event.json')
+        print(
+            "  /app/hooks/integrations/storage.py hook --path /app/outputs --prefix results --match-uuid < stop_event.json"
+        )
         print("")
         print("  # Direct upload")
         print('  export STORAGE_URL="s3://my-bucket/agents"')
-        print('  /app/hooks/integrations/storage.py upload uuid-123 --path /file.txt --prefix logs')
+        print("  /app/hooks/integrations/storage.py upload uuid-123 --path /file.txt --prefix logs")
         print("")
         print("  # Direct upload with UUID matching and metadata enrichment")
-        print('  /app/hooks/integrations/storage.py upload abc-uuid-123 --path /app/outputs --prefix logs --match-uuid --enrich')
+        print(
+            "  /app/hooks/integrations/storage.py upload abc-uuid-123 --path /app/outputs --prefix logs --match-uuid --enrich"
+        )
         sys.exit(1)
 
     command = sys.argv[1]
@@ -667,9 +715,9 @@ def main():
                 error_msg = f"Storage hook SKIPPED - missing env vars: {missing}"
                 log(error_msg, {"integration": "storage", "missing": missing})
                 # Print to STDOUT so Claude Code shows it
-                print(f"\n{'='*60}")
+                print(f"\n{'=' * 60}")
                 print(f"[STORAGE] ERROR: {error_msg}")
-                print(f"{'='*60}\n")
+                print(f"{'=' * 60}\n")
                 sys.exit(0)  # Exit cleanly but warn
 
             # Parse flags
@@ -699,10 +747,14 @@ def main():
                     i += 1
 
             if not path:
-                print(json.dumps({
-                    "success": False,
-                    "error": "--path flag is required",
-                }))
+                print(
+                    json.dumps(
+                        {
+                            "success": False,
+                            "error": "--path flag is required",
+                        }
+                    )
+                )
                 sys.exit(1)
 
             # Read Stop event from stdin
@@ -710,38 +762,52 @@ def main():
             session_id = payload.get("session_id", "")
 
             if not session_id:
-                print(json.dumps({
-                    "success": False,
-                    "error": "session_id not found in hook payload",
-                }))
+                print(
+                    json.dumps(
+                        {
+                            "success": False,
+                            "error": "session_id not found in hook payload",
+                        }
+                    )
+                )
                 sys.exit(1)
 
             # Upload (with optional metadata enrichment)
             result = upload_path(session_id, path, prefix, match_uuid=match_uuid, enrich=enrich)
 
-            print(json.dumps({
-                "success": result.success,
-                "files_uploaded": result.files_uploaded,
-                "session_id": result.session_id,
-                "prefix": result.prefix,
-                "storage_url": result.storage_url,
-                "error": result.error,
-            }))
+            print(
+                json.dumps(
+                    {
+                        "success": result.success,
+                        "files_uploaded": result.files_uploaded,
+                        "session_id": result.session_id,
+                        "prefix": result.prefix,
+                        "storage_url": result.storage_url,
+                        "error": result.error,
+                    }
+                )
+            )
 
             sys.exit(0 if result.success else 1)
 
         except Exception as e:
             # Silent failure for hooks
-            print(json.dumps({
-                "success": False,
-                "error": str(e),
-            }))
+            print(
+                json.dumps(
+                    {
+                        "success": False,
+                        "error": str(e),
+                    }
+                )
+            )
             sys.exit(0)  # Exit 0 to not break Claude Code
 
     elif command == "upload":
         if len(sys.argv) < 3:
             print("Error: Missing session_id")
-            print("Usage: /app/hooks/integrations/storage.py upload <session_id> --path <path> --prefix <prefix> [--enrich]")
+            print(
+                "Usage: /app/hooks/integrations/storage.py upload <session_id> --path <path> --prefix <prefix> [--enrich]"
+            )
             sys.exit(1)
 
         session_id = sys.argv[2]
@@ -770,37 +836,50 @@ def main():
                 i += 1
 
         if not path:
-            print(json.dumps({
-                "success": False,
-                "error": "--path flag is required",
-            }))
+            print(
+                json.dumps(
+                    {
+                        "success": False,
+                        "error": "--path flag is required",
+                    }
+                )
+            )
             sys.exit(1)
 
         try:
             result = upload_path(session_id, path, prefix, match_uuid=match_uuid, enrich=enrich)
 
-            print(json.dumps({
-                "success": result.success,
-                "files_uploaded": result.files_uploaded,
-                "session_id": result.session_id,
-                "prefix": result.prefix,
-                "storage_url": result.storage_url,
-                "error": result.error,
-            }))
+            print(
+                json.dumps(
+                    {
+                        "success": result.success,
+                        "files_uploaded": result.files_uploaded,
+                        "session_id": result.session_id,
+                        "prefix": result.prefix,
+                        "storage_url": result.storage_url,
+                        "error": result.error,
+                    }
+                )
+            )
 
             sys.exit(0 if result.success else 1)
 
         except Exception as e:
-            print(json.dumps({
-                "success": False,
-                "error": str(e),
-            }))
+            print(
+                json.dumps(
+                    {
+                        "success": False,
+                        "error": str(e),
+                    }
+                )
+            )
             sys.exit(1)
 
     else:
         print(f"Error: Unknown command '{command}'")
         print("Usage: /app/hooks/integrations/storage.py <command> [args]")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

@@ -38,14 +38,13 @@ Usage:
 
 import os
 import uuid as uuid_lib
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import httpx
 
 from hooks.common import log
-
 
 # =============================================================================
 # CONFIGURATION (override via env vars)
@@ -214,10 +213,13 @@ class CompletionsClient:
 
         except httpx.HTTPStatusError as e:
             error_msg = f"HTTP {e.response.status_code}: {str(e)}"
-            log("CompletionsClient HTTP error", {
-                "status": e.response.status_code,
-                "error": str(e),
-            })
+            log(
+                "CompletionsClient HTTP error",
+                {
+                    "status": e.response.status_code,
+                    "error": str(e),
+                },
+            )
             return CompletionResult(success=False, error=error_msg)
 
         except httpx.TimeoutException as e:

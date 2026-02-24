@@ -31,6 +31,7 @@ def auto_save_session(session_id: str, transcript_path: str) -> None:
             return
 
         from hooks.memory.store import MemoryStore
+
         store = MemoryStore()
         store.save(
             content=digest,

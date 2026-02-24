@@ -21,124 +21,119 @@ Integration Configuration:
         results = check_all_integrations()  # Returns dict of ConfigStatus
 """
 
+from hooks.integrations.aws import (
+    AWSAccount,
+    AWSConfigParser,
+    find_aws_account,
+    get_all_aws_accounts,
+    get_aws_account_id,
+    get_aws_profiles,
+)
 from hooks.integrations.base import (
-    IntegrationBase,
-    IntegrationRegistry,
     ConfigStatus,
     EnvVarStatus,
+    IntegrationBase,
+    IntegrationRegistry,
 )
-
-from hooks.integrations.github import (
-    GitHubAuth,
-    GitOperations,
-    requires_github_token,
-    get_github_token,
-    embed_token_in_url,
-    clone_repo,
-    create_pr,
+from hooks.integrations.completions import (
+    CompletionResult,
+    CompletionsClient,
+    call_completions,
 )
-
 from hooks.integrations.confluence import (
     ConfluenceClient,
     PageInfo,
 )
-
-from hooks.integrations.aws import (
-    AWSConfigParser,
-    AWSAccount,
-    get_aws_profiles,
-    get_aws_account_id,
-    get_all_aws_accounts,
-    find_aws_account,
+from hooks.integrations.dynamodb import (
+    DynamoDBClient,
+    DynamoDBIntegration,
+    DynamoDBResult,
 )
-
-from hooks.integrations.mailer import (
-    EmailClient,
-    EmailResult,
-    EmailConfig,
-    EmailIntegration,
-    send_email,
-    send_markdown_file,
-    send_from_config,
-    load_email_config,
-    load_html_template,
-    scan_for_config_files,
-    markdown_to_html,
-    wrap_html_body,
-    parse_recipients,
+from hooks.integrations.dynamodb import (
+    put_item as dynamodb_put_item,
 )
-
+from hooks.integrations.file_system import (
+    DeleteResult,
+    delete,
+    delete_context_dir,
+    get_context_dir,
+    set_context_dir,
+)
 from hooks.integrations.git_diff import (
     get_git_summary,
 )
-
-from hooks.integrations.completions import (
-    CompletionsClient,
-    CompletionResult,
-    call_completions,
+from hooks.integrations.github import (
+    GitHubAuth,
+    GitOperations,
+    clone_repo,
+    create_pr,
+    embed_token_in_url,
+    get_github_token,
+    requires_github_token,
 )
-
+from hooks.integrations.lambda_invoke import (
+    LambdaClient,
+    LambdaIntegration,
+    LambdaResult,
+)
+from hooks.integrations.lambda_invoke import (
+    invoke as lambda_invoke,
+)
+from hooks.integrations.mailer import (
+    EmailClient,
+    EmailConfig,
+    EmailIntegration,
+    EmailResult,
+    load_email_config,
+    load_html_template,
+    markdown_to_html,
+    parse_recipients,
+    scan_for_config_files,
+    send_email,
+    send_from_config,
+    send_markdown_file,
+    wrap_html_body,
+)
+from hooks.integrations.mermaid_validator import (
+    DiagramInfo,
+    MermaidValidator,
+    ValidationIssue,
+    ValidationResult,
+    validate_markdown_file,
+    validate_mermaid_content,
+)
+from hooks.integrations.postgres import (
+    PostgresClient,
+    PostgresIntegration,
+    PostgresResult,
+)
+from hooks.integrations.postgres import (
+    execute as postgres_execute,
+)
+from hooks.integrations.postgres import (
+    insert as postgres_insert,
+)
 from hooks.integrations.sqs import (
     SQSClient,
-    SQSResult,
     SQSIntegration,
-    send_message,
+    SQSResult,
     load_state,
+    send_message,
 )
-
 from hooks.integrations.storage import (
     S3StorageClient,
     StorageIntegration,
     UploadResult,
     upload_path,
 )
-
 from hooks.integrations.webhook import (
     HTTPClient,
-    HTTPResult,
     HTTPIntegration,
+    HTTPResult,
+)
+from hooks.integrations.webhook import (
     send as http_send,
 )
-
-from hooks.integrations.lambda_invoke import (
-    LambdaClient,
-    LambdaResult,
-    LambdaIntegration,
-    invoke as lambda_invoke,
-)
-
-from hooks.integrations.dynamodb import (
-    DynamoDBClient,
-    DynamoDBResult,
-    DynamoDBIntegration,
-    put_item as dynamodb_put_item,
-)
-
-from hooks.integrations.postgres import (
-    PostgresClient,
-    PostgresResult,
-    PostgresIntegration,
-    insert as postgres_insert,
-    execute as postgres_execute,
-)
-
-from hooks.integrations.file_system import (
-    DeleteResult,
-    delete,
-    set_context_dir,
-    get_context_dir,
-    delete_context_dir,
-)
-
-from hooks.integrations.mermaid_validator import (
-    MermaidValidator,
-    ValidationResult,
-    ValidationIssue,
-    DiagramInfo,
-    validate_markdown_file,
-    validate_mermaid_content,
-)
-
 
 # =============================================================================
 # CONVENIENCE FUNCTIONS

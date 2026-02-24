@@ -54,6 +54,7 @@ if str(_app_hooks) not in sys.path:
 try:
     from hooks.common import log
 except ImportError:
+
     def log(msg, ctx=None):
         print(f"[LOG] {msg}: {ctx}", file=sys.stderr)
 
@@ -74,6 +75,7 @@ SESSION_MAP_FILE = Path.home() / "conversation_map.json"
 def _get_redis_convmap_key(session_id: str) -> str:
     """Build Redis key for conversation map entry."""
     from hooks._redis import redis_key
+
     return redis_key("convmap", session_id)
 
 
@@ -110,6 +112,7 @@ def get_session(session_id: str) -> Optional[Dict[str, Any]]:
     # Try Redis first
     try:
         from hooks._redis import get_redis
+
         r = get_redis()
         if r is not None:
             raw = r.hgetall(_get_redis_convmap_key(session_id))
@@ -144,7 +147,8 @@ def enrich_session(session_id: str, data: Dict[str, Any]) -> bool:
     """
     # Try Redis first
     try:
-        from hooks._redis import get_redis, SESSION_TTL
+        from hooks._redis import SESSION_TTL, get_redis
+
         r = get_redis()
         if r is not None:
             key = _get_redis_convmap_key(session_id)
@@ -208,6 +212,7 @@ def delete_session(session_id: str) -> bool:
     # Try Redis first
     try:
         from hooks._redis import get_redis
+
         r = get_redis()
         if r is not None:
             key = _get_redis_convmap_key(session_id)
@@ -343,10 +348,15 @@ def main():
 
     elif command == "list":
         mappings = get_session_map()
-        print(json.dumps({
-            "count": len(mappings),
-            "session_ids": list(mappings.keys()),
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "count": len(mappings),
+                    "session_ids": list(mappings.keys()),
+                },
+                indent=2,
+            )
+        )
         sys.exit(0)
 
     else:

@@ -17,17 +17,19 @@ def register(mcp):
             JSON with list of profile names
         """
         try:
-            from hooks.integrations.aws import get_aws_profiles, AWSConfigParser
+            from hooks.integrations.aws import AWSConfigParser, get_aws_profiles
 
             profiles = get_aws_profiles(config_path if config_path else None)
             parser = AWSConfigParser.get_parser(config_path if config_path else None)
 
-            return json.dumps({
-                "success": True,
-                "count": len(profiles),
-                "config_path": parser.config_path,
-                "profiles": profiles,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "count": len(profiles),
+                    "config_path": parser.config_path,
+                    "profiles": profiles,
+                }
+            )
 
         except Exception as e:
             log("MCP aws_get_profiles failed", {"error": str(e)})
@@ -51,18 +53,22 @@ def register(mcp):
             account = parser.get_account(profile)
 
             if account:
-                return json.dumps({
-                    "success": True,
-                    "profile": account.profile,
-                    "account_id": account.account_id,
-                    "role_arn": account.role_arn,
-                })
+                return json.dumps(
+                    {
+                        "success": True,
+                        "profile": account.profile,
+                        "account_id": account.account_id,
+                        "role_arn": account.role_arn,
+                    }
+                )
             else:
-                return json.dumps({
-                    "success": True,
-                    "found": False,
-                    "profile": profile,
-                })
+                return json.dumps(
+                    {
+                        "success": True,
+                        "found": False,
+                        "profile": profile,
+                    }
+                )
 
         except Exception as e:
             log("MCP aws_get_account_id failed", {"profile": profile, "error": str(e)})
@@ -79,24 +85,26 @@ def register(mcp):
             JSON with list of accounts (profile, account_id, role_arn)
         """
         try:
-            from hooks.integrations.aws import get_all_aws_accounts, AWSConfigParser
+            from hooks.integrations.aws import AWSConfigParser, get_all_aws_accounts
 
             accounts = get_all_aws_accounts(config_path if config_path else None)
             parser = AWSConfigParser.get_parser(config_path if config_path else None)
 
-            return json.dumps({
-                "success": True,
-                "count": len(accounts),
-                "config_path": parser.config_path,
-                "accounts": [
-                    {
-                        "profile": acc.profile,
-                        "account_id": acc.account_id,
-                        "role_arn": acc.role_arn,
-                    }
-                    for acc in accounts
-                ],
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "count": len(accounts),
+                    "config_path": parser.config_path,
+                    "accounts": [
+                        {
+                            "profile": acc.profile,
+                            "account_id": acc.account_id,
+                            "role_arn": acc.role_arn,
+                        }
+                        for acc in accounts
+                    ],
+                }
+            )
 
         except Exception as e:
             log("MCP aws_get_all_accounts failed", {"error": str(e)})
@@ -126,44 +134,54 @@ def register(mcp):
             if account_id:
                 account = parser.find_by_account_id(account_id)
                 if account:
-                    return json.dumps({
-                        "success": True,
-                        "found": True,
-                        "accounts": [{
-                            "profile": account.profile,
-                            "account_id": account.account_id,
-                            "role_arn": account.role_arn,
-                        }],
-                    })
+                    return json.dumps(
+                        {
+                            "success": True,
+                            "found": True,
+                            "accounts": [
+                                {
+                                    "profile": account.profile,
+                                    "account_id": account.account_id,
+                                    "role_arn": account.role_arn,
+                                }
+                            ],
+                        }
+                    )
                 else:
-                    return json.dumps({
-                        "success": True,
-                        "found": False,
-                        "search": {"account_id": account_id},
-                    })
+                    return json.dumps(
+                        {
+                            "success": True,
+                            "found": False,
+                            "search": {"account_id": account_id},
+                        }
+                    )
 
             elif pattern:
                 matches = parser.find_by_pattern(pattern)
-                return json.dumps({
-                    "success": True,
-                    "found": len(matches) > 0,
-                    "count": len(matches),
-                    "search": {"pattern": pattern},
-                    "accounts": [
-                        {
-                            "profile": acc.profile,
-                            "account_id": acc.account_id,
-                            "role_arn": acc.role_arn,
-                        }
-                        for acc in matches
-                    ],
-                })
+                return json.dumps(
+                    {
+                        "success": True,
+                        "found": len(matches) > 0,
+                        "count": len(matches),
+                        "search": {"pattern": pattern},
+                        "accounts": [
+                            {
+                                "profile": acc.profile,
+                                "account_id": acc.account_id,
+                                "role_arn": acc.role_arn,
+                            }
+                            for acc in matches
+                        ],
+                    }
+                )
 
             else:
-                return json.dumps({
-                    "success": False,
-                    "error": "Either pattern or account_id must be provided",
-                })
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "Either pattern or account_id must be provided",
+                    }
+                )
 
         except Exception as e:
             log("MCP aws_find_account failed", {"pattern": pattern, "account_id": account_id, "error": str(e)})

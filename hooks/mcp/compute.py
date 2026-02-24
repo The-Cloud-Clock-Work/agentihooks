@@ -39,14 +39,16 @@ def register(mcp):
                 enrich_from_state=enrich,
             )
 
-            return json.dumps({
-                "success": result.success,
-                "status_code": result.status_code,
-                "function_name": result.function_name,
-                "invocation_type": result.invocation_type,
-                "response_payload": result.response_payload,
-                "error": result.error,
-            })
+            return json.dumps(
+                {
+                    "success": result.success,
+                    "status_code": result.status_code,
+                    "function_name": result.function_name,
+                    "invocation_type": result.invocation_type,
+                    "response_payload": result.response_payload,
+                    "error": result.error,
+                }
+            )
 
         except json.JSONDecodeError as e:
             log("MCP lambda_invoke_function JSON parse failed", {"error": str(e)})

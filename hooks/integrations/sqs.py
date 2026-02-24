@@ -37,7 +37,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 # Add parent directories to path for direct script execution
 _script_dir = Path(__file__).resolve().parent
@@ -52,9 +52,8 @@ try:
 except ImportError:
     BOTO3_AVAILABLE = False
 
-from hooks.common import log, get_correlation_id
+from hooks.common import get_correlation_id, log
 from hooks.integrations.base import IntegrationBase, IntegrationRegistry
-
 
 # =============================================================================
 # INTEGRATION DEFINITION
@@ -407,9 +406,7 @@ def main():
         print("Commands:")
         print("  check                    Check configuration status")
         print("  check --json             Output status as JSON")
-        print(
-            "  hook [--demo]            Read Stop event from stdin, enrich, send to SQS"
-        )
+        print("  hook [--demo]            Read Stop event from stdin, enrich, send to SQS")
         print("                           --demo: Test mode, prints message and exits")
         print("  send <json>              Send JSON message to SQS")
         print("  send <json> --enrich     Send with state enrichment")
@@ -431,9 +428,7 @@ def main():
         print("  # Manual testing")
         print('  export SQS_QUEUE_URL="https://sqs.us-west-2.amazonaws.com/123/queue"')
         print('  /app/hooks/integrations/sqs.py send \'{"event": "test"}\'')
-        print(
-            '  /app/hooks/integrations/sqs.py send \'{"session_id": "xyz"}\' --enrich'
-        )
+        print('  /app/hooks/integrations/sqs.py send \'{"session_id": "xyz"}\' --enrich')
         sys.exit(1)
 
     command = sys.argv[1]
@@ -460,9 +455,9 @@ def main():
                 error_msg = f"SQS hook SKIPPED - missing env vars: {missing}"
                 log(error_msg, {"integration": "sqs", "missing": missing})
                 # Print to STDOUT so Claude Code shows it
-                print(f"\n{'='*60}")
+                print(f"\n{'=' * 60}")
                 print(f"[SQS] ERROR: {error_msg}")
-                print(f"{'='*60}\n")
+                print(f"{'=' * 60}\n")
                 sys.exit(0)  # Exit cleanly but warn
 
             payload = json.load(sys.stdin)

@@ -17,6 +17,7 @@ def get_last_position(session_id: str) -> int:
     # Try Redis first
     try:
         from hooks._redis import get_redis, redis_key
+
         r = get_redis()
         if r is not None:
             val = r.get(redis_key("pos:transcript", session_id))
@@ -44,7 +45,8 @@ def save_position(session_id: str, position: int) -> None:
     """
     # Try Redis first
     try:
-        from hooks._redis import get_redis, redis_key, POSITION_TTL
+        from hooks._redis import POSITION_TTL, get_redis, redis_key
+
         r = get_redis()
         if r is not None:
             r.setex(redis_key("pos:transcript", session_id), POSITION_TTL, str(position))

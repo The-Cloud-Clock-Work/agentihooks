@@ -402,8 +402,7 @@ def get_correlation_id(claude_session_id: Optional[str] = None) -> str:
         External correlation UUID (falls back to claude_session_id if not found)
     """
     return os.environ.get(
-        "AGENTICORE_CORRELATION_ID",
-        claude_session_id or os.environ.get("AGENTICORE_CLAUDE_SESSION_ID", "")
+        "AGENTICORE_CORRELATION_ID", claude_session_id or os.environ.get("AGENTICORE_CLAUDE_SESSION_ID", "")
     )
 
 
@@ -424,11 +423,7 @@ def get_session_context() -> Dict[str, Optional[str]]:
     claude_session_id = os.environ.get("AGENTICORE_CLAUDE_SESSION_ID")
 
     # Check if this is a stateless session (different IDs)
-    is_stateless = (
-        correlation_id is not None
-        and claude_session_id is not None
-        and correlation_id != claude_session_id
-    )
+    is_stateless = correlation_id is not None and claude_session_id is not None and correlation_id != claude_session_id
 
     return {
         "correlation_id": correlation_id,

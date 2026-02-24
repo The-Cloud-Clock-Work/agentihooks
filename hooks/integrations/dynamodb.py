@@ -39,11 +39,11 @@ Usage:
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-import time
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
 
 # Add parent directories to path for direct script execution
 _script_dir = Path(__file__).resolve().parent
@@ -53,15 +53,14 @@ if str(_app_dir) not in sys.path:
 
 try:
     import boto3
-    from botocore.config import Config
+    from botocore.config import Config  # noqa: F401 (used by boto3 resource calls)
 
     BOTO3_AVAILABLE = True
 except ImportError:
     BOTO3_AVAILABLE = False
 
-from hooks.common import log, get_correlation_id
+from hooks.common import get_correlation_id, log
 from hooks.integrations.base import IntegrationBase, IntegrationRegistry
-
 
 # =============================================================================
 # INTEGRATION DEFINITION
@@ -182,9 +181,7 @@ class DynamoDBClient:
             state_file: Custom state file path (default: ~/conversation_map.json)
         """
         self._table_name = table_name or os.getenv("DYNAMODB_TABLE_NAME", "")
-        self._partition_key = partition_key or os.getenv(
-            "DYNAMODB_PARTITION_KEY", DEFAULT_PARTITION_KEY
-        )
+        self._partition_key = partition_key or os.getenv("DYNAMODB_PARTITION_KEY", DEFAULT_PARTITION_KEY)
         self._sort_key = sort_key or os.getenv("DYNAMODB_SORT_KEY", "")
         self._endpoint_url = endpoint_url or os.getenv("DYNAMODB_ENDPOINT_URL", "")
         self._skip_evaluation = skip_evaluation
@@ -758,9 +755,9 @@ def main():
                 error_msg = f"DynamoDB hook SKIPPED - missing env vars: {missing}"
                 log(error_msg, {"integration": "dynamodb", "missing": missing})
                 # Print to STDOUT so Claude Code shows it
-                print(f"\n{'='*60}")
+                print(f"\n{'=' * 60}")
                 print(f"[DYNAMODB] ERROR: {error_msg}")
-                print(f"{'='*60}\n")
+                print(f"{'=' * 60}\n")
                 sys.exit(0)  # Exit cleanly but warn
 
             payload = json.load(sys.stdin)

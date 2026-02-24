@@ -42,15 +42,17 @@ def register(mcp):
                 enrich_from_state=enrich,
             )
 
-            return json.dumps({
-                "success": result.success,
-                "table_name": result.table_name,
-                "partition_key": result.partition_key,
-                "partition_key_value": result.partition_key_value,
-                "sort_key": result.sort_key,
-                "sort_key_value": result.sort_key_value,
-                "error": result.error,
-            })
+            return json.dumps(
+                {
+                    "success": result.success,
+                    "table_name": result.table_name,
+                    "partition_key": result.partition_key,
+                    "partition_key_value": result.partition_key_value,
+                    "sort_key": result.sort_key,
+                    "sort_key_value": result.sort_key_value,
+                    "error": result.error,
+                }
+            )
 
         except json.JSONDecodeError as e:
             log("MCP dynamodb_put_item JSON parse failed", {"error": str(e)})
@@ -89,12 +91,14 @@ def register(mcp):
                 enrich_from_state=enrich,
             )
 
-            return json.dumps({
-                "success": result.success,
-                "table_name": result.table_name,
-                "rows_affected": result.rows_affected,
-                "error": result.error,
-            })
+            return json.dumps(
+                {
+                    "success": result.success,
+                    "table_name": result.table_name,
+                    "rows_affected": result.rows_affected,
+                    "error": result.error,
+                }
+            )
 
         except json.JSONDecodeError as e:
             log("MCP postgres_insert JSON parse failed", {"error": str(e)})
@@ -133,11 +137,13 @@ def register(mcp):
                 params=tuple(params_list) if params_list else None,
             )
 
-            return json.dumps({
-                "success": result.success,
-                "rows_affected": result.rows_affected,
-                "error": result.error,
-            })
+            return json.dumps(
+                {
+                    "success": result.success,
+                    "rows_affected": result.rows_affected,
+                    "error": result.error,
+                }
+            )
 
         except json.JSONDecodeError as e:
             log("MCP postgres_execute JSON parse failed", {"error": str(e)})

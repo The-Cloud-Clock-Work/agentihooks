@@ -10,7 +10,6 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-
 _AGENT_LOG = os.getenv("AGENT_LOG_FILE", "/app/logs/agent.log")
 
 
@@ -89,12 +88,14 @@ def search_transcripts(
         if query_lower not in text.lower():
             continue
 
-        results.append({
-            "session_id": entry.get("session_id", ""),
-            "type": entry_type,
-            "content": text[:2000],  # cap long entries
-            "timestamp": entry.get("timestamp", ""),
-        })
+        results.append(
+            {
+                "session_id": entry.get("session_id", ""),
+                "type": entry_type,
+                "content": text[:2000],  # cap long entries
+                "timestamp": entry.get("timestamp", ""),
+            }
+        )
 
         if len(results) >= limit:
             break
@@ -124,12 +125,14 @@ def get_session_transcript(
         if not text:
             continue
 
-        session_entries.append({
-            "session_id": session_id,
-            "type": entry_type,
-            "content": text[:2000],
-            "timestamp": entry.get("timestamp", ""),
-        })
+        session_entries.append(
+            {
+                "session_id": session_id,
+                "type": entry_type,
+                "content": text[:2000],
+                "timestamp": entry.get("timestamp", ""),
+            }
+        )
 
     # Return last N entries
     return session_entries[-last_n:]

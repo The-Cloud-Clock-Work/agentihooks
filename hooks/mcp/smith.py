@@ -29,12 +29,14 @@ def register(mcp):
                     "command_preview": config.get("command", [])[:5] if config else [],
                 }
 
-            return json.dumps({
-                "success": True,
-                "count": len(commands),
-                "commands": commands,
-                "details": details,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "count": len(commands),
+                    "commands": commands,
+                    "details": details,
+                }
+            )
 
         except Exception as e:
             log("MCP smith_list_commands failed", {"error": str(e)})
@@ -60,20 +62,24 @@ def register(mcp):
             prompt_file = builder.get_prompt_file(command_name)
 
             if prompt_content:
-                return json.dumps({
-                    "success": True,
-                    "command_name": command_name,
-                    "prompt_file": str(prompt_file) if prompt_file else None,
-                    "content": prompt_content,
-                    "char_count": len(prompt_content),
-                })
+                return json.dumps(
+                    {
+                        "success": True,
+                        "command_name": command_name,
+                        "prompt_file": str(prompt_file) if prompt_file else None,
+                        "content": prompt_content,
+                        "char_count": len(prompt_content),
+                    }
+                )
             else:
-                return json.dumps({
-                    "success": True,
-                    "command_name": command_name,
-                    "found": False,
-                    "error": f"No prompt file found for command '{command_name}'",
-                })
+                return json.dumps(
+                    {
+                        "success": True,
+                        "command_name": command_name,
+                        "found": False,
+                        "error": f"No prompt file found for command '{command_name}'",
+                    }
+                )
 
         except Exception as e:
             log("MCP smith_get_prompt failed", {"command_name": command_name, "error": str(e)})
@@ -125,15 +131,17 @@ def register(mcp):
                 inject_prompt=inject_prompt,
             )
 
-            return json.dumps({
-                "success": True,
-                "command_name": command_name,
-                "command": cmd,
-                "command_str": " ".join(cmd[:5]) + "..." if len(cmd) > 5 else " ".join(cmd),
-                "parameters": params_list,
-                "template_vars": vars_dict,
-                "inject_prompt": inject_prompt,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "command_name": command_name,
+                    "command": cmd,
+                    "command_str": " ".join(cmd[:5]) + "..." if len(cmd) > 5 else " ".join(cmd),
+                    "parameters": params_list,
+                    "template_vars": vars_dict,
+                    "inject_prompt": inject_prompt,
+                }
+            )
 
         except json.JSONDecodeError as e:
             log("MCP smith_build_command JSON parse failed", {"error": str(e)})
@@ -168,6 +176,7 @@ def register(mcp):
         try:
             import subprocess
             import time
+
             from agenticore.command_builder import CommandBuilder
             from agenticore.settings import settings
 
@@ -209,27 +218,31 @@ def register(mcp):
                 )
                 duration_ms = int((time.time() - start_time) * 1000)
 
-                return json.dumps({
-                    "success": True,
-                    "exit_code": result.returncode,
-                    "stdout": result.stdout[:10000] if result.stdout else "",
-                    "stderr": result.stderr[:2000] if result.stderr else "",
-                    "duration_ms": duration_ms,
-                    "command_name": command_name,
-                    "timed_out": False,
-                })
+                return json.dumps(
+                    {
+                        "success": True,
+                        "exit_code": result.returncode,
+                        "stdout": result.stdout[:10000] if result.stdout else "",
+                        "stderr": result.stderr[:2000] if result.stderr else "",
+                        "duration_ms": duration_ms,
+                        "command_name": command_name,
+                        "timed_out": False,
+                    }
+                )
 
             except subprocess.TimeoutExpired:
                 duration_ms = int((time.time() - start_time) * 1000)
-                return json.dumps({
-                    "success": False,
-                    "exit_code": -1,
-                    "stdout": "",
-                    "stderr": f"Command timed out after {timeout}s",
-                    "duration_ms": duration_ms,
-                    "command_name": command_name,
-                    "timed_out": True,
-                })
+                return json.dumps(
+                    {
+                        "success": False,
+                        "exit_code": -1,
+                        "stdout": "",
+                        "stderr": f"Command timed out after {timeout}s",
+                        "duration_ms": duration_ms,
+                        "command_name": command_name,
+                        "timed_out": True,
+                    }
+                )
 
         except json.JSONDecodeError as e:
             log("MCP smith_execute JSON parse failed", {"error": str(e)})

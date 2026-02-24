@@ -9,7 +9,7 @@ from hooks.common import log
 
 # Module-level state for timers and collectors
 _active_timers: Dict[str, dict] = {}
-_active_collectors: Dict[str, "MetricsCollector"] = {}
+_active_collectors: Dict[str, object] = {}  # MetricsCollector instances
 
 
 def register(mcp):
@@ -32,11 +32,13 @@ def register(mcp):
                 "start_time": datetime.now(timezone.utc).timestamp(),
             }
 
-            return json.dumps({
-                "success": True,
-                "timer_id": timer_id,
-                "started_at": started_at,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "timer_id": timer_id,
+                    "started_at": started_at,
+                }
+            )
 
         except Exception as e:
             log("MCP metrics_start_timer failed", {"name": name, "error": str(e)})
@@ -54,22 +56,26 @@ def register(mcp):
         """
         try:
             if timer_id not in _active_timers:
-                return json.dumps({
-                    "success": False,
-                    "error": f"Timer '{timer_id}' not found. Active timers: {list(_active_timers.keys())}",
-                })
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": f"Timer '{timer_id}' not found. Active timers: {list(_active_timers.keys())}",
+                    }
+                )
 
             timer_data = _active_timers.pop(timer_id)
             elapsed_s = datetime.now(timezone.utc).timestamp() - timer_data["start_time"]
             elapsed_ms = elapsed_s * 1000
 
-            return json.dumps({
-                "success": True,
-                "timer_id": timer_id,
-                "started_at": timer_data["started_at"],
-                "elapsed_ms": round(elapsed_ms, 2),
-                "elapsed_s": round(elapsed_s, 4),
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "timer_id": timer_id,
+                    "started_at": timer_data["started_at"],
+                    "elapsed_ms": round(elapsed_ms, 2),
+                    "elapsed_s": round(elapsed_s, 4),
+                }
+            )
 
         except Exception as e:
             log("MCP metrics_stop_timer failed", {"timer_id": timer_id, "error": str(e)})
@@ -93,11 +99,13 @@ def register(mcp):
 
             collector = _active_collectors[name]
 
-            return json.dumps({
-                "success": True,
-                "name": name,
-                "metrics_count": len(collector.metrics),
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "name": name,
+                    "metrics_count": len(collector.metrics),
+                }
+            )
 
         except Exception as e:
             log("MCP metrics_create_collector failed", {"name": name, "error": str(e)})
@@ -115,19 +123,23 @@ def register(mcp):
         """
         try:
             if collector_name not in _active_collectors:
-                return json.dumps({
-                    "success": False,
-                    "error": f"Collector '{collector_name}' not found. Available: {list(_active_collectors.keys())}",
-                })
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": f"Collector '{collector_name}' not found. Available: {list(_active_collectors.keys())}",
+                    }
+                )
 
             collector = _active_collectors[collector_name]
             summary = collector.summary()
 
-            return json.dumps({
-                "success": True,
-                "name": collector_name,
-                "summary": summary.to_dict(),
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "name": collector_name,
+                    "summary": summary.to_dict(),
+                }
+            )
 
         except Exception as e:
             log("MCP metrics_get_summary failed", {"collector_name": collector_name, "error": str(e)})
@@ -150,18 +162,22 @@ def register(mcp):
 
             log(message, payload_dict)
 
-            return json.dumps({
-                "success": True,
-                "logged": True,
-                "timestamp": timestamp,
-                "message": message,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "logged": True,
+                    "timestamp": timestamp,
+                    "message": message,
+                }
+            )
 
         except json.JSONDecodeError as e:
-            return json.dumps({
-                "success": False,
-                "error": f"Invalid JSON payload: {str(e)}",
-            })
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Invalid JSON payload: {str(e)}",
+                }
+            )
         except Exception as e:
             return json.dumps({"success": False, "error": str(e)})
 
@@ -183,12 +199,14 @@ def register(mcp):
 
             log_command(script_name, output)
 
-            return json.dumps({
-                "success": True,
-                "logged": True,
-                "script_name": script_name,
-                "output_length": len(output),
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "logged": True,
+                    "script_name": script_name,
+                    "output_length": len(output),
+                }
+            )
 
         except Exception as e:
             return json.dumps({"success": False, "error": str(e)})
@@ -230,15 +248,15 @@ def register(mcp):
 
             kwargs = {}
             if namespace:
-                kwargs['namespace'] = namespace
+                kwargs["namespace"] = namespace
             if container:
-                kwargs['container'] = container
+                kwargs["container"] = container
             if cluster:
-                kwargs['cluster'] = cluster
+                kwargs["cluster"] = cluster
             if log_group:
-                kwargs['log_group'] = log_group
+                kwargs["log_group"] = log_group
             if region:
-                kwargs['region'] = region
+                kwargs["region"] = region
 
             tailer = ContainerLogTailer(runtime, target, **kwargs)
             logs = tailer.tail(
@@ -248,13 +266,15 @@ def register(mcp):
                 filter_regex=filter_regex,
             )
 
-            return json.dumps({
-                "success": True,
-                "logs": logs,
-                "count": len(logs),
-                "runtime": runtime,
-                "target": target,
-            })
+            return json.dumps(
+                {
+                    "success": True,
+                    "logs": logs,
+                    "count": len(logs),
+                    "runtime": runtime,
+                    "target": target,
+                }
+            )
 
         except ValueError as e:
             log("MCP tail_container_logs validation failed", {"error": str(e)})

@@ -41,7 +41,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 # Add parent directories to path for direct script execution
 _script_dir = Path(__file__).resolve().parent
@@ -58,7 +58,6 @@ except ImportError:
 
 from hooks.common import log
 from hooks.integrations.base import IntegrationBase, IntegrationRegistry
-
 
 # =============================================================================
 # INTEGRATION DEFINITION
@@ -502,9 +501,9 @@ def main():
                 error_msg = f"HTTP hook SKIPPED - missing env vars: {missing}"
                 log(error_msg, {"integration": "http", "missing": missing})
                 # Print to STDOUT so Claude Code shows it
-                print(f"\n{'='*60}")
+                print(f"\n{'=' * 60}")
                 print(f"[HTTP] ERROR: {error_msg}")
-                print(f"{'='*60}\n")
+                print(f"{'=' * 60}\n")
                 sys.exit(0)  # Exit cleanly but warn
 
             payload = json.load(sys.stdin)
