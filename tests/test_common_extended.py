@@ -179,8 +179,7 @@ class TestRunScript:
                 # Call with a script name — we need the Path check to pass
                 # Directly test the timeout handling
                 run_script.__wrapped__("test.sh") if hasattr(run_script, "__wrapped__") else None
-                # Alternative: just check that run_script doesn't crash
-                assert True
+                # If we got here without exception, the test passed
 
     def test_run_script_exception(self):
         """run_script() handles generic exception."""
