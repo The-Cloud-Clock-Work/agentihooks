@@ -24,7 +24,7 @@ def register(mcp):
             from hooks.integrations.sqs import send_message
 
             message_dict = json.loads(message_body)
-            result = send_message(message_dict, enrich=enrich)
+            result = send_message(message_dict, enrich_from_state=enrich)
 
             return json.dumps({
                 "success": result.success,
@@ -42,8 +42,11 @@ def register(mcp):
             return json.dumps({"success": False, "error": str(e)})
 
     @mcp.tool()
-    def sqs_load_state() -> str:
+    def sqs_load_state(session_id: str) -> str:
         """Load agent state from .agent-state.json file.
+
+        Args:
+            session_id: Session ID to load state for
 
         Returns:
             JSON with state data (session_id, command, user, etc.) or error
@@ -51,7 +54,7 @@ def register(mcp):
         try:
             from hooks.integrations.sqs import load_state
 
-            state = load_state()
+            state = load_state(session_id)
 
             if state:
                 return json.dumps({

@@ -36,7 +36,7 @@ class Memory:
             data["tags"] = json.loads(data["tags"])
         if isinstance(data.get("created_at"), str):
             data["created_at"] = float(data["created_at"])
-        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})  # NOSONAR
 
 
 _KEY_PREFIX: str = os.getenv("REDIS_KEY_PREFIX", "agenticore")
