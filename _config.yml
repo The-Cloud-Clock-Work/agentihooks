@@ -1,0 +1,69 @@
+# Jekyll configuration for agentihooks GitHub Pages
+
+title: AgentiHooks
+description: >-
+  Hook system and MCP tool server for Claude Code agents.
+  Event-driven hooks, 45 MCP tools across 12 categories, profile-based configuration.
+url: "https://the-cloud-clock-work.github.io"
+baseurl: "/agentihooks"
+
+remote_theme: just-the-docs/just-the-docs@v0.10.0
+
+plugins:
+  - jekyll-remote-theme
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+color_scheme: dark
+search_enabled: true
+
+mermaid:
+  version: "11"
+
+aux_links:
+  GitHub: "https://github.com/The-Cloud-Clock-Work/agentihooks"
+aux_links_new_tab: true
+
+gh_edit_link: true
+gh_edit_link_text: "Edit this page on GitHub"
+gh_edit_repository: "https://github.com/The-Cloud-Clock-Work/agentihooks"
+gh_edit_branch: "main"
+gh_edit_view_mode: "edit"
+
+footer_content: >-
+  AgentiHooks is open source under the
+  <a href="https://github.com/The-Cloud-Clock-Work/agentihooks/blob/main/LICENSE">MIT License</a>.
+  Maintained by <a href="https://github.com/The-Cloud-Clock-Work">The Cloud Clock Work</a>.
+
+back_to_top: true
+back_to_top_text: "Back to top"
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: "default"
+
+exclude:
+  - hooks/
+  - tests/
+  - scripts/
+  - profiles/
+  - "*.py"
+  - "*.pyc"
+  - __pycache__/
+  - "*.egg-info"
+  - dist/
+  - build/
+  - .venv/
+  - venv/
+  - .env
+  - .env.example
+  - pyproject.toml
+  - CONTRIBUTING.md
+  - CHANGELOG.md
+  - CODE_OF_CONDUCT.md
+  - SECURITY.md
+  - README.md
+  - CLAUDE.md
+  - sonar-project.properties
