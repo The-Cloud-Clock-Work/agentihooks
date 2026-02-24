@@ -253,6 +253,10 @@ Key environment variables:
 
 Integration-specific variables (GitHub App, AWS, SMTP, etc.) are documented in each integration module.
 
+## Code Quality
+
+This project is continuously analyzed by [SonarQube](https://sonar.homeofanton.com/dashboard?id=agentihooks) for code quality, security vulnerabilities, and test coverage.
+
 ## License
 
 See [LICENSE](LICENSE) for details.
