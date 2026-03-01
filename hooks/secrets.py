@@ -13,6 +13,8 @@ class _Pattern(NamedTuple):
     regex: re.Pattern
 
 
+_NOSECRET_RE = re.compile(r"#\s*nosecret\b", re.IGNORECASE)
+
 _PATTERNS: list[_Pattern] = [
     _Pattern(
         "aws_access_key",
@@ -50,10 +52,20 @@ _PATTERNS: list[_Pattern] = [
 
 
 def scan(text: str) -> list[str]:
-    """Return list of matched pattern names found in text."""
+    """Return list of matched pattern names found in text.
+
+    Lines containing '# nosecret' (case-insensitive) are excluded from scanning,
+    allowing intentional suppression of known-safe patterns (e.g. docs, tests).
+    """
+    # Strip suppressed lines before pattern matching
+    filtered = "".join(
+        line
+        for line in text.splitlines(keepends=True)
+        if not _NOSECRET_RE.search(line)
+    )
     hits: list[str] = []
     for pattern in _PATTERNS:
-        if pattern.regex.search(text):
+        if pattern.regex.search(filtered):
             hits.append(pattern.name)
     return hits
 

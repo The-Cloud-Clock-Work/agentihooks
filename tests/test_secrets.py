@@ -88,6 +88,31 @@ class TestScan:
         hits = scan(f"{name}={value}")
         assert "generic_secret" in hits
 
+    def test_scan_nosecret_suppresses_line(self):
+        """A line ending with # nosecret should not be flagged."""
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        from hooks.secrets import scan
+
+        hits = scan(f"key = {key}  # nosecret")
+        assert hits == []
+
+    def test_scan_nosecret_only_suppresses_marked_line(self):
+        """Only the marked line is suppressed; other lines are still scanned."""
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        from hooks.secrets import scan
+
+        text = f"safe = 'nothing'  # nosecret\nkey = {key}\n"
+        hits = scan(text)
+        assert "aws_access_key" in hits
+
+    def test_scan_nosecret_case_insensitive(self):
+        """# NOSECRET and # NoSecret are also valid suppressors."""
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        from hooks.secrets import scan
+
+        assert scan(f"x = {key}  # NOSECRET") == []
+        assert scan(f"x = {key}  # NoSecret") == []
+
 
 class TestRedact:
     """Tests for secrets.redact()."""
