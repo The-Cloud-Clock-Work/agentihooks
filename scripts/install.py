@@ -76,10 +76,7 @@ def substitute_paths(obj: object, src: str = "/app", dst: str = str(AGENTIHOOKS_
 
 def _available_profiles() -> list[str]:
     """Return profile names (dirs under profiles/ excluding _base)."""
-    return sorted(
-        d.name for d in PROFILES_DIR.iterdir()
-        if d.is_dir() and not d.name.startswith("_")
-    )
+    return sorted(d.name for d in PROFILES_DIR.iterdir() if d.is_dir() and not d.name.startswith("_"))
 
 
 def _read_profile_description(profile_dir: Path) -> str:
@@ -90,7 +87,7 @@ def _read_profile_description(profile_dir: Path) -> str:
     for line in yml.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped.startswith("description:"):
-            value = stripped[len("description:"):].strip().strip('"').strip("'")
+            value = stripped[len("description:") :].strip().strip('"').strip("'")
             return value
     return ""
 
@@ -179,7 +176,9 @@ def install_global(args: argparse.Namespace) -> None:
     skills_src = AGENTIHOOKS_ROOT / ".claude" / "skills"
     skills_dst = CLAUDE_HOME / "skills"
     _symlink_dir_contents(
-        skills_src, skills_dst, label="skill",
+        skills_src,
+        skills_dst,
+        label="skill",
         filter_fn=lambda p: p.is_dir(),
     )
 
@@ -187,7 +186,9 @@ def install_global(args: argparse.Namespace) -> None:
     agents_src = AGENTIHOOKS_ROOT / ".claude" / "agents"
     agents_dst = CLAUDE_HOME / "agents"
     _symlink_dir_contents(
-        agents_src, agents_dst, label="agent",
+        agents_src,
+        agents_dst,
+        label="agent",
         filter_fn=lambda p: p.suffix == ".md" and p.name != "README.md",
     )
 
@@ -270,7 +271,9 @@ def _symlink_dir_contents(
                 link.symlink_to(item)
                 print(f"  [OK] Re-linked {label} '{item.name}' → {item}")
         elif link.exists():
-            print(f"  [!!] {label} '{item.name}' exists at {link} and is not a symlink – skipping (remove manually to replace)")
+            print(
+                f"  [!!] {label} '{item.name}' exists at {link} and is not a symlink – skipping (remove manually to replace)"
+            )
         else:
             link.symlink_to(item)
             print(f"  [OK] Linked {label} '{item.name}' → {item}")
@@ -374,8 +377,7 @@ def main() -> None:
     glob_p.add_argument(
         "--profile",
         default="default",
-        help="Profile whose CLAUDE.md to link (default: 'default'). "
-             f"Available: {', '.join(_available_profiles())}",
+        help=f"Profile whose CLAUDE.md to link (default: 'default'). Available: {', '.join(_available_profiles())}",
     )
 
     proj = sub.add_parser("project", help="Install a profile's .mcp.json into a target project")
