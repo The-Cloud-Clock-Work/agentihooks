@@ -33,6 +33,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Only import lightweight common module at startup
 from hooks.common import log
 
+
+class BlockAction(Exception):
+    """Raised by a hook handler to block the current Claude Code action (exit 2)."""
+
 # Heavy imports are lazy-loaded in functions that need them:
 # - hooks.integrations.email.send_email -> only in notify_on_error()
 # - hooks.observability.transcript.log_new_entries -> only in handlers that need it
@@ -373,16 +377,52 @@ def on_user_prompt_submit(payload: dict) -> None:
     session_id = payload.get("session_id", "")
     log("User prompt submitted", {"session_id": session_id})
 
+    prompt = payload.get("prompt", "")
+    if prompt:
+        from hooks.secrets import scan
+        from hooks.common import inject_context
+
+        hits = scan(prompt)
+        if hits:
+            names = ", ".join(hits)
+            inject_context(
+                f"WARNING: Possible secret(s) detected in prompt ({names}). "
+                "Do not process, echo, or store credential values. "
+                "Ask the user to use environment variables instead."
+            )
+
 
 def on_pre_tool_use(payload: dict) -> None:
     """Handle PreToolUse event."""
     tool_name = payload.get("tool_name", "unknown")
     tool_input = payload.get("tool_input", {})
 
+    from hooks.secrets import scan, redact
+
     # Log command details for Bash
     if tool_name == "Bash":
-        command = tool_input.get("command", "")[:500]  # First 500 chars
-        log(f"Pre tool use: {tool_name}", {"tool": tool_name, "command": command})
+        command = tool_input.get("command", "")
+        safe_command = redact(command)[:500]
+        log(f"Pre tool use: {tool_name}", {"tool": tool_name, "command": safe_command})
+        hits = scan(command)
+        if hits:
+            names = ", ".join(hits)
+            raise BlockAction(
+                f"BLOCKED: Secret(s) detected in Bash command ({names}). "
+                "Never pass credentials as inline command arguments. "
+                "Use environment variables instead."
+            )
+    elif tool_name in ("Write", "Edit"):
+        content = tool_input.get("content", "") or tool_input.get("new_string", "")
+        log(f"Pre tool use: {tool_name}", {"tool": tool_name})
+        hits = scan(content)
+        if hits:
+            names = ", ".join(hits)
+            raise BlockAction(
+                f"BLOCKED: Secret(s) detected in {tool_name} content ({names}). "
+                "Never write credential values to files. "
+                "Use environment variables instead."
+            )
     else:
         log(f"Pre tool use: {tool_name}", {"tool": tool_name})
 
@@ -528,6 +568,9 @@ def main() -> None:
         else:
             log(f"Unknown event: {event_name}", payload)
 
+    except BlockAction as e:
+        print(str(e), flush=True)  # injected into Claude's context
+        sys.exit(2)                # blocks the action
     except json.JSONDecodeError:
         log("Failed to parse JSON payload")
     except Exception as e:
