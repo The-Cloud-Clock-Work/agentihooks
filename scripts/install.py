@@ -475,7 +475,7 @@ def sync_user_mcp() -> None:
 
 
 # ---------------------------------------------------------------------------
-# CLI tool install (~/.local/bin/agentihooks)
+# CLI tool install (uv tool install --editable .)
 # ---------------------------------------------------------------------------
 
 _LOCAL_BIN = Path.home() / ".local" / "bin"
@@ -484,17 +484,42 @@ _SCRIPT = AGENTIHOOKS_ROOT / "scripts" / "install.py"
 
 
 def _install_cli_tool() -> None:
-    """Symlink ~/.local/bin/agentihooks → scripts/install.py.
+    """Install the agentihooks CLI tool via ``uv tool install --editable .``.
 
-    After this, users can type ``agentihooks`` instead of
-    ``python3 scripts/install.py`` from anywhere on the system.
+    Uses uv when available (preferred — proper isolated env, upgradeable).
+    Falls back to a plain symlink in ~/.local/bin if uv is not installed.
     """
+    import subprocess
+
+    uv = shutil.which("uv")
+    if uv:
+        result = subprocess.run(
+            [uv, "tool", "install", "--editable", "--force", "."],
+            cwd=AGENTIHOOKS_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            print("  [OK] CLI installed via: uv tool install --editable .")
+            print(f"       Reinstall anytime with: uv tool install --editable --force .")
+        else:
+            print(f"  [!!] uv tool install failed: {result.stderr.strip()}")
+            print("       Falling back to symlink…")
+            _install_cli_symlink()
+        return
+
+    print("  [--] uv not found — using symlink fallback")
+    _install_cli_symlink()
+
+
+def _install_cli_symlink() -> None:
+    """Symlink ~/.local/bin/agentihooks → scripts/install.py (uv fallback)."""
     _LOCAL_BIN.mkdir(parents=True, exist_ok=True)
     link = _LOCAL_BIN / _CLI_NAME
 
     if link.is_symlink():
         if link.resolve() == _SCRIPT.resolve():
-            print(f"  [--] CLI already linked: {link} → {_SCRIPT}")
+            print(f"  [--] CLI already linked: {link}")
             return
         link.unlink()
         link.symlink_to(_SCRIPT)
@@ -503,14 +528,13 @@ def _install_cli_tool() -> None:
         print(f"  [!!] {link} exists and is not a symlink — skipping (remove manually)")
     else:
         link.symlink_to(_SCRIPT)
-        print(f"  [OK] Installed CLI: {link}")
+        print(f"  [OK] Linked CLI: {link} → {_SCRIPT}")
 
-    # Warn if ~/.local/bin is not on PATH
     path_dirs = os.environ.get("PATH", "").split(os.pathsep)
     if str(_LOCAL_BIN) not in path_dirs:
         print(f"  [!!] {_LOCAL_BIN} is not in your PATH.")
-        print(f"       Add this to ~/.bashrc or ~/.zshrc:")
-        print(f'       export PATH="$HOME/.local/bin:$PATH"')
+        print("       Add to ~/.bashrc or ~/.zshrc:")
+        print('       export PATH="$HOME/.local/bin:$PATH"')
 
 
 # ---------------------------------------------------------------------------

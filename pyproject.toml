@@ -41,8 +41,11 @@ dev = [
     "boto3>=1.34.0",
 ]
 
+[project.scripts]
+agentihooks = "scripts.install:main"
+
 [tool.setuptools.packages.find]
-include = ["hooks*"]
+include = ["hooks*", "scripts*"]
 
 [project.urls]
 Homepage = "https://github.com/The-Cloud-Clock-Work/agentihooks"
