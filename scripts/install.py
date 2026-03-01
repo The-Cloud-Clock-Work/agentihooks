@@ -14,9 +14,16 @@ Usage:
     python scripts/install.py --mcp /path/to/.mcp.json
         Merge MCP servers from the given file into user scope (~/.claude.json).
         Servers become available in every project without per-repo .mcp.json files.
+        The file path is recorded in ~/.agentihooks/state.json for future syncs.
 
     python scripts/install.py --mcp /path/to/.mcp.json --uninstall
-        Remove those MCP servers from user scope (~/.claude.json).
+        Remove those MCP servers from user scope (~/.claude.json) and
+        remove the file path from ~/.agentihooks/state.json.
+
+    python scripts/install.py --sync
+        Re-apply all MCP files previously registered via --mcp.
+        Use this after a fresh install to restore all custom MCPs at once.
+        `install global` calls --sync automatically when state.json exists.
 
 Re-run `python scripts/install.py global` after any changes to
 settings.base.json to keep ~/.claude/settings.json up to date.
@@ -48,6 +55,10 @@ BASE_SETTINGS = PROFILES_DIR / "_base" / "settings.base.json"
 
 CLAUDE_HOME = Path.home() / ".claude"
 
+# Persistent state directory for user-level agentihooks configuration.
+AGENTIHOOKS_STATE_DIR = Path.home() / ".agentihooks"
+STATE_JSON = AGENTIHOOKS_STATE_DIR / "state.json"
+
 # Repeated path fragment constants (avoids S1192 duplicate-literal warnings)
 _CLAUDE_SUBDIR = ".claude"
 _CLAUDE_MD_NAME = "CLAUDE.md"
@@ -74,6 +85,47 @@ def load_json(path: Path) -> dict:
 def save_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# State helpers (~/.agentihooks/state.json)
+# ---------------------------------------------------------------------------
+
+
+def _load_state() -> dict:
+    if STATE_JSON.exists():
+        try:
+            return load_json(STATE_JSON)
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _save_state(state: dict) -> None:
+    AGENTIHOOKS_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    save_json(STATE_JSON, state)
+
+
+def _state_add_mcp(mcp_path: Path) -> None:
+    """Record *mcp_path* in state.json so --sync can restore it."""
+    state = _load_state()
+    paths: list[str] = state.get("mcpFiles", [])
+    path_str = str(mcp_path)
+    if path_str not in paths:
+        paths.append(path_str)
+        state["mcpFiles"] = paths
+        _save_state(state)
+
+
+def _state_remove_mcp(mcp_path: Path) -> None:
+    """Remove *mcp_path* from state.json."""
+    state = _load_state()
+    paths: list[str] = state.get("mcpFiles", [])
+    path_str = str(mcp_path)
+    if path_str in paths:
+        paths.remove(path_str)
+        state["mcpFiles"] = paths
+        _save_state(state)
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +309,11 @@ def install_global(args: argparse.Namespace) -> None:
     # --- 9. Install profile MCP servers to user scope (~/.claude.json) ---
     _install_user_mcp(profile_name)
 
+    # --- 10. Re-apply any custom MCPs tracked in state.json ---
+    if STATE_JSON.exists():
+        print()
+        sync_user_mcp()
+
     # --- Done ---
     print()
     print("Installation complete.")
@@ -372,7 +429,40 @@ def manage_user_mcp(mcp_path: Path, *, uninstall: bool = False) -> None:
     print()
     if uninstall:
         _remove_mcp_from_user_scope(servers)
+        _state_remove_mcp(mcp_path)
     else:
+        _merge_mcp_to_user_scope(servers)
+        _state_add_mcp(mcp_path)
+
+
+def sync_user_mcp() -> None:
+    """Re-apply all MCP files tracked in ~/.agentihooks/state.json.
+
+    Skips paths that no longer exist (with a warning) so a missing
+    repo doesn't abort the whole sync.
+    """
+    state = _load_state()
+    paths: list[str] = state.get("mcpFiles", [])
+    if not paths:
+        print(f"  [--] No MCP files tracked in {STATE_JSON} — nothing to sync.")
+        return
+
+    print(f"Syncing {len(paths)} tracked MCP file(s) from {STATE_JSON}:")
+    for path_str in paths:
+        p = Path(path_str)
+        if not p.exists():
+            print(f"  [!!] Skipping missing file: {path_str}")
+            continue
+        try:
+            raw = load_json(p)
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"  [!!] Cannot read {path_str}: {exc}")
+            continue
+        servers: dict = raw.get("mcpServers", {})
+        if not servers:
+            print(f"  [--] No mcpServers in {path_str} — skipping.")
+            continue
+        print(f"  From {p.name}: {', '.join(servers.keys())}")
         _merge_mcp_to_user_scope(servers)
 
 
@@ -582,6 +672,11 @@ def main() -> None:
         action="store_true",
         help="Remove MCP servers listed in --mcp from user scope (requires --mcp)",
     )
+    parser.add_argument(
+        "--sync",
+        action="store_true",
+        help=f"Re-apply all MCP files tracked in {STATE_JSON}",
+    )
     sub = parser.add_subparsers(dest="command")
 
     glob_p = sub.add_parser("global", help="Install hooks + skills + agents into ~/.claude")
@@ -615,6 +710,10 @@ def main() -> None:
 
     if args.uninstall and not args.mcp:
         parser.error("--uninstall requires --mcp <path>")
+
+    if args.sync:
+        sync_user_mcp()
+        return
 
     if not args.command:
         parser.print_help()
