@@ -247,6 +247,9 @@ def install_global(args: argparse.Namespace) -> None:
     # --- 8. Create /app → AGENTIHOOKS_ROOT symlink ---
     _install_app_symlink(AGENTIHOOKS_ROOT)
 
+    # --- 9. Install profile MCP servers to user scope (~/.claude.json) ---
+    _install_user_mcp(profile_name)
+
     # --- Done ---
     print()
     print("Installation complete.")
@@ -260,6 +263,56 @@ def install_global(args: argparse.Namespace) -> None:
     print()
     print("To update after settings.base.json changes:")
     print(f"  python scripts/install.py global --profile {profile_name}")
+
+
+# ---------------------------------------------------------------------------
+# User-scope MCP install (~/.claude.json)
+# ---------------------------------------------------------------------------
+
+_CLAUDE_JSON = Path.home() / ".claude.json"
+
+
+def _install_user_mcp(profile_name: str) -> None:
+    """Merge profile's .mcp.json servers into ~/.claude.json top-level mcpServers.
+
+    This installs MCP servers at user scope so they are available in every
+    project without needing a per-project .mcp.json.
+    """
+    mcp_src = PROFILES_DIR / profile_name / _MCP_JSON_NAME
+    if not mcp_src.exists():
+        print(f"  (no {_MCP_JSON_NAME} in profile '{profile_name}', skipping user-scope MCP)")
+        return
+
+    raw_mcp = load_json(mcp_src)
+    rendered_mcp: dict = substitute_paths(raw_mcp)  # NOSONAR
+    profile_servers: dict = rendered_mcp.get("mcpServers", {})
+
+    if not profile_servers:
+        print(f"  (profile '{profile_name}' .mcp.json has no mcpServers, skipping)")
+        return
+
+    # Read existing ~/.claude.json (preserve all existing content)
+    existing: dict = load_json(_CLAUDE_JSON) if _CLAUDE_JSON.exists() else {}
+
+    existing_servers: dict = existing.get("mcpServers", {})
+    added, updated = [], []
+    for name, config in profile_servers.items():
+        if name in existing_servers:
+            if existing_servers[name] != config:
+                updated.append(name)
+        else:
+            added.append(name)
+        existing_servers[name] = config
+
+    existing["mcpServers"] = existing_servers
+    save_json(_CLAUDE_JSON, existing)
+
+    if added:
+        print(f"  [OK] Added user-scope MCP servers  : {', '.join(added)}")
+    if updated:
+        print(f"  [OK] Updated user-scope MCP servers: {', '.join(updated)}")
+    if not added and not updated:
+        print(f"  [--] User-scope MCP servers unchanged: {', '.join(existing_servers.keys())}")
 
 
 # ---------------------------------------------------------------------------
