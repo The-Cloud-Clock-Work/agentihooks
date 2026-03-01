@@ -41,17 +41,26 @@ pip install mcp[cli] PyJWT requests httpx psycopg2-binary
 scripts/install.py global
 ```
 
-This writes `~/.claude/settings.json` (with all hook wiring), and symlinks
-skills, agents, and commands from the repo into `~/.claude/`.
+What this does, in order:
 
-Run with `--profile <name>` to select a profile's system prompt:
+| Step | Action |
+|------|--------|
+| 1 | Loads `profiles/_base/settings.base.json`, substitutes `/app` → real path |
+| 2 | Preserves personal keys (`model`, `autoUpdatesChannel`, etc.) from any pre-existing settings |
+| 3 | Writes `~/.claude/settings.json` with all hook wiring and permissions |
+| 4–6 | Symlinks skills, agents, and commands from `.claude/` into `~/.claude/` |
+| 7 | Symlinks `~/.claude/CLAUDE.md` → chosen profile's `CLAUDE.md` |
+| 8 | Creates `/app` → agentihooks root (needs sudo once — see step 3 below) |
+| 9 | Merges profile `.mcp.json` into `~/.claude.json` (user-scope MCPs, available in every project) |
+| 10 | If `~/.agentihooks/state.json` exists, re-syncs all custom MCP files registered via `--mcp` |
+
+Re-run any time after changing `settings.base.json` — the script is idempotent.
 
 ```bash
-scripts/install.py global --profile coding
-scripts/install.py --list-profiles   # show available profiles
+scripts/install.py global --profile coding    # use a different profile
+scripts/install.py --list-profiles            # list available profiles
+scripts/install.py --query                    # show currently active profile
 ```
-
-Re-run any time you update `settings.base.json` — the script is idempotent.
 
 ### 3. Create the `/app` symlink (one-time, requires sudo)
 
@@ -70,14 +79,55 @@ sudo ln -sfn /path/to/agentihooks /app
 Open Claude Code in any project and run `/status` — hooks should be active.
 Check `ls /app/logs/` after the first tool call to confirm logs are flowing.
 
-### Install a profile's MCP server into a project
+---
+
+## Install Reference
+
+### Global install flags
 
 ```bash
-python3 scripts/install.py project ~/dev/my-project --profile default
+scripts/install.py global [--profile <name>]
 ```
 
-This writes `.mcp.json` into the target project so Claude Code connects to
-the hooks MCP server when opening that project.
+| Flag | Description |
+|------|-------------|
+| `--profile <name>` | Profile to use (default: `default`) |
+| `--list-profiles` | Print all available profiles and exit |
+| `--query` | Print the currently active profile name and exit |
+
+### Adding MCP servers to user scope
+
+`~/.claude.json` supports a top-level `mcpServers` block that makes servers
+available in **every project** without a per-repo `.mcp.json`. Use `--mcp` to
+manage this from any existing MCP file:
+
+```bash
+# Merge all servers from a file into user scope
+scripts/install.py --mcp /path/to/.mcp.json
+
+# Remove those servers from user scope
+scripts/install.py --mcp /path/to/.mcp.json --uninstall
+```
+
+Every `--mcp` install records the file path in `~/.agentihooks/state.json`.
+`--uninstall` removes it from state. This lets you restore everything in one
+command after a fresh install or a lost `~/.claude.json`:
+
+```bash
+scripts/install.py --sync
+```
+
+`install global` calls `--sync` automatically when `state.json` exists, so
+re-running the global install is all you ever need to get back to a full setup.
+
+### Project install
+
+Writes a rendered `.mcp.json` directly into a specific project (the traditional
+per-repo approach, still available if needed):
+
+```bash
+scripts/install.py project ~/dev/my-project [--profile default]
+```
 
 ### Standalone usage
 
