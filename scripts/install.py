@@ -207,7 +207,15 @@ def install_global(args: argparse.Namespace) -> None:
         filter_fn=lambda p: p.suffix == ".md" and p.name != "README.md",
     )
 
-    # --- 6. Symlink CLAUDE.md from the chosen profile ---
+    # --- 6. Symlink commands (.md files only, excluding README.md) ---
+    _symlink_dir_contents(
+        AGENTIHOOKS_ROOT / _CLAUDE_SUBDIR / "commands",
+        CLAUDE_HOME / "commands",
+        label="command",
+        filter_fn=lambda p: p.suffix == ".md" and p.name != "README.md",
+    )
+
+    # --- 7. Symlink CLAUDE.md from the chosen profile ---
     profile_claude_md = PROFILES_DIR / profile_name / _CLAUDE_SUBDIR / _CLAUDE_MD_NAME
     claude_md_dst = CLAUDE_HOME / _CLAUDE_MD_NAME
     _install_claude_md(profile_claude_md, claude_md_dst, profile_name)
