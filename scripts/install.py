@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# If accidentally run with bash, re-exec with python3 (polyglot trick).
+''':'
+exec python3 "$0" "$@"
+exit
+'''
 """Install agentihooks settings, hooks, skills, and agents to ~/.claude.
 
 Usage:
@@ -33,8 +38,6 @@ The /app symlink is the canonical root used by all hook log paths
 (/app/logs/hooks.log, /app/logs/agent.log). If install can't create it
 due to permissions, it prints a sudo command to run manually.
 """
-
-from __future__ import annotations
 
 import argparse
 import json
