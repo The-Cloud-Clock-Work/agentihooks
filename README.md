@@ -38,7 +38,7 @@ pip install mcp[cli] PyJWT requests httpx psycopg2-binary
 ### 2. Install into Claude Code
 
 ```bash
-scripts/install.py global
+python3 scripts/install.py global
 ```
 
 What this does, in order:
@@ -57,9 +57,9 @@ What this does, in order:
 Re-run any time after changing `settings.base.json` — the script is idempotent.
 
 ```bash
-scripts/install.py global --profile coding    # use a different profile
-scripts/install.py --list-profiles            # list available profiles
-scripts/install.py --query                    # show currently active profile
+python3 scripts/install.py global --profile coding    # use a different profile
+python3 scripts/install.py --list-profiles            # list available profiles
+python3 scripts/install.py --query                    # show currently active profile
 ```
 
 ### 3. Create the `/app` symlink (one-time, requires sudo)
@@ -86,7 +86,7 @@ Check `ls /app/logs/` after the first tool call to confirm logs are flowing.
 ### Global install flags
 
 ```bash
-scripts/install.py global [--profile <name>]
+python3 scripts/install.py global [--profile <name>]
 ```
 
 | Flag | Description |
@@ -103,10 +103,10 @@ manage this from any existing MCP file:
 
 ```bash
 # Merge all servers from a file into user scope
-scripts/install.py --mcp /path/to/.mcp.json
+python3 scripts/install.py --mcp /path/to/.mcp.json
 
 # Remove those servers from user scope
-scripts/install.py --mcp /path/to/.mcp.json --uninstall
+python3 scripts/install.py --mcp /path/to/.mcp.json --uninstall
 ```
 
 Every `--mcp` install records the file path in `~/.agentihooks/state.json`.
@@ -114,7 +114,7 @@ Every `--mcp` install records the file path in `~/.agentihooks/state.json`.
 command after a fresh install or a lost `~/.claude.json`:
 
 ```bash
-scripts/install.py --sync
+python3 scripts/install.py --sync
 ```
 
 `install global` calls `--sync` automatically when `state.json` exists, so
@@ -126,7 +126,7 @@ Writes a rendered `.mcp.json` directly into a specific project (the traditional
 per-repo approach, still available if needed):
 
 ```bash
-scripts/install.py project ~/dev/my-project [--profile default]
+python3 scripts/install.py project ~/dev/my-project [--profile default]
 ```
 
 ### Standalone usage
