@@ -38,7 +38,7 @@ pip install mcp[cli] PyJWT requests httpx psycopg2-binary
 ### 2. Install into Claude Code
 
 ```bash
-python3 scripts/install.py global
+scripts/install.py global
 ```
 
 This writes `~/.claude/settings.json` (with all hook wiring), and symlinks
@@ -47,8 +47,8 @@ skills, agents, and commands from the repo into `~/.claude/`.
 Run with `--profile <name>` to select a profile's system prompt:
 
 ```bash
-python3 scripts/install.py global --profile coding
-python3 scripts/install.py --list-profiles   # show available profiles
+scripts/install.py global --profile coding
+scripts/install.py --list-profiles   # show available profiles
 ```
 
 Re-run any time you update `settings.base.json` — the script is idempotent.
