@@ -4,6 +4,7 @@
 Usage:
     python scripts/install.py global [--profile default]
         Installs hooks, skills, agents, and CLAUDE.md into ~/.claude.
+        Also creates /app → <agentihooks root> symlink (needs write access to /).
         --profile selects which profile's CLAUDE.md to link (default: 'default').
         Available profiles are listed from profiles/ (excluding _base).
 
@@ -13,6 +14,10 @@ Usage:
 Re-run `python scripts/install.py global` after any changes to
 settings.base.json to keep ~/.claude/settings.json up to date.
 The script is idempotent.
+
+The /app symlink is the canonical root used by all hook log paths
+(/app/logs/hooks.log, /app/logs/agent.log). If install can't create it
+due to permissions, it prints a sudo command to run manually.
 """
 
 from __future__ import annotations
@@ -220,6 +225,9 @@ def install_global(args: argparse.Namespace) -> None:
     claude_md_dst = CLAUDE_HOME / _CLAUDE_MD_NAME
     _install_claude_md(profile_claude_md, claude_md_dst, profile_name)
 
+    # --- 8. Create /app → AGENTIHOOKS_ROOT symlink ---
+    _install_app_symlink(AGENTIHOOKS_ROOT)
+
     # --- Done ---
     print()
     print("Installation complete.")
@@ -227,6 +235,7 @@ def install_global(args: argparse.Namespace) -> None:
     print("Verification steps:")
     print(f"  ls -la {existing_settings_path}")
     print(f"  ls -la {claude_md_dst}")
+    print("  ls -la /app  →  should point to agentihooks root")
     print("  Open Claude Code in any project → run /status (hooks should be active)")
     print("  Run /skills to list installed skills")
     print()
@@ -298,6 +307,38 @@ def _symlink_dir_contents(
     for item in sorted(children):
         if not item.name.startswith("."):
             _link_item(item, dst_dir / item.name, label)
+
+
+def _install_app_symlink(target: Path) -> None:
+    """Create /app → *target* symlink so hooks can always use /app as canonical root.
+
+    Requires write permission to /. If permission is denied, prints the sudo
+    command the user can run manually.
+    """
+    app = Path("/app")
+    if app.is_symlink():
+        if app.resolve() == target.resolve():
+            print(f"  [--] /app already linked → {target}")
+        else:
+            try:
+                app.unlink()
+                app.symlink_to(target)
+                print(f"  [OK] Re-linked /app → {target}")
+            except PermissionError:
+                print("  [!!] Cannot update /app (permission denied). Run manually:")
+                print(f"       sudo ln -sfn {target} /app")
+        return
+
+    if app.exists():
+        print("  [!!] /app exists but is not a symlink — skipping (remove manually).")
+        return
+
+    try:
+        app.symlink_to(target)
+        print(f"  [OK] Linked /app → {target}")
+    except PermissionError:
+        print("  [!!] Cannot create /app (permission denied). Run manually:")
+        print(f"       sudo ln -sfn {target} /app")
 
 
 def _install_claude_md(src: Path, dst: Path, profile_name: str) -> None:
