@@ -1,17 +1,22 @@
 """Configuration for hooks module."""
 
 import os
+from pathlib import Path
 
 # =============================================================================
 # LOGGING CONFIGURATION
 # =============================================================================
 
-# Path to hooks log file (hardcoded - single source of truth)
-LOG_FILE = "/app/logs/hooks.log"
+# Agentihooks repo root — two levels up from this file (hooks/config.py)
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Path to hooks log file — always inside the repo's logs/ dir, regardless of
+# where the repo is cloned. Directory is created automatically on first write.
+LOG_FILE = str(_REPO_ROOT / "logs" / "hooks.log")
 
 # Path to agent transcript log (centralized stream of conversation)
 # This is a copy of the Claude Code transcript, streamed in real-time
-AGENT_LOG_FILE = os.getenv("AGENT_LOG_FILE", "/app/logs/agent.log")
+AGENT_LOG_FILE = os.getenv("AGENT_LOG_FILE", str(_REPO_ROOT / "logs" / "agent.log"))
 
 
 def _env_bool(key: str, default: str = "false") -> bool:

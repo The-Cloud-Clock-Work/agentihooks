@@ -1,4 +1,7 @@
 {
+  "autoUpdatesChannel": "latest",
+  "skipDangerousModePermissionPrompt": true,
+  "model": "sonnet",
   "permissions": {
     "allow": [
       "Bash(*)",
@@ -14,15 +17,15 @@
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   },
   "hooks": {
-    "SessionStart":      [{"hooks": [{"type": "command", "command": "cd /app && python -m hooks"}]}],
-    "SessionEnd":        [{"hooks": [{"type": "command", "command": "cd /app && python -m hooks"}]}],
-    "PreToolUse":        [{"hooks": [{"type": "command", "command": "cd /app && python -m hooks"}]}],
-    "PostToolUse":       [{"hooks": [{"type": "command", "command": "cd /app && python -m hooks"}]}],
-    "Stop":              [{"hooks": [{"type": "command", "command": "cd /app && python -m hooks"}]}],
-    "SubagentStop":      [{"hooks": [{"type": "command", "command": "cd /app && python -m hooks"}]}],
-    "UserPromptSubmit":  [{"hooks": [{"type": "command", "command": "cd /app && python -m hooks"}]}],
-    "Notification":      [{"hooks": [{"type": "command", "command": "cd /app && python -m hooks"}]}],
-    "PreCompact":        [{"hooks": [{"type": "command", "command": "cd /app && python -m hooks"}]}],
-    "PermissionRequest": [{"hooks": [{"type": "command", "command": "cd /app && python -m hooks"}]}]
+    "SessionStart":      [{"hooks": [{"type": "command", "command": "cd /app && __PYTHON__ -m hooks"}]}],
+    "SessionEnd":        [{"hooks": [{"type": "command", "command": "cd /app && __PYTHON__ -m hooks"}]}],
+    "PreToolUse":        [{"hooks": [{"type": "command", "command": "cd /app && __PYTHON__ -m hooks"}]}],
+    "PostToolUse":       [{"hooks": [{"type": "command", "command": "cd /app && __PYTHON__ -m hooks"}]}],
+    "Stop":              [{"hooks": [{"type": "command", "command": "cd /app && __PYTHON__ -m hooks"}]}],
+    "SubagentStop":      [{"hooks": [{"type": "command", "command": "cd /app && __PYTHON__ -m hooks"}]}],
+    "UserPromptSubmit":  [{"hooks": [{"type": "command", "command": "cd /app && __PYTHON__ -m hooks"}]}],
+    "Notification":      [{"hooks": [{"type": "command", "command": "cd /app && __PYTHON__ -m hooks"}]}],
+    "PreCompact":        [{"hooks": [{"type": "command", "command": "cd /app && __PYTHON__ -m hooks"}]}],
+    "PermissionRequest": [{"hooks": [{"type": "command", "command": "cd /app && __PYTHON__ -m hooks"}]}]
   }
 }
