@@ -38,3 +38,4 @@ logs/
 
 # Tool memory (runtime state)
 .agenticore_tool_memory.ndjson
+.coverage
