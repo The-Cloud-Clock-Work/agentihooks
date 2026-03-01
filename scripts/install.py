@@ -21,6 +21,7 @@ import argparse
 import json
 import shutil
 import sys
+from collections.abc import Callable
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +35,11 @@ PROFILES_DIR = AGENTIHOOKS_ROOT / "profiles"
 BASE_SETTINGS = PROFILES_DIR / "_base" / "settings.base.json"
 
 CLAUDE_HOME = Path.home() / ".claude"
+
+# Repeated path fragment constants (avoids S1192 duplicate-literal warnings)
+_CLAUDE_SUBDIR = ".claude"
+_CLAUDE_MD_NAME = "CLAUDE.md"
+_MCP_JSON_NAME = ".mcp.json"
 
 # Keys from ~/.claude/settings.json that belong to the user and should be
 # preserved when merging (unless the base settings already define them).
@@ -102,15 +108,52 @@ def list_profiles() -> None:
     for name in profiles:
         desc = _read_profile_description(PROFILES_DIR / name)
         marker = ""
-        claude_md = PROFILES_DIR / name / ".claude" / "CLAUDE.md"
+        claude_md = PROFILES_DIR / name / _CLAUDE_SUBDIR / _CLAUDE_MD_NAME
         if not claude_md.exists():
-            marker = "  [no CLAUDE.md]"
-        mcp = PROFILES_DIR / name / ".mcp.json"
+            marker = f"  [no {_CLAUDE_MD_NAME}]"
+        mcp = PROFILES_DIR / name / _MCP_JSON_NAME
         if not mcp.exists():
-            marker += "  [no .mcp.json]"
+            marker += f"  [no {_MCP_JSON_NAME}]"
         desc_str = f"  — {desc}" if desc else ""
         print(f"  {name}{desc_str}{marker}")
     print()
+
+
+# ---------------------------------------------------------------------------
+# Settings helpers
+# ---------------------------------------------------------------------------
+
+
+def _preserve_personal_keys(existing_path: Path) -> dict:
+    """Return personal keys from an existing unmanaged settings file."""
+    personal: dict = {}
+    if not existing_path.exists():
+        return personal
+    try:
+        existing = load_json(existing_path)
+        if existing.get(MANAGED_BY_KEY) == MANAGED_BY_VALUE:
+            return personal  # Already managed — don't re-import
+        for key in PERSONAL_KEYS:
+            if key in existing:
+                personal[key] = existing[key]
+        if personal:
+            print(f"Preserving personal keys from existing settings: {sorted(personal)}")
+    except json.JSONDecodeError:
+        print("WARNING: existing settings.json is invalid JSON – skipping preservation.")
+    return personal
+
+
+def _backup_settings(existing_path: Path) -> None:
+    """Back up an existing unmanaged settings file (skips if already managed)."""
+    if not existing_path.exists():
+        return
+    existing_raw = load_json(existing_path)
+    if existing_raw.get(MANAGED_BY_KEY) == MANAGED_BY_VALUE:
+        return
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = existing_path.with_suffix(f".json.bak.{timestamp}")
+    shutil.copy2(existing_path, backup_path)
+    print(f"Backed up existing settings → {backup_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -132,70 +175,41 @@ def install_global(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     raw_settings = load_json(BASE_SETTINGS)
-    rendered: dict = substitute_paths(raw_settings)  # type: ignore[assignment]
-    rendered = substitute_paths(rendered, "__PYTHON__", sys.executable)
+    rendered: dict = substitute_paths(raw_settings)  # NOSONAR — intentional object→dict cast
+    rendered = substitute_paths(rendered, "__PYTHON__", sys.executable)  # NOSONAR
 
-    # --- 2. Preserve personal keys from existing settings ---
+    # --- 2. Merge personal keys from existing settings ---
     existing_settings_path = CLAUDE_HOME / "settings.json"
-    personal: dict = {}
-    if existing_settings_path.exists():
-        try:
-            existing = load_json(existing_settings_path)
-            # Only carry over personal keys if the file is NOT already managed
-            # by this script (to avoid re-importing stale copies of what we
-            # wrote last time).
-            if existing.get(MANAGED_BY_KEY) != MANAGED_BY_VALUE:
-                for key in PERSONAL_KEYS:
-                    if key in existing:
-                        personal[key] = existing[key]
-                if personal:
-                    print(f"Preserving personal keys from existing settings: {sorted(personal)}")
-        except json.JSONDecodeError:
-            print("WARNING: existing settings.json is invalid JSON – skipping preservation.")
-
-    # Merge: personal keys fill in gaps; base settings win for everything else.
+    personal = _preserve_personal_keys(existing_settings_path)
     merged: dict = deepcopy(personal)
     merged.update(rendered)
     merged[MANAGED_BY_KEY] = MANAGED_BY_VALUE
 
-    # --- 3. Backup existing settings (skip if already managed) ---
-    if existing_settings_path.exists():
-        existing_raw = load_json(existing_settings_path) if existing_settings_path.exists() else {}
-        if existing_raw.get(MANAGED_BY_KEY) != MANAGED_BY_VALUE:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_path = existing_settings_path.with_suffix(f".json.bak.{timestamp}")
-            shutil.copy2(existing_settings_path, backup_path)
-            print(f"Backed up existing settings → {backup_path}")
-
-    # --- 4. Write merged settings ---
+    # --- 3. Backup + write ---
+    _backup_settings(existing_settings_path)
     CLAUDE_HOME.mkdir(parents=True, exist_ok=True)
     save_json(existing_settings_path, merged)
     print(f"[OK] Wrote {existing_settings_path}")
 
-    # --- 5. Symlink skills (directories only) ---
-    skills_src = AGENTIHOOKS_ROOT / ".claude" / "skills"
-    skills_dst = CLAUDE_HOME / "skills"
+    # --- 4. Symlink skills (directories only) ---
     _symlink_dir_contents(
-        skills_src,
-        skills_dst,
+        AGENTIHOOKS_ROOT / _CLAUDE_SUBDIR / "skills",
+        CLAUDE_HOME / "skills",
         label="skill",
         filter_fn=lambda p: p.is_dir(),
     )
 
-    # --- 6. Symlink agents (.md files only, excluding README.md) ---
-    agents_src = AGENTIHOOKS_ROOT / ".claude" / "agents"
-    agents_dst = CLAUDE_HOME / "agents"
+    # --- 5. Symlink agents (.md files only, excluding README.md) ---
     _symlink_dir_contents(
-        agents_src,
-        agents_dst,
+        AGENTIHOOKS_ROOT / _CLAUDE_SUBDIR / "agents",
+        CLAUDE_HOME / "agents",
         label="agent",
         filter_fn=lambda p: p.suffix == ".md" and p.name != "README.md",
     )
 
-    # --- 7. Symlink CLAUDE.md from the chosen profile ---
-    profile_dir = PROFILES_DIR / profile_name
-    profile_claude_md = profile_dir / ".claude" / "CLAUDE.md"
-    claude_md_dst = CLAUDE_HOME / "CLAUDE.md"
+    # --- 6. Symlink CLAUDE.md from the chosen profile ---
+    profile_claude_md = PROFILES_DIR / profile_name / _CLAUDE_SUBDIR / _CLAUDE_MD_NAME
+    claude_md_dst = CLAUDE_HOME / _CLAUDE_MD_NAME
     _install_claude_md(profile_claude_md, claude_md_dst, profile_name)
 
     # --- Done ---
@@ -212,108 +226,109 @@ def install_global(args: argparse.Namespace) -> None:
     print(f"  python scripts/install.py global --profile {profile_name}")
 
 
+# ---------------------------------------------------------------------------
+# Symlink helpers
+# ---------------------------------------------------------------------------
+
+
+def _cleanup_stale_links(dst_dir: Path, src_dir: Path, filter_fn: Callable[[Path], bool] | None) -> None:
+    """Remove broken symlinks and symlinks that no longer pass *filter_fn*."""
+    if not dst_dir.exists():
+        return
+    for link in sorted(dst_dir.iterdir()):
+        if not link.is_symlink():
+            continue
+        target = link.resolve()
+        if not link.exists():
+            link.unlink()
+            print(f"  [RM] Removed broken symlink: {link.name}")
+        elif target.parent.resolve() == src_dir.resolve() and filter_fn and not filter_fn(target):
+            link.unlink()
+            print(f"  [RM] Removed stale symlink: {link.name}")
+
+
+def _link_item(item: Path, link: Path, label: str) -> None:
+    """Create or update a single symlink *link* → *item*."""
+    if link.is_symlink():
+        if link.resolve() == item.resolve():
+            print(f"  [--] {label} '{item.name}' already linked → {item}")
+        else:
+            link.unlink()
+            link.symlink_to(item)
+            print(f"  [OK] Re-linked {label} '{item.name}' → {item}")
+    elif link.exists():
+        print(f"  [!!] {label} '{item.name}' exists at {link} and is not a symlink – skipping (remove manually)")
+    else:
+        link.symlink_to(item)
+        print(f"  [OK] Linked {label} '{item.name}' → {item}")
+
+
 def _symlink_dir_contents(
     src_dir: Path,
     dst_dir: Path,
     *,
     label: str,
-    filter_fn: object = None,
+    filter_fn: Callable[[Path], bool] | None = None,
 ) -> None:
     """Symlink filtered children of *src_dir* into *dst_dir*.
 
-    *filter_fn* is called with each source ``Path``; only items for which it
-    returns ``True`` are linked.  Stale symlinks (broken or pointing to items
-    that no longer pass the filter) are removed automatically.
+    Stale symlinks (broken or pointing to items that no longer pass the filter)
+    are removed automatically before new links are created.
     """
     if not src_dir.exists():
         print(f"  (no {label}s directory at {src_dir}, skipping)")
         return
 
-    # --- Cleanup: remove stale symlinks in dst_dir ---
-    if dst_dir.exists():
-        for link in sorted(dst_dir.iterdir()):
-            if not link.is_symlink():
-                continue
-            target = link.resolve()
-            # Broken symlink
-            if not link.exists():
-                link.unlink()
-                print(f"  [RM] Removed broken symlink: {link.name}")
-                continue
-            # Points to our src_dir but fails the current filter
-            if target.parent.resolve() == src_dir.resolve() and filter_fn and not filter_fn(target):
-                link.unlink()
-                print(f"  [RM] Removed stale symlink: {link.name} (no longer a valid {label})")
+    _cleanup_stale_links(dst_dir, src_dir, filter_fn)
 
-    children = list(src_dir.iterdir())
-    if not children:
-        print(f"  (no {label}s found in {src_dir}, skipping)")
-        return
-
-    # Apply filter
-    if filter_fn:
-        children = [c for c in children if filter_fn(c)]
-
+    children = [c for c in src_dir.iterdir() if not filter_fn or filter_fn(c)]
     if not children:
         print(f"  (no valid {label}s found in {src_dir} after filtering, skipping)")
         return
 
     dst_dir.mkdir(parents=True, exist_ok=True)
     for item in sorted(children):
-        if item.name.startswith("."):
-            continue
-        link = dst_dir / item.name
-        if link.is_symlink():
-            if link.resolve() == item.resolve():
-                print(f"  [--] {label} '{item.name}' already linked → {item}")
-            else:
-                link.unlink()
-                link.symlink_to(item)
-                print(f"  [OK] Re-linked {label} '{item.name}' → {item}")
-        elif link.exists():
-            print(
-                f"  [!!] {label} '{item.name}' exists at {link} and is not a symlink – skipping (remove manually to replace)"
-            )
-        else:
-            link.symlink_to(item)
-            print(f"  [OK] Linked {label} '{item.name}' → {item}")
+        if not item.name.startswith("."):
+            _link_item(item, dst_dir / item.name, label)
 
 
 def _install_claude_md(src: Path, dst: Path, profile_name: str) -> None:
     """Symlink *dst* (~/.claude/CLAUDE.md) → *src* (profile CLAUDE.md)."""
     if not src.exists():
-        print(f"  [!!] Profile CLAUDE.md not found at {src} — skipping CLAUDE.md linking.")
+        print(f"  [!!] Profile {_CLAUDE_MD_NAME} not found at {src} — skipping.")
         print(f"       Available profiles: {_available_profiles()}")
         return
 
     if dst.is_symlink():
         if dst.resolve() == src.resolve():
-            print(f"  [--] CLAUDE.md already linked → {src}")
-            return
-        # Different target — silently re-link (was probably the old CLAUDE.global.md)
-        dst.unlink()
-        dst.symlink_to(src)
-        print(f"  [OK] Re-linked CLAUDE.md → {src}")
+            print(f"  [--] {_CLAUDE_MD_NAME} already linked → {src}")
+        else:
+            dst.unlink()
+            dst.symlink_to(src)
+            print(f"  [OK] Re-linked {_CLAUDE_MD_NAME} → {src}")
         return
 
     if dst.exists():
-        # Real file exists — ask before replacing
-        print(f"\nA CLAUDE.md already exists at {dst}.")
-        answer = input(f"Replace with symlink to profiles/{profile_name}/.claude/CLAUDE.md? [y/N] ").strip().lower()
+        print(f"\nA {_CLAUDE_MD_NAME} already exists at {dst}.")
+        answer = (
+            input(f"Replace with symlink to profiles/{profile_name}/{_CLAUDE_SUBDIR}/{_CLAUDE_MD_NAME}? [y/N] ")
+            .strip()
+            .lower()
+        )
         if answer == "y":
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             backup = dst.with_suffix(f".md.bak.{timestamp}")
             shutil.copy2(dst, backup)
-            print(f"  Backed up existing CLAUDE.md → {backup}")
+            print(f"  Backed up existing {_CLAUDE_MD_NAME} → {backup}")
             dst.unlink()
             dst.symlink_to(src)
-            print(f"  [OK] Linked CLAUDE.md → {src}")
+            print(f"  [OK] Linked {_CLAUDE_MD_NAME} → {src}")
         else:
-            print("  [--] Skipped CLAUDE.md linking.")
+            print(f"  [--] Skipped {_CLAUDE_MD_NAME} linking.")
         return
 
     dst.symlink_to(src)
-    print(f"  [OK] Linked CLAUDE.md → {src}")
+    print(f"  [OK] Linked {_CLAUDE_MD_NAME} → {src}")
 
 
 # ---------------------------------------------------------------------------
@@ -332,19 +347,18 @@ def install_project(args: argparse.Namespace) -> None:
         print(f"ERROR: Project path is not a directory: {project_path}", file=sys.stderr)
         sys.exit(1)
 
-    profile_dir = PROFILES_DIR / profile_name
-    mcp_src = profile_dir / ".mcp.json"
+    mcp_src = PROFILES_DIR / profile_name / _MCP_JSON_NAME
     if not mcp_src.exists():
-        print(f"ERROR: Profile '.mcp.json' not found: {mcp_src}", file=sys.stderr)
+        print(f"ERROR: Profile '{_MCP_JSON_NAME}' not found: {mcp_src}", file=sys.stderr)
         print(f"Available profiles: {_available_profiles()}", file=sys.stderr)
         sys.exit(1)
 
     raw_mcp = load_json(mcp_src)
-    rendered_mcp: dict = substitute_paths(raw_mcp)  # type: ignore[assignment]
+    rendered_mcp: dict = substitute_paths(raw_mcp)  # NOSONAR — intentional object→dict cast
 
-    mcp_dst = project_path / ".mcp.json"
+    mcp_dst = project_path / _MCP_JSON_NAME
     if mcp_dst.exists():
-        answer = input(f".mcp.json already exists at {mcp_dst}. Overwrite? [y/N] ").strip().lower()
+        answer = input(f"{_MCP_JSON_NAME} already exists at {mcp_dst}. Overwrite? [y/N] ").strip().lower()
         if answer != "y":
             print("Aborted.")
             sys.exit(0)
