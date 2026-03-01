@@ -41,6 +41,7 @@ due to permissions, it prints a sudo command to run manually.
 
 import argparse
 import json
+import os
 import shutil
 import sys
 from collections.abc import Callable
@@ -317,6 +318,10 @@ def install_global(args: argparse.Namespace) -> None:
         print()
         sync_user_mcp()
 
+    # --- 11. Install agentihooks CLI tool to ~/.local/bin ---
+    print()
+    _install_cli_tool()
+
     # --- Done ---
     print()
     print("Installation complete.")
@@ -329,7 +334,7 @@ def install_global(args: argparse.Namespace) -> None:
     print("  Run /skills to list installed skills")
     print()
     print("To update after settings.base.json changes:")
-    print(f"  python scripts/install.py global --profile {profile_name}")
+    print("  agentihooks global")
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +472,45 @@ def sync_user_mcp() -> None:
             continue
         print(f"  From {p.name}: {', '.join(servers.keys())}")
         _merge_mcp_to_user_scope(servers)
+
+
+# ---------------------------------------------------------------------------
+# CLI tool install (~/.local/bin/agentihooks)
+# ---------------------------------------------------------------------------
+
+_LOCAL_BIN = Path.home() / ".local" / "bin"
+_CLI_NAME = "agentihooks"
+_SCRIPT = AGENTIHOOKS_ROOT / "scripts" / "install.py"
+
+
+def _install_cli_tool() -> None:
+    """Symlink ~/.local/bin/agentihooks → scripts/install.py.
+
+    After this, users can type ``agentihooks`` instead of
+    ``python3 scripts/install.py`` from anywhere on the system.
+    """
+    _LOCAL_BIN.mkdir(parents=True, exist_ok=True)
+    link = _LOCAL_BIN / _CLI_NAME
+
+    if link.is_symlink():
+        if link.resolve() == _SCRIPT.resolve():
+            print(f"  [--] CLI already linked: {link} → {_SCRIPT}")
+            return
+        link.unlink()
+        link.symlink_to(_SCRIPT)
+        print(f"  [OK] Re-linked CLI: {link} → {_SCRIPT}")
+    elif link.exists():
+        print(f"  [!!] {link} exists and is not a symlink — skipping (remove manually)")
+    else:
+        link.symlink_to(_SCRIPT)
+        print(f"  [OK] Installed CLI: {link}")
+
+    # Warn if ~/.local/bin is not on PATH
+    path_dirs = os.environ.get("PATH", "").split(os.pathsep)
+    if str(_LOCAL_BIN) not in path_dirs:
+        print(f"  [!!] {_LOCAL_BIN} is not in your PATH.")
+        print(f"       Add this to ~/.bashrc or ~/.zshrc:")
+        print(f'       export PATH="$HOME/.local/bin:$PATH"')
 
 
 # ---------------------------------------------------------------------------

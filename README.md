@@ -53,14 +53,17 @@ What this does, in order:
 | 8 | Creates `/app` → agentihooks root (needs sudo once — see step 3 below) |
 | 9 | Merges profile `.mcp.json` into `~/.claude.json` (user-scope MCPs, available in every project) |
 | 10 | If `~/.agentihooks/state.json` exists, re-syncs all custom MCP files registered via `--mcp` |
+| 11 | Symlinks `~/.local/bin/agentihooks` → `scripts/install.py` (installs the CLI tool) |
 
-Re-run any time after changing `settings.base.json` — the script is idempotent.
+After this first run, use `agentihooks` directly from anywhere:
 
 ```bash
-python3 scripts/install.py global --profile coding    # use a different profile
-python3 scripts/install.py --list-profiles            # list available profiles
-python3 scripts/install.py --query                    # show currently active profile
+agentihooks global --profile coding    # use a different profile
+agentihooks --list-profiles            # list available profiles
+agentihooks --query                    # show currently active profile
 ```
+
+Re-run any time after changing `settings.base.json` — the script is idempotent.
 
 ### 3. Create the `/app` symlink (one-time, requires sudo)
 
@@ -83,10 +86,13 @@ Check `ls /app/logs/` after the first tool call to confirm logs are flowing.
 
 ## Install Reference
 
-### Global install flags
+Once `agentihooks global` has been run once, use the `agentihooks` CLI from anywhere.
+For the very first bootstrap, use `python3 scripts/install.py global` from the repo root.
+
+### Global install
 
 ```bash
-python3 scripts/install.py global [--profile <name>]
+agentihooks global [--profile <name>]
 ```
 
 | Flag | Description |
@@ -95,38 +101,31 @@ python3 scripts/install.py global [--profile <name>]
 | `--list-profiles` | Print all available profiles and exit |
 | `--query` | Print the currently active profile name and exit |
 
-### Adding MCP servers to user scope
+### Managing MCP servers (user scope)
 
 `~/.claude.json` supports a top-level `mcpServers` block that makes servers
-available in **every project** without a per-repo `.mcp.json`. Use `--mcp` to
-manage this from any existing MCP file:
+available in **every project** without a per-repo `.mcp.json`:
 
 ```bash
-# Merge all servers from a file into user scope
-python3 scripts/install.py --mcp /path/to/.mcp.json
+# Add all servers from a file to user scope (recorded in ~/.agentihooks/state.json)
+agentihooks --mcp /path/to/.mcp.json
 
 # Remove those servers from user scope
-python3 scripts/install.py --mcp /path/to/.mcp.json --uninstall
+agentihooks --mcp /path/to/.mcp.json --uninstall
+
+# Re-apply everything in state.json (e.g. after a fresh OS install)
+agentihooks --sync
 ```
 
-Every `--mcp` install records the file path in `~/.agentihooks/state.json`.
-`--uninstall` removes it from state. This lets you restore everything in one
-command after a fresh install or a lost `~/.claude.json`:
-
-```bash
-python3 scripts/install.py --sync
-```
-
-`install global` calls `--sync` automatically when `state.json` exists, so
-re-running the global install is all you ever need to get back to a full setup.
+`agentihooks global` calls `--sync` automatically when `state.json` exists, so
+re-running the global install is all you ever need to restore a full setup.
 
 ### Project install
 
-Writes a rendered `.mcp.json` directly into a specific project (the traditional
-per-repo approach, still available if needed):
+Writes a rendered `.mcp.json` directly into a specific project (per-repo approach):
 
 ```bash
-python3 scripts/install.py project ~/dev/my-project [--profile default]
+agentihooks project ~/dev/my-project [--profile default]
 ```
 
 ### Standalone usage
