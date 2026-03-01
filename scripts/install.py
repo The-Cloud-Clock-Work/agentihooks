@@ -11,6 +11,13 @@ Usage:
     python scripts/install.py project <path> [--profile default]
         Installs a profile's .mcp.json into a target project directory.
 
+    python scripts/install.py --mcp /path/to/.mcp.json
+        Merge MCP servers from the given file into user scope (~/.claude.json).
+        Servers become available in every project without per-repo .mcp.json files.
+
+    python scripts/install.py --mcp /path/to/.mcp.json --uninstall
+        Remove those MCP servers from user scope (~/.claude.json).
+
 Re-run `python scripts/install.py global` after any changes to
 settings.base.json to keep ~/.claude/settings.json up to date.
 The script is idempotent.
@@ -272,6 +279,50 @@ def install_global(args: argparse.Namespace) -> None:
 _CLAUDE_JSON = Path.home() / ".claude.json"
 
 
+def _merge_mcp_to_user_scope(servers: dict) -> None:
+    """Merge *servers* into the top-level mcpServers of ~/.claude.json."""
+    existing: dict = load_json(_CLAUDE_JSON) if _CLAUDE_JSON.exists() else {}
+    existing_servers: dict = existing.get("mcpServers", {})
+    added, updated = [], []
+    for name, config in servers.items():
+        if name in existing_servers:
+            if existing_servers[name] != config:
+                updated.append(name)
+        else:
+            added.append(name)
+        existing_servers[name] = config
+    existing["mcpServers"] = existing_servers
+    save_json(_CLAUDE_JSON, existing)
+    if added:
+        print(f"  [OK] Added user-scope MCP servers  : {', '.join(added)}")
+    if updated:
+        print(f"  [OK] Updated user-scope MCP servers: {', '.join(updated)}")
+    if not added and not updated:
+        print(f"  [--] User-scope MCP servers unchanged: {', '.join(servers.keys())}")
+
+
+def _remove_mcp_from_user_scope(servers: dict) -> None:
+    """Remove *servers* keys from the top-level mcpServers of ~/.claude.json."""
+    if not _CLAUDE_JSON.exists():
+        print("  [--] ~/.claude.json does not exist — nothing to remove.")
+        return
+    existing: dict = load_json(_CLAUDE_JSON)
+    existing_servers: dict = existing.get("mcpServers", {})
+    removed, missing = [], []
+    for name in servers:
+        if name in existing_servers:
+            del existing_servers[name]
+            removed.append(name)
+        else:
+            missing.append(name)
+    existing["mcpServers"] = existing_servers
+    save_json(_CLAUDE_JSON, existing)
+    if removed:
+        print(f"  [OK] Removed user-scope MCP servers: {', '.join(removed)}")
+    if missing:
+        print(f"  [--] Not found (already removed?)  : {', '.join(missing)}")
+
+
 def _install_user_mcp(profile_name: str) -> None:
     """Merge profile's .mcp.json servers into ~/.claude.json top-level mcpServers.
 
@@ -291,28 +342,38 @@ def _install_user_mcp(profile_name: str) -> None:
         print(f"  (profile '{profile_name}' .mcp.json has no mcpServers, skipping)")
         return
 
-    # Read existing ~/.claude.json (preserve all existing content)
-    existing: dict = load_json(_CLAUDE_JSON) if _CLAUDE_JSON.exists() else {}
+    _merge_mcp_to_user_scope(profile_servers)
 
-    existing_servers: dict = existing.get("mcpServers", {})
-    added, updated = [], []
-    for name, config in profile_servers.items():
-        if name in existing_servers:
-            if existing_servers[name] != config:
-                updated.append(name)
-        else:
-            added.append(name)
-        existing_servers[name] = config
 
-    existing["mcpServers"] = existing_servers
-    save_json(_CLAUDE_JSON, existing)
+def manage_user_mcp(mcp_path: Path, *, uninstall: bool = False) -> None:
+    """Install or uninstall MCP servers from an external file into user scope.
 
-    if added:
-        print(f"  [OK] Added user-scope MCP servers  : {', '.join(added)}")
-    if updated:
-        print(f"  [OK] Updated user-scope MCP servers: {', '.join(updated)}")
-    if not added and not updated:
-        print(f"  [--] User-scope MCP servers unchanged: {', '.join(existing_servers.keys())}")
+    Reads *mcp_path* (must contain a ``mcpServers`` dict) and either merges
+    all servers into ``~/.claude.json`` (install) or removes them (uninstall).
+    No path substitution is applied — the file is used as-is.
+    """
+    if not mcp_path.exists():
+        print(f"ERROR: MCP file not found: {mcp_path}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        raw = load_json(mcp_path)
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"ERROR: Cannot read {mcp_path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    servers: dict = raw.get("mcpServers", {})
+    if not servers:
+        print(f"  [--] No mcpServers found in {mcp_path} — nothing to do.")
+        return
+
+    action = "Uninstalling" if uninstall else "Installing"
+    print(f"{action} MCP servers from {mcp_path}:")
+    print(f"  Servers: {', '.join(servers.keys())}")
+    print()
+    if uninstall:
+        _remove_mcp_from_user_scope(servers)
+    else:
+        _merge_mcp_to_user_scope(servers)
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +572,16 @@ def main() -> None:
         action="store_true",
         help="Print the currently active global profile name and exit",
     )
+    parser.add_argument(
+        "--mcp",
+        metavar="PATH",
+        help="Path to a .mcp.json file to install into (or remove from) user scope",
+    )
+    parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        help="Remove MCP servers listed in --mcp from user scope (requires --mcp)",
+    )
     sub = parser.add_subparsers(dest="command")
 
     glob_p = sub.add_parser("global", help="Install hooks + skills + agents into ~/.claude")
@@ -537,6 +608,13 @@ def main() -> None:
     if args.query:
         query_active_profile()
         return
+
+    if args.mcp:
+        manage_user_mcp(Path(args.mcp).expanduser().resolve(), uninstall=args.uninstall)
+        return
+
+    if args.uninstall and not args.mcp:
+        parser.error("--uninstall requires --mcp <path>")
 
     if not args.command:
         parser.print_help()
