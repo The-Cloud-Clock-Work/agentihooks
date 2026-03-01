@@ -25,13 +25,59 @@ Claude Code
         email, database, ...                  └── hooks/integrations/*
 ```
 
-## Quick Start
+## Getting Started
 
-1. **Fork this repo** and clone it
-2. **Install dependencies**: `pip install mcp[cli] PyJWT requests httpx psycopg2-binary`
-3. **Configure a profile**: edit `profiles/default/profile.yml`
-4. **Build profile artifacts**: `python scripts/build_profiles.py`
-5. **Run with agenticore** or use directly with Claude Code
+### 1. Clone and install dependencies
+
+```bash
+git clone https://github.com/The-Cloud-Clock-Work/agentihooks
+cd agentihooks
+pip install mcp[cli] PyJWT requests httpx psycopg2-binary
+```
+
+### 2. Install into Claude Code
+
+```bash
+python3 scripts/install.py global
+```
+
+This writes `~/.claude/settings.json` (with all hook wiring), and symlinks
+skills, agents, and commands from the repo into `~/.claude/`.
+
+Run with `--profile <name>` to select a profile's system prompt:
+
+```bash
+python3 scripts/install.py global --profile coding
+python3 scripts/install.py --list-profiles   # show available profiles
+```
+
+Re-run any time you update `settings.base.json` — the script is idempotent.
+
+### 3. Create the `/app` symlink (one-time, requires sudo)
+
+All hooks and log paths use `/app` as the canonical root (works identically
+in Docker, local dev, and Kubernetes).
+
+```bash
+sudo ln -sfn /path/to/agentihooks /app
+```
+
+> The install script prints this exact command if it can't create `/app` itself.
+> After this, logs appear at `/app/logs/hooks.log` and `/app/logs/agent.log`.
+
+### 4. Verify
+
+Open Claude Code in any project and run `/status` — hooks should be active.
+Check `ls /app/logs/` after the first tool call to confirm logs are flowing.
+
+### Install a profile's MCP server into a project
+
+```bash
+python3 scripts/install.py project ~/dev/my-project --profile default
+```
+
+This writes `.mcp.json` into the target project so Claude Code connects to
+the hooks MCP server when opening that project.
 
 ### Standalone usage
 
@@ -42,7 +88,7 @@ python -m hooks.mcp
 # Run with specific categories only
 MCP_CATEGORIES=github,utilities python -m hooks.mcp
 
-# Process a hook event
+# Process a hook event manually
 echo '{"hook_event_name":"SessionStart"}' | python -m hooks
 ```
 
@@ -118,7 +164,8 @@ agentihooks/
 │       └── ...                  #   Same structure
 │
 └── scripts/
-    └── build_profiles.py        # Generate settings.json + .mcp.json per profile
+    ├── install.py               # Install hooks/skills/agents to ~/.claude (local dev)
+    └── build_profiles.py        # Generate settings.json + .mcp.json per profile (Docker)
 ```
 
 ## Hook Events
@@ -249,8 +296,11 @@ Key environment variables:
 |----------|---------|-------------|
 | `MCP_CATEGORIES` | `all` | Comma-separated list of tool categories to load |
 | `ALLOWED_TOOLS` | (empty) | Legacy: comma-separated list of specific tool names |
+| `CLAUDE_HOOK_LOG_FILE` | `/app/logs/hooks.log` | Hook log file path |
+| `AGENT_LOG_FILE` | `/app/logs/agent.log` | Agent transcript log path |
 | `LOG_ENABLED` | `true` | Enable hook logging |
 | `LOG_TRANSCRIPT` | `true` | Auto-log conversation transcript |
+| `STREAM_AGENT_LOG` | `true` | Stream transcript to `AGENT_LOG_FILE` in real-time |
 | `MEMORY_AUTO_SAVE` | `true` | Auto-save session digest on Stop |
 | `LOG_HOOKS_COMMANDS` | `false` | Log hook command output |
 | `REDIS_URL` | (empty) | Redis connection for session state/memory |
