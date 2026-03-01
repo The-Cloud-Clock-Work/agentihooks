@@ -103,6 +103,25 @@ def _read_profile_description(profile_dir: Path) -> str:
     return ""
 
 
+def query_active_profile() -> None:
+    """Print the currently installed global profile and exit."""
+    claude_md = CLAUDE_HOME / _CLAUDE_MD_NAME
+    if not claude_md.exists():
+        print("not installed")
+        return
+    if not claude_md.is_symlink():
+        print("unmanaged  (CLAUDE.md is not a symlink — installed manually)")
+        return
+    target = claude_md.resolve()
+    try:
+        # Expect: <root>/profiles/<name>/.claude/CLAUDE.md
+        rel = target.relative_to(PROFILES_DIR)
+        profile_name = rel.parts[0]
+        print(profile_name)
+    except ValueError:
+        print(f"unknown  (symlink points outside profiles/: {target})")
+
+
 def list_profiles() -> None:
     """Print all available profiles and exit."""
     profiles = _available_profiles()
@@ -434,6 +453,11 @@ def main() -> None:
         action="store_true",
         help="List available profiles and exit",
     )
+    parser.add_argument(
+        "--query",
+        action="store_true",
+        help="Print the currently active global profile name and exit",
+    )
     sub = parser.add_subparsers(dest="command")
 
     glob_p = sub.add_parser("global", help="Install hooks + skills + agents into ~/.claude")
@@ -455,6 +479,10 @@ def main() -> None:
 
     if args.list_profiles:
         list_profiles()
+        return
+
+    if args.query:
+        query_active_profile()
         return
 
     if not args.command:
