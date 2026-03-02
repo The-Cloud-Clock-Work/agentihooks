@@ -4,7 +4,9 @@
 exec python3 "$0" "$@"
 exit
 '''
-"""Install agentihooks settings, hooks, skills, and agents to ~/.claude.
+# NOTE: The triple-quoted polyglot string above becomes __doc__ in Python,
+# so the real usage text is stored in _USAGE_TEXT and used as the argparse epilog.
+_USAGE_TEXT = """Install agentihooks settings, hooks, skills, and agents to ~/.claude.
 
 Usage:
     python scripts/install.py global [--profile default]
@@ -938,7 +940,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Install agentihooks settings/hooks/skills/agents to ~/.claude or a project.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
+        epilog=_USAGE_TEXT,
     )
     parser.add_argument(
         "--list-profiles",
