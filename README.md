@@ -90,8 +90,10 @@ agentihooks global [--profile <name>]   # install/re-apply to ~/.claude
 agentihooks project <path>              # write .mcp.json into a project
 agentihooks uninstall                   # remove everything
 agentihooks --mcp <file>                # add MCP servers at user scope
+agentihooks --mcp --uninstall           # interactive: pick a tracked file to remove
+agentihooks --mcp-lib [dir]             # browse a dir of MCP files, install one
 agentihooks --sync                      # re-apply all tracked MCP files
-agentihooks --loadenv [-- claude]       # inject ~/.agentihooks/.env then exec
+agentihooks --loadenv                   # install agentihooksenv alias into ~/.bashrc
 ```
 
 Full reference: [CLI Commands](https://the-cloud-clock-work.github.io/agentihooks/docs/reference/cli-commands/)
@@ -123,24 +125,32 @@ Everything user-specific lives in `~/.agentihooks/`:
 ```
 ~/.agentihooks/
 ├── .env        # All integration credentials (seeded from .env.example)
-├── state.json  # Linked MCP files for --sync
+├── state.json  # Tracked MCP files, lib path, and other state
 ├── logs/       # Hook + MCP logs
 └── memory/     # Cross-session agent memory
 ```
 
 To move to a new machine: clone the repo, copy `~/.agentihooks/.env`, run `agentihooks global`. Done.
 
-**Load env vars into Claude Code's process** (so MCP `${VAR}` placeholders resolve):
+**Install the `agentihooksenv` alias** (sources `.env` into any shell on demand):
 
 ```bash
-# Add to ~/.bashrc
-alias cc='agentihooks --loadenv -- claude'
+agentihooks --loadenv   # writes managed block to ~/.bashrc
+source ~/.bashrc
+agentihooksenv          # load vars into current shell before launching claude
 ```
 
-**Link an external `.mcp.json`** at user scope (tracked for auto-sync):
+**Browse a directory of MCP files** and install one interactively:
 
 ```bash
-agentihooks --mcp ~/dev/other-project/.mcp.json
+agentihooks --mcp-lib ~/.agentitools/   # saved for future calls
+agentihooks --mcp-lib                   # reuses saved path
+```
+
+**Interactive uninstall** — pick from tracked files:
+
+```bash
+agentihooks --mcp --uninstall
 ```
 
 Details: [Portability & Reusability](https://the-cloud-clock-work.github.io/agentihooks/docs/getting-started/portability/)

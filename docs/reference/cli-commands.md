@@ -126,17 +126,69 @@ Manage MCP servers at user scope (`~/.claude.json`), making them available in ev
 # Add MCP servers from a file
 agentihooks --mcp /path/to/.mcp.json
 
-# Remove MCP servers
+# Remove a specific file's servers
 agentihooks --mcp /path/to/.mcp.json --uninstall
+
+# Interactive uninstall — pick from tracked files
+agentihooks --mcp --uninstall
 ```
 
 When adding, the file path is recorded in `~/.agentihooks/state.json` so `agentihooks global` can re-apply it automatically on future runs.
+
+### Interactive uninstall
+
+`agentihooks --mcp --uninstall` (no path) shows a numbered list of all tracked files with server counts and `[installed]` markers:
+
+```
+Tracked MCP files:
+
+  1. /home/user/.agentitools/.anton-mcp.json
+     14 server(s): anton, litellm, matrix, github, ...
+
+Select file to uninstall [1-1] (or q to quit):
+```
+
+After removing, restart Claude Code for the change to take effect.
 
 ### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--uninstall` | Remove the servers from `~/.claude.json` instead of adding them |
+| `PATH` (optional) | Path to `.mcp.json` file. Omit with `--uninstall` for interactive selection. |
+| `--uninstall` | Remove servers instead of adding them |
+
+---
+
+## `agentihooks --mcp-lib`
+
+Browse a directory of `.mcp.json` files and interactively install one. The directory path is saved in `state.json` — omit it on future calls to reuse.
+
+```bash
+# First use — set the library directory
+agentihooks --mcp-lib /path/to/mcp-library/
+
+# Future calls — reuses the saved path
+agentihooks --mcp-lib
+```
+
+### What it does
+
+Scans the directory for any `.json` file containing a `mcpServers` key, shows a numbered list with server names and `[installed]` markers for already-tracked files, and installs the selected file via the standard `--mcp` flow.
+
+```
+MCP files in /home/user/.agentitools:
+
+  1. .anton-mcp.json  [installed]
+     14 server(s): anton, litellm, matrix, github, ...
+  2. staging-mcp.json
+     3 server(s): staging-api, staging-db, staging-cache
+
+Select file to install [1-2] (or q to quit):
+```
+
+### State
+
+The library path is saved as `mcpLibPath` in `~/.agentihooks/state.json` on first use. Change it any time by passing a new path.
 
 ---
 
@@ -154,60 +206,52 @@ Reads `~/.agentihooks/state.json` and merges each recorded `.mcp.json` file back
 
 ## `agentihooks --loadenv`
 
-Load `~/.agentihooks/.env` (or a custom path) into Claude Code's environment so MCP servers can read `${VAR}` placeholders.
+Installs an `agentihooksenv` shell alias into `~/.bashrc` that sources `~/.agentihooks/.env` into the current shell on demand.
 
 ```bash
-# Exec mode — replace this process with COMMAND after loading the env
-agentihooks --loadenv [-- COMMAND [ARGS...]]
-
-# Print mode — emit export statements for eval
-eval $(agentihooks --loadenv)
+agentihooks --loadenv
 ```
+
+### What it writes
+
+A managed block in `~/.bashrc` (idempotent — safe to re-run):
+
+```bash
+# === agentihooks ===
+alias agentihooksenv='set -a && . /home/user/.agentihooks/.env && set +a'
+# === end-agentihooks ===
+```
+
+### Usage
+
+```bash
+# Install the alias (one time)
+agentihooks --loadenv
+
+# Reload your shell
+source ~/.bashrc
+
+# Load all vars into the current shell whenever needed
+agentihooksenv
+```
+
+After `agentihooksenv`, all vars from `.env` are in the current shell. Start Claude Code from that shell and all `${VAR}` placeholders in MCP configs will resolve.
 
 ### Why this exists
 
-Claude Code expands `${VAR}` in MCP server configs at process startup. Environment variables set only inside hook subprocesses arrive too late. `--loadenv` injects vars from `~/.agentihooks/.env` into Claude Code's own process before it launches.
-
-### Modes
-
-| Mode | When | What happens |
-|------|------|-------------|
-| **Exec** | `-- COMMAND` present | Calls `os.execvpe` to replace the current process with `COMMAND`, with `.env` vars merged into the environment |
-| **Print** | No `-- COMMAND` | Prints `export KEY='VALUE'` lines — pipe to `eval $()` for shell integration |
+Claude Code expands `${VAR}` in MCP server configs from its own process environment at startup. Variables defined only in hook subprocesses arrive too late. `agentihooksenv` loads them into the launching shell so `claude` inherits them.
 
 ### Custom path
 
-```bash
-agentihooks --loadenv /path/to/custom.env -- claude
-```
-
-### Flags
-
-| Flag | Description |
-|------|-------------|
-| `PATH` (optional) | Path to env file (default: `~/.agentihooks/.env`) |
-| `-- COMMAND` | Command to exec after loading (optional) |
-
-### Recommended setup
-
-Add to `~/.bashrc`:
+Pass a different env file path to point the alias elsewhere:
 
 ```bash
-alias cc='agentihooks --loadenv -- claude'
+agentihooks --loadenv /path/to/other.env
 ```
 
-Then launch Claude Code with `cc` instead of `claude`. All MCP servers that use `${VAR}` in their configs will resolve correctly.
+### Managed block
 
-### Env file format
-
-The parser handles the same format as `hooks/config.py`:
-
-- `KEY=value` — basic assignment
-- `export KEY=value` — shell-style (export prefix stripped)
-- `KEY='quoted value'` — single-quoted
-- `KEY="quoted value"` — double-quoted
-- `KEY=value  # comment` — inline comments stripped
-- Lines starting with `#` and blank lines are ignored
+The `# === agentihooks === / # === end-agentihooks ===` markers make the block idempotent and upgradeable — re-running `--loadenv` replaces the block contents rather than appending. Keep your own aliases **outside** the markers.
 
 ---
 

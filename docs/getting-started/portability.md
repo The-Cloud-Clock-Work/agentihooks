@@ -24,7 +24,7 @@ Everything user-specific lives in a single directory:
 ```
 ~/.agentihooks/
 ├── .env          # All integration credentials (never committed)
-├── state.json    # Tracks linked MCP files for --sync
+├── state.json    # Tracks MCP files, lib path, and other state
 ├── logs/         # Hook + MCP log files
 └── memory/       # Per-project agent memory files
 ```
@@ -53,71 +53,109 @@ GRAFANA_URL=http://10.10.30.130:3000
 GITHUB_PERSONAL_ACCESS_TOKEN=ghp_...
 ```
 
-The file is seeded from `.env.example` on first `agentihooks global` — it is **never overwritten** on subsequent runs.
+The file is seeded from `.env.example` on first `agentihooks global` and is **never overwritten** on subsequent runs.
 
 **To move to a new machine:** copy `~/.agentihooks/.env` alongside the repo clone.
 
 ---
 
-## Loading env vars into Claude Code (`--loadenv`)
+## Loading env vars into your shell (`--loadenv`)
 
-Claude Code expands `${VAR}` in MCP server configs at startup. Variables set only inside hook subprocesses arrive too late. `--loadenv` solves this by injecting `.env` vars directly into Claude Code's process before it launches.
-
-### Exec mode (recommended)
+Claude Code expands `${VAR}` in MCP configs from its own process environment at startup. `--loadenv` installs a shell alias that sources `.env` into any shell on demand.
 
 ```bash
-agentihooks --loadenv -- claude
+# Install the alias (one time — writes a managed block to ~/.bashrc)
+agentihooks --loadenv
+
+# Reload your shell
+source ~/.bashrc
+
+# Load all vars into the current shell whenever you need them
+agentihooksenv
 ```
 
-This replaces the current shell process with `claude`, inheriting all `.env` vars. Add an alias to `~/.bashrc`:
+Then launch `claude` from that shell — all `${VAR}` placeholders in your MCP configs resolve correctly.
+
+The alias written to `~/.bashrc`:
 
 ```bash
-alias cc='agentihooks --loadenv -- claude'
+# === agentihooks ===
+alias agentihooksenv='set -a && . ~/.agentihooks/.env && set +a'
+# === end-agentihooks ===
 ```
 
-### Print mode (scripting)
-
-```bash
-eval $(agentihooks --loadenv)
-```
-
-Emits `export KEY='VALUE'` lines that your shell evaluates.
-
-### Custom env file
-
-```bash
-agentihooks --loadenv /path/to/project.env -- claude
-```
+The block is **idempotent** — re-running `--loadenv` updates the block in place rather than appending. Keep your own aliases outside the markers.
 
 ---
 
-## Linking external MCP servers (`--mcp`)
+## Linking MCP files at user scope (`--mcp`)
 
-`agentihooks --mcp` merges MCP servers from any `.mcp.json` file into `~/.claude.json` (user scope), making them available in every project. The path is recorded in `state.json`.
+`agentihooks --mcp` merges servers from any `.mcp.json` into `~/.claude.json`, making them available in every project. The path is recorded in `state.json` for auto-sync.
 
 ```bash
-# Add servers from an external repo
-agentihooks --mcp ~/dev/my-other-repo/.mcp.json
+# Install servers from a file
+agentihooks --mcp ~/.agentitools/.anton-mcp.json
 
-# Remove them
-agentihooks --mcp ~/dev/my-other-repo/.mcp.json --uninstall
+# Remove a specific file's servers
+agentihooks --mcp ~/.agentitools/.anton-mcp.json --uninstall
+
+# Interactive uninstall — pick from all tracked files
+agentihooks --mcp --uninstall
 ```
 
-Multiple files can be registered. `agentihooks global` calls `--sync` automatically to re-apply all of them.
+The interactive uninstall shows a numbered list:
+
+```
+Tracked MCP files:
+
+  1. /home/user/.agentitools/.anton-mcp.json
+     14 server(s): anton, litellm, matrix, github, ...
+
+Select file to uninstall [1-1] (or q to quit):
+```
+
+Restart Claude Code after any install/uninstall for changes to take effect.
 
 ---
 
-## Re-syncing linked MCPs (`--sync`)
+## MCP library browser (`--mcp-lib`)
 
-After cloning a repo or pulling changes to a linked `.mcp.json`, re-apply all tracked files:
+Keep all your `.mcp.json` files in one directory and browse them interactively. The directory path is saved — omit it on future calls.
+
+```bash
+# First use — set the library directory
+agentihooks --mcp-lib ~/.agentitools/
+
+# Future calls — reuses the saved path
+agentihooks --mcp-lib
+```
+
+Output:
+
+```
+MCP files in /home/user/.agentitools:
+
+  1. .anton-mcp.json  [installed]
+     14 server(s): anton, litellm, matrix, github, ...
+  2. staging-mcp.json
+     3 server(s): staging-api, staging-db, staging-cache
+
+Select file to install [1-2] (or q to quit):
+```
+
+`[installed]` marks files already tracked in `state.json`. The library path is saved as `mcpLibPath` in `state.json` — change it any time by passing a new path.
+
+---
+
+## Re-syncing all linked MCPs (`--sync`)
+
+After pulling changes to any tracked `.mcp.json`, re-apply everything:
 
 ```bash
 agentihooks --sync
 ```
 
-This reads `~/.agentihooks/state.json` and merges each file back into `~/.claude.json`. Missing files are skipped with a warning.
-
-`agentihooks global` calls `--sync` automatically when `state.json` exists.
+Reads `~/.agentihooks/state.json` and re-merges each file into `~/.claude.json`. Missing files are skipped with a warning. `agentihooks global` calls `--sync` automatically when `state.json` exists.
 
 ---
 
@@ -140,15 +178,16 @@ cp /path/to/backup/.env ~/.agentihooks/.env
 # 5. Install hooks, skills, agents, MCPs
 uv run agentihooks global
 
-# 6. Re-link any external MCP files you had registered
-agentihooks --mcp ~/dev/other-project/.mcp.json
-
-# 7. Set up your alias
-echo "alias cc='agentihooks --loadenv -- claude'" >> ~/.bashrc
+# 6. Install the agentihooksenv alias
+agentihooks --loadenv
 source ~/.bashrc
+
+# 7. Point the MCP library to your collection
+agentihooks --mcp-lib ~/.agentitools/
+# Pick the files you want from the interactive list
 ```
 
-Everything is restored. No manual settings editing, no digging through shell scripts to remember which keys go where.
+Everything restored. No manual settings editing, no hunting for which keys go where.
 
 ---
 
@@ -157,6 +196,8 @@ Everything is restored. No manual settings editing, no digging through shell scr
 1. Keep `.env.example` up to date in the repo with all variable names (no values)
 2. Share values via a secrets manager (1Password, AWS Secrets Manager, Vault)
 3. Each developer runs `agentihooks global` and populates `~/.agentihooks/.env`
-4. Use `agentihooks project <path>` to write `.mcp.json` into shared repos
+4. Each developer runs `agentihooks --loadenv` to install the `agentihooksenv` alias
+5. Keep a shared `~/.agentitools/` style directory (or a team repo) with curated `.mcp.json` files
+6. Use `agentihooks --mcp-lib` to browse and install from that collection
 
-The repo itself stays credential-free. `~/.agentihooks/.env` is on each developer's machine only.
+The repo stays credential-free. `~/.agentihooks/.env` is on each developer's machine only.
