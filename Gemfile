@@ -1,9 +1,7 @@
 source "https://rubygems.org"
 
-gem "jekyll", "~> 4.3"
+gem "github-pages", group: :jekyll_plugins
 gem "jekyll-remote-theme"
-gem "jekyll-seo-tag"
-gem "jekyll-sitemap"
 
 # Windows + JRuby compatibility shims
 platforms :mingw, :x64_mingw, :mswin, :jruby do
