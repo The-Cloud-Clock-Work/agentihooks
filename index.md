@@ -147,6 +147,35 @@ Registered files are tracked in `~/.agentihooks/state.json` and re-applied autom
 
 ---
 
+## Fork & extend
+
+AgentiHooks is a platform, not just a tool. Fork the repo and you immediately inherit:
+
+- The full hook lifecycle (SessionStart → Stop) wired into Claude Code
+- 45 MCP tools across 12 categories, ready to use or filter down
+- Profile system — swap agent personality and permissions with one flag
+- Install scripts, settings management, and credential loading
+
+**Add your own tools in three steps:**
+
+1. Create `hooks/mcp/mytools.py` with a `register(server)` function
+2. Add `"mytools": "hooks.mcp.mytools"` to `_registry.py`
+3. Run `agentihooks global` — your tools are live
+
+**Add your own profile:**
+
+Create a directory under `profiles/<name>/` with `profile.yml`, `.mcp.json`,
+and `.claude/CLAUDE.md`. Run `agentihooks global --profile <name>`.
+
+**Stay merge-friendly:**
+
+Your additions live in new files and new directories. Existing files are
+untouched. When you pull upstream changes the diff is clean.
+
+Full extension guide → [Extending AgentiHooks]({{ site.baseurl }}/docs/extending/)
+
+---
+
 ## Uninstall
 
 ```bash
