@@ -206,7 +206,7 @@ def _cmd_loadenv(env_file: Path, exec_cmd: list[str]) -> None:
 
     block = (
         f"{_BLOCK_START}\n"
-        f"alias agentihooksenv='set -a && . {env_file} && set +a'\n"
+        f"alias agentienv='set -a && . {env_file} && set +a'\n"
         f"{_BLOCK_END}\n"
     )
 
@@ -236,7 +236,7 @@ def _cmd_loadenv(env_file: Path, exec_cmd: list[str]) -> None:
     print()
     print("Now reload your shell and use:")
     print("  source ~/.bashrc")
-    print("  agentihooksenv")
+    print("  agentienv")
     print()
 
     _prompt_install_requirements()
