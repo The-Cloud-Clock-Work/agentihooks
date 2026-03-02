@@ -9,7 +9,6 @@ exit
 _USAGE_TEXT = """Examples:
     agentihooks global [--profile default]
         Install hooks, skills, agents, and CLAUDE.md into ~/.claude.
-        Also creates /app → <agentihooks root> symlink (needs write access to /).
         --profile selects which profile's CLAUDE.md to link (default: 'default').
         Available profiles: agentihooks --list-profiles
 
@@ -35,9 +34,8 @@ _USAGE_TEXT = """Examples:
 Re-run 'agentihooks global' after any changes to settings.base.json.
 The script is idempotent.
 
-The /app symlink is the canonical root used by all hook log paths
-(/app/logs/hooks.log, /app/logs/agent.log). If install can't create it
-due to permissions, it prints a sudo command to run manually.
+Data directory: defaults to ~/.agentihooks/
+  Override: export AGENTIHOOKS_HOME=/mnt/shared  (K8s / shared filesystem)
 """
 
 import argparse
@@ -308,18 +306,15 @@ def install_global(args: argparse.Namespace) -> None:
     claude_md_dst = CLAUDE_HOME / _CLAUDE_MD_NAME
     _install_claude_md(profile_claude_md, claude_md_dst, profile_name)
 
-    # --- 8. Create /app → AGENTIHOOKS_ROOT symlink ---
-    _install_app_symlink(AGENTIHOOKS_ROOT)
-
-    # --- 9. Install profile MCP servers to user scope (~/.claude.json) ---
+    # --- 8. Install profile MCP servers to user scope (~/.claude.json) ---
     _install_user_mcp(profile_name)
 
-    # --- 10. Re-apply any custom MCPs tracked in state.json ---
+    # --- 9. Re-apply any custom MCPs tracked in state.json ---
     if STATE_JSON.exists():
         print()
         sync_user_mcp()
 
-    # --- 11. Install agentihooks CLI tool to ~/.local/bin ---
+    # --- 10. Install agentihooks CLI tool to ~/.local/bin ---
     print()
     _install_cli_tool()
 
@@ -330,7 +325,6 @@ def install_global(args: argparse.Namespace) -> None:
     print("Verification steps:")
     print(f"  ls -la {existing_settings_path}")
     print(f"  ls -la {claude_md_dst}")
-    print("  ls -la /app  →  should point to agentihooks root")
     print("  Open Claude Code in any project → run /status (hooks should be active)")
     print("  Run /skills to list installed skills")
     print()
@@ -479,94 +473,54 @@ def sync_user_mcp() -> None:
 # CLI tool install (uv tool install --editable .)
 # ---------------------------------------------------------------------------
 
-_LOCAL_BIN = Path.home() / ".local" / "bin"
 _CLI_NAME = "agentihooks"
-_SCRIPT = AGENTIHOOKS_ROOT / "scripts" / "install.py"
 
 
 def _install_cli_tool() -> None:
-    """Install the agentihooks CLI tool via ``uv tool install --editable .``.
-
-    Uses uv when available (preferred — proper isolated env, upgradeable).
-    Falls back to a plain symlink in ~/.local/bin if uv is not installed.
-    """
+    """Install the agentihooks CLI globally via ``uv tool install --editable .``."""
     import subprocess
 
     uv = shutil.which("uv")
-    if uv:
-        result = subprocess.run(
-            [uv, "tool", "install", "--editable", "--force", "."],
-            cwd=AGENTIHOOKS_ROOT,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            print("  [OK] CLI installed via: uv tool install --editable .")
-            print(f"       Reinstall anytime with: uv tool install --editable --force .")
-        else:
-            print(f"  [!!] uv tool install failed: {result.stderr.strip()}")
-            print("       Falling back to symlink…")
-            _install_cli_symlink()
+    if not uv:
+        print("  [!!] uv not found — install uv first: https://docs.astral.sh/uv/getting-started/installation/")
+        print("       Then re-run: uv run agentihooks global")
         return
 
-    print("  [--] uv not found — using symlink fallback")
-    _install_cli_symlink()
-
-
-def _install_cli_symlink() -> None:
-    """Symlink ~/.local/bin/agentihooks → scripts/install.py (uv fallback)."""
-    _LOCAL_BIN.mkdir(parents=True, exist_ok=True)
-    link = _LOCAL_BIN / _CLI_NAME
-
-    if link.is_symlink():
-        if link.resolve() == _SCRIPT.resolve():
-            print(f"  [--] CLI already linked: {link}")
-            return
-        link.unlink()
-        link.symlink_to(_SCRIPT)
-        print(f"  [OK] Re-linked CLI: {link} → {_SCRIPT}")
-    elif link.exists():
-        print(f"  [!!] {link} exists and is not a symlink — skipping (remove manually)")
+    result = subprocess.run(
+        [uv, "tool", "install", "--editable", "--force", "."],
+        cwd=AGENTIHOOKS_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print("  [OK] CLI installed via: uv tool install --editable .")
     else:
-        link.symlink_to(_SCRIPT)
-        print(f"  [OK] Linked CLI: {link} → {_SCRIPT}")
-
-    path_dirs = os.environ.get("PATH", "").split(os.pathsep)
-    if str(_LOCAL_BIN) not in path_dirs:
-        print(f"  [!!] {_LOCAL_BIN} is not in your PATH.")
-        print("       Add to ~/.bashrc or ~/.zshrc:")
-        print('       export PATH="$HOME/.local/bin:$PATH"')
+        print(f"  [!!] uv tool install failed: {result.stderr.strip()}")
 
 
 def _uninstall_cli_tool() -> None:
-    """Uninstall the agentihooks CLI (uv tool or fallback symlink)."""
+    """Uninstall the agentihooks CLI via ``uv tool uninstall``."""
     import subprocess
 
     uv = shutil.which("uv")
-    if uv:
-        result = subprocess.run(
-            [uv, "tool", "uninstall", _CLI_NAME],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            print(f"  [OK] Uninstalled CLI via: uv tool uninstall {_CLI_NAME}")
-        else:
-            stderr = result.stderr.strip()
-            if "not installed" in stderr.lower():
-                print(f"  [--] {_CLI_NAME} was not installed via uv tool (skipping)")
-            else:
-                print(f"  [!!] uv tool uninstall failed: {stderr}")
+    if not uv:
+        print("  [!!] uv not found — cannot uninstall CLI automatically.")
+        print(f"       Remove manually: uv tool uninstall {_CLI_NAME}")
         return
 
-    link = _LOCAL_BIN / _CLI_NAME
-    if link.is_symlink() and link.resolve() == _SCRIPT.resolve():
-        link.unlink()
-        print(f"  [OK] Removed CLI symlink: {link}")
-    elif not link.exists():
-        print(f"  [--] CLI not found at {link} — already removed?")
+    result = subprocess.run(
+        [uv, "tool", "uninstall", _CLI_NAME],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print(f"  [OK] Uninstalled CLI via: uv tool uninstall {_CLI_NAME}")
     else:
-        print(f"  [!!] {link} is not an agentihooks symlink — skipping (remove manually)")
+        stderr = result.stderr.strip()
+        if "not installed" in stderr.lower():
+            print(f"  [--] {_CLI_NAME} was not installed via uv tool (skipping)")
+        else:
+            print(f"  [!!] uv tool uninstall failed: {stderr}")
 
 
 # ---------------------------------------------------------------------------
@@ -657,38 +611,6 @@ def _symlink_dir_contents(
     for item in sorted(children):
         if not item.name.startswith("."):
             _link_item(item, dst_dir / item.name, label)
-
-
-def _install_app_symlink(target: Path) -> None:
-    """Create /app → *target* symlink so hooks can always use /app as canonical root.
-
-    Requires write permission to /. If permission is denied, prints the sudo
-    command the user can run manually.
-    """
-    app = Path("/app")
-    if app.is_symlink():
-        if app.resolve() == target.resolve():
-            print(f"  [--] /app already linked → {target}")
-        else:
-            try:
-                app.unlink()
-                app.symlink_to(target)
-                print(f"  [OK] Re-linked /app → {target}")
-            except PermissionError:
-                print("  [!!] Cannot update /app (permission denied). Run manually:")
-                print(f"       sudo ln -sfn {target} /app")
-        return
-
-    if app.exists():
-        print("  [!!] /app exists but is not a symlink — skipping (remove manually).")
-        return
-
-    try:
-        app.symlink_to(target)
-        print(f"  [OK] Linked /app → {target}")
-    except PermissionError:
-        print("  [!!] Cannot create /app (permission denied). Run manually:")
-        print(f"       sudo ln -sfn {target} /app")
 
 
 def _install_claude_md(src: Path, dst: Path, profile_name: str) -> None:
@@ -836,9 +758,6 @@ def uninstall_global(args: argparse.Namespace) -> None:
     print()
     print(f"NOT removed (your data): {STATE_JSON}")
     print()
-    print("Manual step required after uninstall:")
-    print("  sudo rm /app")
-    print()
 
     if not yes:
         answer = input("Proceed? [y/N] ").strip().lower()
@@ -868,11 +787,7 @@ def uninstall_global(args: argparse.Namespace) -> None:
     else:
         print(f"[--] Skipped {claude_md_dst} (not a managed symlink)")
 
-    # --- 6. Note about /app ---
-    print()
-    print("Manual step: sudo rm /app")
-
-    # --- 7. Remove MCP servers from ~/.claude.json ---
+    # --- 6. Remove MCP servers from ~/.claude.json ---
     print()
     if managed_servers:
         print(f"Removing {len(managed_servers)} MCP server(s) from {_CLAUDE_JSON}:")
@@ -880,7 +795,7 @@ def uninstall_global(args: argparse.Namespace) -> None:
     else:
         print(f"  [--] No managed MCP servers to remove from {_CLAUDE_JSON}")
 
-    # --- 8. Uninstall CLI ---
+    # --- 7. Uninstall CLI ---
     print()
     _uninstall_cli_tool()
 

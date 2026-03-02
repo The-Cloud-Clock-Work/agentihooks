@@ -45,18 +45,22 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-# Add hooks path for imports
-_script_dir = Path(__file__).resolve().parent
-_app_hooks = Path("/app/hooks")
-if str(_app_hooks) not in sys.path:
-    sys.path.insert(0, str(_app_hooks))
+# Add repo root to path so hooks package is importable when run as a script
+_src_root = Path(__file__).resolve().parent.parent.parent
+if str(_src_root) not in sys.path:
+    sys.path.insert(0, str(_src_root))
 
 try:
     from hooks.common import log
+    from hooks.config import AGENTIHOOKS_HOME
 except ImportError:
 
     def log(msg, ctx=None):
         print(f"[LOG] {msg}: {ctx}", file=sys.stderr)
+
+    from pathlib import Path as _Path
+
+    AGENTIHOOKS_HOME = _Path.home() / ".agentihooks"
 
 
 # =============================================================================
@@ -64,7 +68,7 @@ except ImportError:
 # =============================================================================
 
 # Session map file location (shared with agenticore API)
-SESSION_MAP_FILE = Path.home() / "conversation_map.json"
+SESSION_MAP_FILE = AGENTIHOOKS_HOME / "conversation_map.json"
 
 
 # =============================================================================

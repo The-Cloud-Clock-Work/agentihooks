@@ -27,100 +27,79 @@ Claude Code
 
 ## Getting Started
 
+**Requirement:** [uv](https://docs.astral.sh/uv/getting-started/installation/) must be installed.
+
 ### 1. Clone and install dependencies
 
 ```bash
 git clone https://github.com/The-Cloud-Clock-Work/agentihooks
 cd agentihooks
-pip install mcp[cli] PyJWT requests httpx psycopg2-binary
+uv sync
 ```
 
-### 2. Install into Claude Code
+`uv sync` installs all dependencies declared in `pyproject.toml` into a local virtualenv.
+
+### 2. Bootstrap (first time only)
 
 ```bash
-python3 scripts/install.py global
+uv run agentihooks global
 ```
 
-What this does, in order:
+This wires agentihooks into Claude Code **and** installs the `agentihooks` CLI globally via
+`uv tool install --editable .`, so every subsequent run is just:
+
+```bash
+agentihooks global
+```
+
+What `agentihooks global` does, in order:
 
 | Step | Action |
 |------|--------|
-| 1 | Loads `profiles/_base/settings.base.json`, substitutes `/app` → real path |
+| 1 | Loads `profiles/_base/settings.base.json`, substitutes `/app` → real repo path |
 | 2 | Preserves personal keys (`model`, `autoUpdatesChannel`, etc.) from any pre-existing settings |
 | 3 | Writes `~/.claude/settings.json` with all hook wiring and permissions |
 | 4–6 | Symlinks skills, agents, and commands from `.claude/` into `~/.claude/` |
 | 7 | Symlinks `~/.claude/CLAUDE.md` → chosen profile's `CLAUDE.md` |
-| 8 | Creates `/app` → agentihooks root (needs sudo once — see step 3 below) |
-| 9 | Merges profile `.mcp.json` into `~/.claude.json` (user-scope MCPs, available in every project) |
-| 10 | If `~/.agentihooks/state.json` exists, re-syncs all custom MCP files registered via `--mcp` |
-| 11 | Symlinks `~/.local/bin/agentihooks` → `scripts/install.py` (installs the CLI tool) |
-
-After this first run, use `agentihooks` directly from anywhere:
-
-```bash
-agentihooks global --profile coding    # use a different profile
-agentihooks --list-profiles            # list available profiles
-agentihooks --query                    # show currently active profile
-```
+| 8 | Merges profile `.mcp.json` into `~/.claude.json` (user-scope MCPs, available in every project) |
+| 9 | If `~/.agentihooks/state.json` exists, re-syncs all custom MCP files registered via `--mcp` |
+| 10 | Installs the `agentihooks` CLI globally via `uv tool install --editable .` |
 
 Re-run any time after changing `settings.base.json` — the script is idempotent.
 
-### 3. Create the `/app` symlink (one-time, requires sudo)
-
-All hooks and log paths use `/app` as the canonical root (works identically
-in Docker, local dev, and Kubernetes).
-
-```bash
-sudo ln -sfn /path/to/agentihooks /app
-```
-
-> The install script prints this exact command if it can't create `/app` itself.
-> After this, logs appear at `/app/logs/hooks.log` and `/app/logs/agent.log`.
-
-### 4. Verify
+### 3. Verify
 
 Open Claude Code in any project and run `/status` — hooks should be active.
-Check `ls /app/logs/` after the first tool call to confirm logs are flowing.
+Check `ls ~/.agentihooks/logs/` after the first tool call to confirm logs are flowing.
 
 ---
 
-## Install Reference
+## CLI Reference
 
-Once `agentihooks global` has been run once, use the `agentihooks` CLI from anywhere.
-For the very first bootstrap, use `python3 scripts/install.py global` from the repo root.
+### `agentihooks global`
 
-### Global install
+Install (or re-apply) hooks, skills, agents, and CLAUDE.md into `~/.claude`.
 
 ```bash
 agentihooks global [--profile <name>]
+agentihooks global --profile coding
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--profile <name>` | Profile to use (default: `default`) |
+| `--profile <name>` | Profile whose CLAUDE.md to link (default: `default`) |
 | `--list-profiles` | Print all available profiles and exit |
 | `--query` | Print the currently active profile name and exit |
 
-### Managing MCP servers (user scope)
+### `agentihooks project`
 
-`~/.claude.json` supports a top-level `mcpServers` block that makes servers
-available in **every project** without a per-repo `.mcp.json`:
+Write a rendered `.mcp.json` into a specific project (per-repo MCP setup):
 
 ```bash
-# Add all servers from a file to user scope (recorded in ~/.agentihooks/state.json)
-agentihooks --mcp /path/to/.mcp.json
-
-# Remove those servers from user scope
-agentihooks --mcp /path/to/.mcp.json --uninstall
-
-# Re-apply everything in state.json (e.g. after a fresh OS install)
-agentihooks --sync
+agentihooks project ~/dev/my-project [--profile default]
 ```
 
-`agentihooks global` calls `--sync` automatically when `state.json` exists, so
-re-running the global install is all you ever need to restore a full setup.
-
-### Uninstall
+### `agentihooks uninstall`
 
 Remove everything agentihooks installed from the system:
 
@@ -131,24 +110,33 @@ agentihooks uninstall --yes   # skip confirmation (for scripting)
 
 What gets removed:
 
-| Step | Artifact | Action |
-|------|----------|--------|
-| 1 | `~/.claude/settings.json` | Deleted if managed by agentihooks |
-| 2–4 | Skills / agents / commands symlinks in `~/.claude/` | Symlinks whose target is inside the agentihooks repo |
-| 5 | `~/.claude/CLAUDE.md` | Removed if it points into `profiles/` |
-| 6 | `/app` symlink | Prints `sudo rm /app` — requires root to remove |
-| 7 | MCP servers in `~/.claude.json` | All servers from profile `.mcp.json` files and `state.json` |
-| 8 | `agentihooks` CLI | `uv tool uninstall agentihooks` (or removes the symlink fallback) |
+| Artifact | Action |
+|----------|--------|
+| `~/.claude/settings.json` | Deleted if managed by agentihooks |
+| Skills / agents / commands symlinks in `~/.claude/` | Symlinks whose target is inside the agentihooks repo |
+| `~/.claude/CLAUDE.md` | Removed if it points into `profiles/` |
+| MCP servers in `~/.claude.json` | All servers from profile `.mcp.json` files and `state.json` |
+| `agentihooks` CLI | `uv tool uninstall agentihooks` |
 
 `~/.agentihooks/` (your data / state) is **not** removed. Run `rm -rf ~/.agentihooks` manually for a full reset.
 
-### Project install
+### `agentihooks --mcp` / `--sync`
 
-Writes a rendered `.mcp.json` directly into a specific project (per-repo approach):
+Manage MCP servers at user scope (`~/.claude.json`), making them available in
+**every project** without a per-repo `.mcp.json`:
 
 ```bash
-agentihooks project ~/dev/my-project [--profile default]
+# Add all servers from a file (path recorded in ~/.agentihooks/state.json)
+agentihooks --mcp /path/to/.mcp.json
+
+# Remove those servers
+agentihooks --mcp /path/to/.mcp.json --uninstall
+
+# Re-apply all tracked MCP files (e.g. after a fresh OS install)
+agentihooks --sync
 ```
+
+`agentihooks global` calls `--sync` automatically when `state.json` exists.
 
 ### Standalone usage
 
@@ -365,10 +353,11 @@ Key environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `AGENTIHOOKS_HOME` | `~/.agentihooks` | Root for all runtime data (logs, memory, state). Set to a shared mount for K8s multi-agent deployments. |
 | `MCP_CATEGORIES` | `all` | Comma-separated list of tool categories to load |
 | `ALLOWED_TOOLS` | (empty) | Legacy: comma-separated list of specific tool names |
-| `CLAUDE_HOOK_LOG_FILE` | `/app/logs/hooks.log` | Hook log file path |
-| `AGENT_LOG_FILE` | `/app/logs/agent.log` | Agent transcript log path |
+| `CLAUDE_HOOK_LOG_FILE` | `~/.agentihooks/logs/hooks.log` | Hook log file path |
+| `AGENT_LOG_FILE` | `~/.agentihooks/logs/agent.log` | Agent transcript log path |
 | `LOG_ENABLED` | `true` | Enable hook logging |
 | `LOG_TRANSCRIPT` | `true` | Auto-log conversation transcript |
 | `STREAM_AGENT_LOG` | `true` | Stream transcript to `AGENT_LOG_FILE` in real-time |

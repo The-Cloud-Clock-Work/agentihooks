@@ -2,7 +2,7 @@
 Stream Claude Code transcript to centralized agent log file.
 
 This module copies transcript entries from Claude Code's session files
-to a centralized log file (/app/logs/agent.log by default) in real-time.
+to a centralized log file ($AGENTIHOOKS_HOME/logs/agent.log by default) in real-time.
 
 Key features:
 - Position tracking to avoid duplicates
@@ -14,10 +14,10 @@ Key features:
 import json
 from pathlib import Path
 
-from hooks.config import AGENT_LOG_FILE, STREAM_AGENT_LOG
+from hooks.config import AGENT_LOG_FILE, AGENTIHOOKS_HOME, STREAM_AGENT_LOG
 
 # Track last copied position per session
-POSITION_DIR = Path("/tmp/agent_stream_positions")
+POSITION_DIR = AGENTIHOOKS_HOME / "agent_stream_positions"
 
 
 def get_last_position(session_id: str) -> int:

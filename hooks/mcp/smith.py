@@ -3,6 +3,7 @@
 import json
 
 from hooks.common import log
+from hooks.config import AGENTIHOOKS_HOME
 
 
 def register(mcp):
@@ -167,7 +168,7 @@ def register(mcp):
             command_name: Command preset name from commands.json (default: "default")
             parameters: User task/prompt - comma-separated or JSON array
             template_vars: JSON object with template variables
-            cwd: Working directory (default: /app/package or evaluation dir)
+            cwd: Working directory (default: $AGENTIHOOKS_HOME/evaluation or settings.current_app_dir)
             timeout: Timeout in seconds (default: 120, max recommended: 180)
 
         Returns:
@@ -203,7 +204,7 @@ def register(mcp):
             effective_cwd = cwd
             if not effective_cwd:
                 if command_name == "evaluation":
-                    effective_cwd = "/app/evaluation"
+                    effective_cwd = str(AGENTIHOOKS_HOME / "evaluation")
                 else:
                     effective_cwd = settings.current_app_dir
 

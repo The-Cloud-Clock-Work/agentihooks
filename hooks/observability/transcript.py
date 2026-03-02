@@ -3,10 +3,10 @@
 import json
 from pathlib import Path
 
-from hooks.config import LOG_TRANSCRIPT
+from hooks.config import AGENTIHOOKS_HOME, LOG_TRANSCRIPT
 
 # Track last logged line per session to avoid duplicates
-POSITION_DIR = Path("/tmp/transcript_positions")
+POSITION_DIR = AGENTIHOOKS_HOME / "transcript_positions"
 
 
 def get_last_position(session_id: str) -> int:

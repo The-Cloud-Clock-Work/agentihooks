@@ -1,19 +1,26 @@
 """Configuration for hooks module."""
 
 import os
+from pathlib import Path
+
+# =============================================================================
+# RUNTIME DATA ROOT
+# =============================================================================
+
+# Root directory for all agentihooks runtime data (logs, memory, state).
+# Defaults to ~/.agentihooks. Override via env var for shared K8s mounts:
+#   export AGENTIHOOKS_HOME=/mnt/efs/shared
+AGENTIHOOKS_HOME = Path(os.getenv("AGENTIHOOKS_HOME", str(Path.home() / ".agentihooks")))
 
 # =============================================================================
 # LOGGING CONFIGURATION
 # =============================================================================
 
-# /app is a symlink created by `scripts/install.py global` that points to the
-# agentihooks repo root. All deployments (Docker, local, k8s) share this
-# canonical path so logs always land in the same configurable location.
-LOG_FILE = os.getenv("CLAUDE_HOOK_LOG_FILE", "/app/logs/hooks.log")
+LOG_FILE = os.getenv("CLAUDE_HOOK_LOG_FILE", str(AGENTIHOOKS_HOME / "logs" / "hooks.log"))
 
 # Path to agent transcript log (centralized stream of conversation)
 # This is a copy of the Claude Code transcript, streamed in real-time
-AGENT_LOG_FILE = os.getenv("AGENT_LOG_FILE", "/app/logs/agent.log")
+AGENT_LOG_FILE = os.getenv("AGENT_LOG_FILE", str(AGENTIHOOKS_HOME / "logs" / "agent.log"))
 
 
 def _env_bool(key: str, default: str = "false") -> bool:

@@ -39,6 +39,8 @@ class Memory:
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})  # NOSONAR
 
 
+from hooks.config import AGENTIHOOKS_HOME
+
 _KEY_PREFIX: str = os.getenv("REDIS_KEY_PREFIX", "agenticore")
 _AGENT: str = os.getenv("AGENTICORE_AGENT", "unknown")
 
@@ -54,7 +56,7 @@ class MemoryStore:
     def __init__(self) -> None:
         self._redis = None
         self._redis_checked = False
-        self._file_path = Path.home() / "agent_memories.jsonl"
+        self._file_path = AGENTIHOOKS_HOME / "agent_memories.jsonl"
 
     # ------------------------------------------------------------------
     # Redis connection (lazy, fail-safe)

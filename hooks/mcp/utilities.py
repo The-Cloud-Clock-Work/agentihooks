@@ -4,6 +4,7 @@ import json
 import os
 
 from hooks.common import log
+from hooks.config import AGENTIHOOKS_HOME
 
 
 def register(mcp):
@@ -67,7 +68,7 @@ def register(mcp):
         This tool writes the file AND validates Mermaid diagrams automatically.
 
         Args:
-            filepath: Path to write (must be .md extension, under /app/package or /tmp)
+            filepath: Path to write (must be .md extension, under $AGENTIHOOKS_HOME/package or /tmp)
             content: Markdown content to write
             validate_mermaid: Auto-validate Mermaid diagrams (default: True)
 
@@ -84,7 +85,7 @@ def register(mcp):
                 return json.dumps({"success": False, "error": f"Only .md files allowed, got: '{path.suffix}'"})
 
             resolved = path.resolve()
-            allowed_prefixes = ["/app/package", "/tmp"]
+            allowed_prefixes = [str(AGENTIHOOKS_HOME / "package"), "/tmp"]
             if not any(str(resolved).startswith(p) for p in allowed_prefixes):
                 return json.dumps(
                     {"success": False, "error": f"Path not allowed. Must be under: {allowed_prefixes}. Got: {resolved}"}

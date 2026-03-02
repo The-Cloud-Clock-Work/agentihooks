@@ -10,7 +10,9 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-_AGENT_LOG = os.getenv("AGENT_LOG_FILE", "/app/logs/agent.log")
+from hooks.config import AGENTIHOOKS_HOME
+
+_AGENT_LOG = os.getenv("AGENT_LOG_FILE", str(AGENTIHOOKS_HOME / "logs" / "agent.log"))
 
 
 def _parse_entries(path: str) -> List[dict]:
