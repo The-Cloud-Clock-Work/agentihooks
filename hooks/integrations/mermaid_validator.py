@@ -546,9 +546,9 @@ class MermaidValidator:
 
         # Patterns
         node_def_pattern = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)[\[\(\{]")
-        connection_pattern = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:-->|---|-\.->|==>|-.->|--x|--o|<-->)")
+        connection_pattern = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:-->|---|==>|-.->|--x|--o|<-->)")
         target_pattern = re.compile(
-            r"(?:-->|---|-\.->|==>|-.->|--x|--o|<-->)\s*(?:\|[^|]*\|)?\s*([A-Za-z_][A-Za-z0-9_]*)"
+            r"(?:-->|---|==>|-.->|--x|--o|<-->)\s*(?:\|[^|]*\|)?\s*([A-Za-z_][A-Za-z0-9_]*)"
         )
 
         # Track bracket balance
@@ -613,7 +613,6 @@ class MermaidValidator:
                 if bracket in ["[", "[[", "(", "((", "{"]:
                     line_stack.append(bracket)
                 elif bracket in ["]", "]]", ")", "))", "}"]:
-                    {"[": "]", "[[": "]]", "(": ")", "((": "))", "{": "}"}.get(line_stack[-1] if line_stack else "", "")
                     if line_stack and bracket_types.get(line_stack[-1]) == bracket:
                         line_stack.pop()
                     elif not line_stack:
@@ -862,7 +861,7 @@ class MermaidValidator:
 
         for i, line in enumerate(diagram.lines):
             stripped = line.strip()
-            diagram.start_line + i
+            line_num = diagram.start_line + i
 
             # Skip empty lines, comments, and diagram declaration
             if not stripped or stripped.startswith("%%") or stripped.lower() == "classdiagram":
@@ -893,7 +892,7 @@ class MermaidValidator:
 
         for i, line in enumerate(diagram.lines):
             stripped = line.strip()
-            diagram.start_line + i
+            line_num = diagram.start_line + i
 
             # Skip empty lines, comments, and diagram declarations
             if not stripped or stripped.startswith("%%"):
