@@ -1,0 +1,5 @@
+{
+  "env": {
+    "AGENTIHOOKS_SECRETS_MODE": "standard"
+  }
+}
