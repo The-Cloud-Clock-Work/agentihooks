@@ -9,11 +9,11 @@ permalink: /
 # AgentiHooks
 {: .fs-9 .fw-700 }
 
-Hook system and MCP tool server for Claude Code agents. Event-driven lifecycle hooks, 45 MCP tools across 12 categories, and profile-based configuration.
+Lifecycle hooks and 45 MCP tools for Claude Code — install once, work everywhere.
 {: .fs-5 .text-grey-dk-100 .mb-6 }
 
 <div class="hero-actions text-center mb-8" markdown="0">
-  <a href="#quick-start" class="btn btn-primary fs-5 mr-2">Get Started</a>
+  <a href="#install" class="btn btn-primary fs-5 mr-2">Get Started</a>
   <a href="https://github.com/The-Cloud-Clock-Work/agentihooks" class="btn fs-5" target="_blank">View on GitHub</a>
 </div>
 
@@ -24,131 +24,122 @@ Hook system and MCP tool server for Claude Code agents. Event-driven lifecycle h
 
 ---
 
-## What is AgentiHooks?
-
-AgentiHooks provides two capabilities for Claude Code agents:
-
-1. **Lifecycle Hooks** — Event-driven handlers that fire on SessionStart, SessionEnd, PreToolUse, PostToolUse, Stop, and other Claude Code hook events. Automatically log transcripts, inject context, record tool errors, and auto-save session summaries to memory.
-
-2. **MCP Tool Server** — 45 tools across 12 categories (GitHub, AWS, Confluence, email, messaging, storage, database, compute, observability, agent completions, utilities, and command builder) that extend what Claude Code agents can do.
-
----
-
-## Quick Start
-{: #quick-start }
-
-AgentiHooks is designed to run inside the [agenticore](https://github.com/The-Cloud-Clock-Work/agenticore) container, but can also be used standalone:
+## Install
+{: #install }
 
 ```bash
-# Clone the repo
-git clone https://github.com/The-Cloud-Clock-Work/agentihooks
-cd agentihooks
-
-# Install dependencies
-pip install -e ".[all]"
-
-# Run the MCP tool server
-python -m hooks.mcp
-
-# Run hooks (typically invoked by Claude Code via settings.json)
-python -m hooks
+pip install agentihooks
 ```
 
----
+Then wire everything into Claude Code in one command:
 
-## Hook Events
-
-| Event | When It Fires | What AgentiHooks Does |
-|-------|--------------|----------------------|
-| `SessionStart` | New Claude Code session begins | Inject context directory + token limit |
-| `SessionEnd` | Session ends normally | Log metrics, cleanup |
-| `PreToolUse` | Before any tool executes | Log transcript, inject tool memory |
-| `PostToolUse` | After tool completes | Record errors for learning |
-| `Stop` | Agent stops (success or error) | Error notification, transcript scan, auto-save memory |
-
----
-
-## MCP Tool Categories (12)
-
-| Category | Tools | Description |
-|----------|-------|-------------|
-| **GitHub** | 5 | Token management, clone, PR creation, repo info |
-| **AWS** | 4 | Profile listing, account discovery |
-| **Confluence** | 9 | Full CRUD, markdown docgen, validation |
-| **Email** | 2 | SMTP send, markdown-to-HTML |
-| **Messaging** | 3 | SQS, webhook |
-| **Storage** | 2 | S3 upload, filesystem delete |
-| **Database** | 3 | DynamoDB, PostgreSQL |
-| **Compute** | 1 | Lambda invocation |
-| **Observability** | 7 | Timers, metrics, logging, container logs |
-| **Agent** | 1 | Completions endpoint with presets |
-| **Smith** | 4 | Command builder integration |
-| **Utilities** | 4 | Mermaid validation, markdown writer, env, tool listing |
-
----
-
-## Architecture
-
-```mermaid
-flowchart TB
-    subgraph "Claude Code"
-        CC[Claude CLI]
-    end
-
-    subgraph "AgentiHooks"
-        HM[Hook Manager]
-        MCP[MCP Server<br/>45 tools]
-        MEM[Memory System]
-        OBS[Observability]
-        TM[Tool Memory]
-    end
-
-    subgraph "Integrations"
-        GH[GitHub]
-        AWS[AWS]
-        CF[Confluence]
-        DB[(Databases)]
-    end
-
-    CC -->|hook events| HM
-    CC -->|MCP tools| MCP
-    HM --> MEM
-    HM --> OBS
-    HM --> TM
-    MCP --> GH
-    MCP --> AWS
-    MCP --> CF
-    MCP --> DB
-```
-
----
-
-## Profile System
-
-AgentiHooks uses profiles to configure different agent personalities:
-
-```
-profiles/
-├── _base/
-│   └── settings.base.json    # Shared permissions + hooks
-├── default/
-│   ├── profile.yml            # Model, turns, timeout, categories
-│   ├── .mcp.json              # Generated MCP config
-│   └── .claude/
-│       ├── CLAUDE.md          # Agent system prompt
-│       └── settings.json      # Generated settings
-└── coding/
-    └── ...                    # Same structure
-```
-
-Build profiles:
 ```bash
-python scripts/build_profiles.py
+agentihooks global
+```
+
+That's it. Hooks are active and 45 MCP tools are registered the next time you start `claude`.
+
+---
+
+## Choose a profile
+
+Profiles set the agent's personality and tool permissions. The default profile works for most people.
+
+```bash
+# See what's available
+agentihooks global --list-profiles
+
+# Install with a specific profile
+agentihooks global --profile coding
+
+# Check which profile is active
+agentihooks global --query
 ```
 
 ---
 
-## Related Projects
+## Load your secrets — the `agentienv` alias
+
+Claude Code expands `${VAR}` in MCP configs from its own process environment. The cleanest way to get secrets into that environment is the `agentienv` alias:
+
+```bash
+# One-time setup — writes a managed block to ~/.bashrc
+agentihooks --loadenv
+
+# Reload your shell
+source ~/.bashrc
+```
+
+From now on, run this before starting Claude Code:
+
+```bash
+agentienv        # sources ~/.agentihooks/.env into the current shell
+claude           # inherits all your vars
+```
+
+All `${VAR}` placeholders in MCP server configs resolve automatically.
+
+---
+
+## Per-project MCP tools
+
+Don't want a global install? Wire the MCP server into a single project instead:
+
+```bash
+agentihooks project ~/dev/my-project
+agentihooks project ~/dev/my-project --profile coding
+```
+
+This writes a `.mcp.json` directly into the project directory.
+
+---
+
+## Add more MCP servers
+
+```bash
+# Add servers from any .mcp.json file
+agentihooks --mcp /path/to/.mcp.json
+
+# Remove them
+agentihooks --mcp /path/to/.mcp.json --uninstall
+
+# Interactive picker from a directory of .mcp.json files
+agentihooks --mcp-lib /path/to/mcp-library/
+```
+
+Registered files are tracked in `~/.agentihooks/state.json` and re-applied automatically on every `agentihooks global` run.
+
+---
+
+## Uninstall
+
+```bash
+agentihooks uninstall        # prompts for confirmation
+agentihooks uninstall --yes  # scripting / no prompt
+```
+
+User data in `~/.agentihooks/` (logs, memory, state) is left in place. Remove it manually if you want a full reset:
+
+```bash
+rm -rf ~/.agentihooks
+```
+
+---
+
+## What you get
+
+| | |
+|---|---|
+| **Lifecycle hooks** | Auto-log transcripts, inject session context, save memory on stop |
+| **45 MCP tools** | GitHub, AWS, Confluence, email, SQS, S3, DynamoDB, PostgreSQL, observability, and more |
+| **Profiles** | Swap agent personality and permissions with one flag |
+| **`agentienv` alias** | Clean, shell-native secret loading — no wrapper scripts |
+
+Full details in the [docs]({{ site.baseurl }}/docs/getting-started/).
+
+---
+
+## Related projects
 
 | Project | Description |
 |---------|-------------|
