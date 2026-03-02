@@ -3,6 +3,42 @@
 import os
 from pathlib import Path
 
+
+def _load_user_env() -> None:
+    """Load ~/.agentihooks/.env into os.environ (overrides shell session env).
+    Called once at module import time. AGENTIHOOKS_HOME is resolved from
+    the current os.environ (set via shell) to locate the .env file.
+    """
+    _home = Path(os.environ.get("AGENTIHOOKS_HOME", str(Path.home() / ".agentihooks")))
+    _env_file = _home / ".env"
+    if not _env_file.is_file():
+        return
+    for _raw in _env_file.read_text(encoding="utf-8").splitlines():
+        _line = _raw.strip()
+        if not _line or _line.startswith("#"):
+            continue
+        # Strip optional "export " prefix
+        if _line.startswith("export "):
+            _line = _line[7:].lstrip()
+        if "=" not in _line:
+            continue
+        _key, _, _val = _line.partition("=")
+        _key = _key.strip()
+        _val = _val.strip()
+        # Handle quoted values: KEY="value" or KEY='value'
+        if _val and _val[0] in ('"', "'"):
+            _q = _val[0]
+            _end = _val.find(_q, 1)
+            _val = _val[1:_end] if _end != -1 else _val[1:]
+        elif "#" in _val:
+            # Strip inline comment: KEY=value # comment
+            _val = _val[: _val.index("#")].rstrip()
+        if _key:
+            os.environ[_key] = _val
+
+
+_load_user_env()
+
 # =============================================================================
 # RUNTIME DATA ROOT
 # =============================================================================

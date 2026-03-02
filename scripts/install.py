@@ -143,6 +143,32 @@ def _state_remove_mcp(mcp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# User env file (~/.agentihooks/.env)
+# ---------------------------------------------------------------------------
+
+_ENV_FILE_DST = AGENTIHOOKS_STATE_DIR / ".env"
+_ENV_EXAMPLE_SRC = AGENTIHOOKS_ROOT / ".env.example"
+
+
+def _seed_user_env_file() -> None:
+    """Create ~/.agentihooks/.env from .env.example if it doesn't already exist.
+
+    Never overwrites — only creates on first install.
+    The user is the only one who should delete or modify this file.
+    """
+    AGENTIHOOKS_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if _ENV_FILE_DST.exists():
+        print(f"  [--] {_ENV_FILE_DST} already exists — not overwritten (your file)")
+        return
+    if _ENV_EXAMPLE_SRC.exists():
+        shutil.copy2(_ENV_EXAMPLE_SRC, _ENV_FILE_DST)
+        print(f"  [OK] Created {_ENV_FILE_DST}")
+        print(f"       Configure your integrations: {_ENV_FILE_DST}")
+    else:
+        print(f"  [!!] .env.example not found — could not seed {_ENV_FILE_DST}")
+
+
+# ---------------------------------------------------------------------------
 # Path substitution: replace /app with the actual agentihooks root
 # ---------------------------------------------------------------------------
 
@@ -336,6 +362,10 @@ def install_global(args: argparse.Namespace) -> None:
     print()
     _install_cli_tool()
 
+    # --- 11. Seed ~/.agentihooks/.env from .env.example (first run only) ---
+    print()
+    _seed_user_env_file()
+
     # --- Done ---
     print()
     print("Installation complete.")
@@ -348,6 +378,9 @@ def install_global(args: argparse.Namespace) -> None:
     print()
     print("To update after settings.base.json changes:")
     print("  agentihooks global")
+    print()
+    print("Shell tip: to expose vars in ~/.agentihooks/.env to ALL MCP servers, add to ~/.bashrc:")
+    print("  [ -f ~/.agentihooks/.env ] && set -a && . ~/.agentihooks/.env && set +a")
 
 
 # ---------------------------------------------------------------------------
@@ -822,7 +855,9 @@ def uninstall_global(args: argparse.Namespace) -> None:
     print("Uninstall complete.")
     print()
     print(f"Note: {AGENTIHOOKS_STATE_DIR}/ was NOT removed (your data).")
-    print(f"      Run 'rm -rf {AGENTIHOOKS_STATE_DIR}' for a full reset.")
+    print(f"      .env    : {_ENV_FILE_DST}")
+    print(f"      state   : {STATE_JSON}")
+    print(f"      Full reset: rm -rf {AGENTIHOOKS_STATE_DIR}")
 
 
 # ---------------------------------------------------------------------------
