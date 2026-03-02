@@ -71,7 +71,7 @@ agentihooks --loadenv
 source ~/.bashrc
 
 # Load all vars into the current shell whenever you need them
-agentihooksenv
+agentienv
 ```
 
 Then launch `claude` from that shell — all `${VAR}` placeholders in your MCP configs resolve correctly.
@@ -80,11 +80,28 @@ The alias written to `~/.bashrc`:
 
 ```bash
 # === agentihooks ===
-alias agentihooksenv='set -a && . ~/.agentihooks/.env && set +a'
+alias agentienv='set -a && . ~/.agentihooks/.env && set +a'
 # === end-agentihooks ===
 ```
 
 The block is **idempotent** — re-running `--loadenv` updates the block in place rather than appending. Keep your own aliases outside the markers.
+
+### Auto-installing requirements
+
+After writing the alias, `--loadenv` scans `~/.agentihooks/` and the saved `mcpLibPath` for any `requirements.txt` and offers to install each one:
+
+```
+Found /home/user/.agentitools/requirements.txt — install with uv? [y/N]
+```
+
+Requirements are installed with `uv pip install` into the active virtual environment. If no venv is active and no `.venv` exists in the current directory, installation is refused to avoid polluting system Python:
+
+```
+[!!] No virtual environment found.
+     Create and activate one first:
+       python3 -m venv .venv && source .venv/bin/activate
+     Then re-run: agentihooks --loadenv
+```
 
 ---
 
@@ -178,11 +195,16 @@ cp /path/to/backup/.env ~/.agentihooks/.env
 # 5. Install hooks, skills, agents, MCPs
 uv run agentihooks global
 
-# 6. Install the agentihooksenv alias
-agentihooks --loadenv
+# 6. Install the agentienv alias + requirements
+#    (activate a venv first so --loadenv can install packages)
+python3 -m venv .venv && source .venv/bin/activate
+agentihooks --loadenv   # writes alias, offers to install requirements.txt
 source ~/.bashrc
 
-# 7. Point the MCP library to your collection
+# 7. Load env vars and launch Claude Code
+agentienv && claude
+
+# 8. Point the MCP library to your collection
 agentihooks --mcp-lib ~/.agentitools/
 # Pick the files you want from the interactive list
 ```
@@ -196,7 +218,7 @@ Everything restored. No manual settings editing, no hunting for which keys go wh
 1. Keep `.env.example` up to date in the repo with all variable names (no values)
 2. Share values via a secrets manager (1Password, AWS Secrets Manager, Vault)
 3. Each developer runs `agentihooks global` and populates `~/.agentihooks/.env`
-4. Each developer runs `agentihooks --loadenv` to install the `agentihooksenv` alias
+4. Each developer runs `agentihooks --loadenv` to install the `agentienv` alias
 5. Keep a shared `~/.agentitools/` style directory (or a team repo) with curated `.mcp.json` files
 6. Use `agentihooks --mcp-lib` to browse and install from that collection
 

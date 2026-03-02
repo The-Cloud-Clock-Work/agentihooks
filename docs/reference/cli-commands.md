@@ -206,7 +206,7 @@ Reads `~/.agentihooks/state.json` and merges each recorded `.mcp.json` file back
 
 ## `agentihooks --loadenv`
 
-Installs an `agentihooksenv` shell alias into `~/.bashrc` that sources `~/.agentihooks/.env` into the current shell on demand.
+Installs an `agentienv` shell alias into `~/.bashrc` that sources `~/.agentihooks/.env` into the current shell on demand.
 
 ```bash
 agentihooks --loadenv
@@ -218,7 +218,7 @@ A managed block in `~/.bashrc` (idempotent — safe to re-run):
 
 ```bash
 # === agentihooks ===
-alias agentihooksenv='set -a && . /home/user/.agentihooks/.env && set +a'
+alias agentienv='set -a && . /home/user/.agentihooks/.env && set +a'
 # === end-agentihooks ===
 ```
 
@@ -232,14 +232,14 @@ agentihooks --loadenv
 source ~/.bashrc
 
 # Load all vars into the current shell whenever needed
-agentihooksenv
+agentienv
 ```
 
-After `agentihooksenv`, all vars from `.env` are in the current shell. Start Claude Code from that shell and all `${VAR}` placeholders in MCP configs will resolve.
+After `agentienv`, all vars from `.env` are in the current shell. Start Claude Code from that shell and all `${VAR}` placeholders in MCP configs will resolve.
 
 ### Why this exists
 
-Claude Code expands `${VAR}` in MCP server configs from its own process environment at startup. Variables defined only in hook subprocesses arrive too late. `agentihooksenv` loads them into the launching shell so `claude` inherits them.
+Claude Code expands `${VAR}` in MCP server configs from its own process environment at startup. Variables defined only in hook subprocesses arrive too late. `agentienv` loads them into the launching shell so `claude` inherits them.
 
 ### Custom path
 
@@ -252,6 +252,19 @@ agentihooks --loadenv /path/to/other.env
 ### Managed block
 
 The `# === agentihooks === / # === end-agentihooks ===` markers make the block idempotent and upgradeable — re-running `--loadenv` replaces the block contents rather than appending. Keep your own aliases **outside** the markers.
+
+### Auto-installing requirements
+
+After writing the alias, `--loadenv` scans `~/.agentihooks/` and the saved `mcpLibPath` for `requirements.txt` files and offers to install each:
+
+```
+Found /home/user/.agentitools/requirements.txt — install with uv? [y/N]
+```
+
+- Uses `uv pip install --python <venv> -r requirements.txt`
+- Detects venv via `$VIRTUAL_ENV` or `.venv` in the current directory
+- **Refuses to install into system Python** — activating a venv first is required
+- Skipped entirely if `uv` is not found on `$PATH`
 
 ---
 

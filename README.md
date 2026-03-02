@@ -93,7 +93,7 @@ agentihooks --mcp <file>                # add MCP servers at user scope
 agentihooks --mcp --uninstall           # interactive: pick a tracked file to remove
 agentihooks --mcp-lib [dir]             # browse a dir of MCP files, install one
 agentihooks --sync                      # re-apply all tracked MCP files
-agentihooks --loadenv                   # install agentihooksenv alias into ~/.bashrc
+agentihooks --loadenv                   # install agentienv alias into ~/.bashrc
 ```
 
 Full reference: [CLI Commands](https://the-cloud-clock-work.github.io/agentihooks/docs/reference/cli-commands/)
@@ -132,12 +132,12 @@ Everything user-specific lives in `~/.agentihooks/`:
 
 To move to a new machine: clone the repo, copy `~/.agentihooks/.env`, run `agentihooks global`. Done.
 
-**Install the `agentihooksenv` alias** (sources `.env` into any shell on demand):
+**Install the `agentienv` alias** (sources `.env` into any shell on demand):
 
 ```bash
 agentihooks --loadenv   # writes managed block to ~/.bashrc
 source ~/.bashrc
-agentihooksenv          # load vars into current shell before launching claude
+agentienv          # load vars into current shell before launching claude
 ```
 
 **Browse a directory of MCP files** and install one interactively:
