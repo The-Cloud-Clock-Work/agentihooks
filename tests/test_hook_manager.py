@@ -1,6 +1,7 @@
 """Tests for hooks.hook_manager module."""
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -104,3 +105,83 @@ class TestBlockActionIntegration:
         """Clean Write content is not blocked."""
         result = self._run(self._write_payload("x = 1\n"))
         assert result.returncode == 0
+
+
+class TestSecretsModesIntegration:
+    """Integration tests: AGENTIHOOKS_SECRETS_MODE controls blocking behavior."""
+
+    def _run(self, payload: dict, *, mode: str) -> subprocess.CompletedProcess:
+        env = {**os.environ, "AGENTIHOOKS_SECRETS_MODE": mode}
+        return subprocess.run(
+            [sys.executable, "-m", "hooks"],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            cwd=_PROJECT_ROOT,
+            env=env,
+        )
+
+    def _bash_payload(self, command: str) -> dict:
+        return {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "session_id": "test",
+            "transcript_path": "",
+        }
+
+    def _write_payload(self, content: str) -> dict:
+        return {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/test.py", "content": content},
+            "session_id": "test",
+            "transcript_path": "",
+        }
+
+    def test_mode_off_allows_secrets(self):
+        """mode=off should not block even with secrets present."""
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        result = self._run(self._bash_payload(f"echo {key}"), mode="off")
+        assert result.returncode == 0
+
+    def test_mode_warn_allows_secrets(self):
+        """mode=warn should warn but not block (exit 0)."""
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        result = self._run(self._bash_payload(f"echo {key}"), mode="warn")
+        assert result.returncode == 0
+        assert "WARNING" in result.stdout
+
+    def test_mode_standard_blocks_secrets(self):
+        """mode=standard should block secrets (exit 2)."""
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        result = self._run(self._bash_payload(f"echo {key}"), mode="standard")
+        assert result.returncode == 2
+        assert "BLOCKED" in result.stdout
+
+    def test_mode_strict_blocks_secrets(self):
+        """mode=strict should block secrets (exit 2)."""
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        result = self._run(self._bash_payload(f"echo {key}"), mode="strict")
+        assert result.returncode == 2
+        assert "BLOCKED" in result.stdout
+
+    def test_mode_strict_catches_slack_token(self):
+        """mode=strict should block Slack tokens that standard misses."""
+        token = "xoxb-" + "1234567890-abcdef"
+        result = self._run(self._bash_payload(f"export SLACK={token}"), mode="strict")
+        assert result.returncode == 2
+        assert "slack_token" in result.stdout
+
+    def test_mode_standard_misses_slack_token(self):
+        """mode=standard should NOT block Slack tokens."""
+        token = "xoxb-" + "1234567890-abcdef"
+        result = self._run(self._bash_payload(f"export SLACK={token}"), mode="standard")
+        assert result.returncode == 0
+
+    def test_mode_warn_write_allows_secrets(self):
+        """mode=warn should warn but not block Write with secrets."""
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        result = self._run(self._write_payload(f"key = '{key}'"), mode="warn")
+        assert result.returncode == 0
+        assert "WARNING" in result.stdout

@@ -49,3 +49,13 @@ LOG_USE_COLORS = _env_bool("LOG_USE_COLORS", "true")
 # Enable/disable automatic memory save on session Stop
 # Captures session digest and stores it via MemoryStore
 MEMORY_AUTO_SAVE = _env_bool("MEMORY_AUTO_SAVE", "true")
+
+# =============================================================================
+# SECRETS SCANNING MODE
+# =============================================================================
+
+# Controls how secrets scanning behaves: off | warn | standard | strict
+# Invalid values fail-safe to "standard" (never to "off").
+_VALID_SECRETS_MODES = frozenset({"off", "warn", "standard", "strict"})
+_raw = os.getenv("AGENTIHOOKS_SECRETS_MODE", "standard").lower().strip()
+SECRETS_MODE: str = _raw if _raw in _VALID_SECRETS_MODES else "standard"

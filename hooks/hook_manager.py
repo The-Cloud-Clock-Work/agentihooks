@@ -374,15 +374,21 @@ def on_session_end(payload: dict) -> None:
 
 def on_user_prompt_submit(payload: dict) -> None:
     """Handle UserPromptSubmit event."""
+    from hooks.config import SECRETS_MODE
+
     session_id = payload.get("session_id", "")
     log("User prompt submitted", {"session_id": session_id})
+
+    if SECRETS_MODE == "off":
+        log("Secrets scanning skipped (mode=off)")
+        return
 
     prompt = payload.get("prompt", "")
     if prompt:
         from hooks.secrets import scan
         from hooks.common import inject_context
 
-        hits = scan(prompt)
+        hits = scan(prompt, mode=SECRETS_MODE)
         if hits:
             names = ", ".join(hits)
             inject_context(
@@ -394,37 +400,60 @@ def on_user_prompt_submit(payload: dict) -> None:
 
 def on_pre_tool_use(payload: dict) -> None:
     """Handle PreToolUse event."""
+    from hooks.config import SECRETS_MODE
+
     tool_name = payload.get("tool_name", "unknown")
     tool_input = payload.get("tool_input", {})
 
-    from hooks.secrets import scan, redact
-
-    # Log command details for Bash
-    if tool_name == "Bash":
-        command = tool_input.get("command", "")
-        safe_command = redact(command)[:500]
-        log(f"Pre tool use: {tool_name}", {"tool": tool_name, "command": safe_command})
-        hits = scan(command)
-        if hits:
-            names = ", ".join(hits)
-            raise BlockAction(
-                f"BLOCKED: Secret(s) detected in Bash command ({names}). "
-                "Never pass credentials as inline command arguments. "
-                "Use environment variables instead."
-            )
-    elif tool_name in ("Write", "Edit"):
-        content = tool_input.get("content", "") or tool_input.get("new_string", "")
-        log(f"Pre tool use: {tool_name}", {"tool": tool_name})
-        hits = scan(content)
-        if hits:
-            names = ", ".join(hits)
-            raise BlockAction(
-                f"BLOCKED: Secret(s) detected in {tool_name} content ({names}). "
-                "Never write credential values to files. "
-                "Use environment variables instead."
-            )
+    if SECRETS_MODE == "off":
+        log(f"Pre tool use: {tool_name} (secrets scanning skipped, mode=off)", {"tool": tool_name})
     else:
-        log(f"Pre tool use: {tool_name}", {"tool": tool_name})
+        from hooks.secrets import scan, redact
+
+        # Log command details for Bash
+        if tool_name == "Bash":
+            command = tool_input.get("command", "")
+            safe_command = redact(command, mode=SECRETS_MODE)[:500]
+            log(f"Pre tool use: {tool_name}", {"tool": tool_name, "command": safe_command})
+            hits = scan(command, mode=SECRETS_MODE)
+            if hits:
+                names = ", ".join(hits)
+                if SECRETS_MODE == "warn":
+                    from hooks.common import inject_context
+
+                    inject_context(
+                        f"WARNING: Possible secret(s) detected in Bash command ({names}). "
+                        "Never pass credentials as inline command arguments. "
+                        "Use environment variables instead."
+                    )
+                else:
+                    raise BlockAction(
+                        f"BLOCKED: Secret(s) detected in Bash command ({names}). "
+                        "Never pass credentials as inline command arguments. "
+                        "Use environment variables instead."
+                    )
+        elif tool_name in ("Write", "Edit"):
+            content = tool_input.get("content", "") or tool_input.get("new_string", "")
+            log(f"Pre tool use: {tool_name}", {"tool": tool_name})
+            hits = scan(content, mode=SECRETS_MODE)
+            if hits:
+                names = ", ".join(hits)
+                if SECRETS_MODE == "warn":
+                    from hooks.common import inject_context
+
+                    inject_context(
+                        f"WARNING: Possible secret(s) detected in {tool_name} content ({names}). "
+                        "Never write credential values to files. "
+                        "Use environment variables instead."
+                    )
+                else:
+                    raise BlockAction(
+                        f"BLOCKED: Secret(s) detected in {tool_name} content ({names}). "
+                        "Never write credential values to files. "
+                        "Use environment variables instead."
+                    )
+        else:
+            log(f"Pre tool use: {tool_name}", {"tool": tool_name})
 
     # Log transcript entries to hooks.log (for debugging)
     session_id = payload.get("session_id", "")

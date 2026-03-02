@@ -114,6 +114,115 @@ class TestScan:
         assert scan(f"x = {key}  # NoSecret") == []
 
 
+class TestScanModes:
+    """Tests for mode-aware scan() behavior."""
+
+    def test_scan_off_returns_empty(self):
+        """mode='off' should never detect anything."""
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        from hooks.secrets import scan
+
+        assert scan(f"key = {key}", mode="off") == []
+
+    def test_scan_warn_detects_standard(self):
+        """mode='warn' uses standard patterns."""
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        from hooks.secrets import scan
+
+        hits = scan(f"key = {key}", mode="warn")
+        assert "aws_access_key" in hits
+
+    def test_scan_standard_detects_standard(self):
+        """mode='standard' uses standard patterns."""
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        from hooks.secrets import scan
+
+        hits = scan(f"key = {key}", mode="standard")
+        assert "aws_access_key" in hits
+
+    def test_scan_strict_detects_standard(self):
+        """mode='strict' also detects standard patterns."""
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        from hooks.secrets import scan
+
+        hits = scan(f"key = {key}", mode="strict")
+        assert "aws_access_key" in hits
+
+    def test_scan_strict_detects_slack_token(self):
+        """mode='strict' catches Slack tokens."""
+        token = "xoxb-" + "1234567890-abcdef"
+        from hooks.secrets import scan
+
+        hits = scan(f"SLACK_TOKEN={token}", mode="strict")
+        assert "slack_token" in hits
+
+    def test_scan_standard_misses_slack_token(self):
+        """mode='standard' does NOT catch Slack tokens."""
+        token = "xoxb-" + "1234567890-abcdef"
+        from hooks.secrets import scan
+
+        hits = scan(f"SLACK_TOKEN={token}", mode="standard")
+        assert "slack_token" not in hits
+
+    def test_scan_strict_detects_stripe_key(self):
+        """mode='strict' catches Stripe keys."""
+        key = "sk_live_" + "A" * 24
+        from hooks.secrets import scan
+
+        hits = scan(f"stripe_key={key}", mode="strict")
+        assert "stripe_key" in hits
+
+    def test_scan_standard_misses_stripe_key(self):
+        """mode='standard' does NOT catch Stripe keys."""
+        key = "sk_live_" + "A" * 24
+        from hooks.secrets import scan
+
+        hits = scan(f"stripe_key={key}", mode="standard")
+        assert "stripe_key" not in hits
+
+    def test_scan_strict_detects_jwt(self):
+        """mode='strict' catches JWT tokens."""
+        # Build a realistic JWT-shaped string
+        header = "eyJhbGciOiJIUzI1NiJ9"   # nosecret
+        payload = "eyJzdWIiOiIxMjM0NTY3ODkwIn0"  # nosecret
+        sig = "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"  # nosecret
+        jwt = f"{header}.{payload}.{sig}"
+        from hooks.secrets import scan
+
+        hits = scan(f"token={jwt}", mode="strict")
+        assert "jwt_token" in hits
+
+    def test_scan_standard_misses_jwt(self):
+        """mode='standard' does NOT catch JWT tokens."""
+        header = "eyJhbGciOiJIUzI1NiJ9"   # nosecret
+        payload = "eyJzdWIiOiIxMjM0NTY3ODkwIn0"  # nosecret
+        sig = "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"  # nosecret
+        jwt = f"{header}.{payload}.{sig}"
+        from hooks.secrets import scan
+
+        hits = scan(f"token={jwt}", mode="standard")
+        assert "jwt_token" not in hits
+
+
+class TestRedactModes:
+    """Tests for mode-aware redact() behavior."""
+
+    def test_redact_off_returns_unchanged(self):
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        text = f"key: {key}"
+        from hooks.secrets import redact
+
+        assert redact(text, mode="off") == text
+
+    def test_redact_strict_redacts_stripe(self):
+        key = "sk_live_" + "A" * 24
+        from hooks.secrets import redact
+
+        result = redact(f"key={key}", mode="strict")
+        assert "[REDACTED:stripe_key]" in result
+        assert key not in result
+
+
 class TestRedact:
     """Tests for secrets.redact()."""
 

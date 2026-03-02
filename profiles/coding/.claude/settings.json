@@ -1,4 +1,7 @@
 {
+  "autoUpdatesChannel": "latest",
+  "skipDangerousModePermissionPrompt": true,
+  "model": "sonnet",
   "permissions": {
     "allow": [
       "Bash(*)",
@@ -11,7 +14,8 @@
     ]
   },
   "env": {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "AGENTIHOOKS_SECRETS_MODE": "strict"
   },
   "hooks": {
     "SessionStart": [
@@ -19,7 +23,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd /app && python -m hooks"
+            "command": "cd /home/iamroot/dev/agentihooks && /home/iamroot/dev/agentihooks/.venv/bin/python3 -m hooks"
           }
         ]
       }
@@ -29,7 +33,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd /app && python -m hooks"
+            "command": "cd /home/iamroot/dev/agentihooks && /home/iamroot/dev/agentihooks/.venv/bin/python3 -m hooks"
           }
         ]
       }
@@ -39,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd /app && python -m hooks"
+            "command": "cd /home/iamroot/dev/agentihooks && /home/iamroot/dev/agentihooks/.venv/bin/python3 -m hooks"
           }
         ]
       }
@@ -49,7 +53,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd /app && python -m hooks"
+            "command": "cd /home/iamroot/dev/agentihooks && /home/iamroot/dev/agentihooks/.venv/bin/python3 -m hooks"
           }
         ]
       }
@@ -59,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd /app && python -m hooks"
+            "command": "cd /home/iamroot/dev/agentihooks && /home/iamroot/dev/agentihooks/.venv/bin/python3 -m hooks"
           }
         ]
       }
@@ -69,7 +73,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd /app && python -m hooks"
+            "command": "cd /home/iamroot/dev/agentihooks && /home/iamroot/dev/agentihooks/.venv/bin/python3 -m hooks"
           }
         ]
       }
@@ -79,7 +83,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd /app && python -m hooks"
+            "command": "cd /home/iamroot/dev/agentihooks && /home/iamroot/dev/agentihooks/.venv/bin/python3 -m hooks"
           }
         ]
       }
@@ -89,7 +93,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd /app && python -m hooks"
+            "command": "cd /home/iamroot/dev/agentihooks && /home/iamroot/dev/agentihooks/.venv/bin/python3 -m hooks"
           }
         ]
       }
@@ -99,7 +103,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd /app && python -m hooks"
+            "command": "cd /home/iamroot/dev/agentihooks && /home/iamroot/dev/agentihooks/.venv/bin/python3 -m hooks"
           }
         ]
       }
@@ -109,7 +113,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd /app && python -m hooks"
+            "command": "cd /home/iamroot/dev/agentihooks && /home/iamroot/dev/agentihooks/.venv/bin/python3 -m hooks"
           }
         ]
       }

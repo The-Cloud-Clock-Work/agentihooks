@@ -90,6 +90,17 @@ def save_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge *override* into *base* (override wins)."""
+    merged = deepcopy(base)
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # State helpers (~/.agentihooks/state.json)
 # ---------------------------------------------------------------------------
@@ -263,6 +274,13 @@ def install_global(args: argparse.Namespace) -> None:
     raw_settings = load_json(BASE_SETTINGS)
     rendered: dict = substitute_paths(raw_settings)  # NOSONAR — intentional object→dict cast
     rendered = substitute_paths(rendered, "__PYTHON__", sys.executable)  # NOSONAR
+
+    # --- 1b. Apply per-profile overrides (e.g. env vars like AGENTIHOOKS_SECRETS_MODE) ---
+    overrides_path = PROFILES_DIR / profile_name / "settings.overrides.json"
+    if overrides_path.exists():
+        overrides = load_json(overrides_path)
+        rendered = _deep_merge(rendered, overrides)
+        print(f"Applied profile overrides: {overrides_path}")
 
     # --- 2. Merge personal keys from existing settings ---
     existing_settings_path = CLAUDE_HOME / "settings.json"

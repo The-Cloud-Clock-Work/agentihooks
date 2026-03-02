@@ -47,3 +47,79 @@ class TestConfig:
 
             importlib.reload(cfg)
             assert cfg.MEMORY_AUTO_SAVE is True
+
+
+class TestSecretsMode:
+    """Tests for SECRETS_MODE configuration."""
+
+    def test_secrets_mode_default(self):
+        """SECRETS_MODE defaults to 'standard' when env var is not set."""
+        with patch.dict(os.environ, {}, clear=False):
+            # Remove the env var if it exists
+            os.environ.pop("AGENTIHOOKS_SECRETS_MODE", None)
+            import importlib
+
+            import hooks.config as cfg
+
+            importlib.reload(cfg)
+            assert cfg.SECRETS_MODE == "standard"
+
+    def test_secrets_mode_reads_env(self):
+        """SECRETS_MODE reads AGENTIHOOKS_SECRETS_MODE from env."""
+        with patch.dict(os.environ, {"AGENTIHOOKS_SECRETS_MODE": "strict"}):
+            import importlib
+
+            import hooks.config as cfg
+
+            importlib.reload(cfg)
+            assert cfg.SECRETS_MODE == "strict"
+
+    def test_secrets_mode_warn(self):
+        """SECRETS_MODE=warn is valid."""
+        with patch.dict(os.environ, {"AGENTIHOOKS_SECRETS_MODE": "warn"}):
+            import importlib
+
+            import hooks.config as cfg
+
+            importlib.reload(cfg)
+            assert cfg.SECRETS_MODE == "warn"
+
+    def test_secrets_mode_off(self):
+        """SECRETS_MODE=off is valid."""
+        with patch.dict(os.environ, {"AGENTIHOOKS_SECRETS_MODE": "off"}):
+            import importlib
+
+            import hooks.config as cfg
+
+            importlib.reload(cfg)
+            assert cfg.SECRETS_MODE == "off"
+
+    def test_secrets_mode_invalid_falls_back(self):
+        """Invalid SECRETS_MODE falls back to 'standard' (not 'off')."""
+        with patch.dict(os.environ, {"AGENTIHOOKS_SECRETS_MODE": "INVALID_VALUE"}):
+            import importlib
+
+            import hooks.config as cfg
+
+            importlib.reload(cfg)
+            assert cfg.SECRETS_MODE == "standard"
+
+    def test_secrets_mode_case_insensitive(self):
+        """SECRETS_MODE is case-insensitive."""
+        with patch.dict(os.environ, {"AGENTIHOOKS_SECRETS_MODE": "STRICT"}):
+            import importlib
+
+            import hooks.config as cfg
+
+            importlib.reload(cfg)
+            assert cfg.SECRETS_MODE == "strict"
+
+    def test_secrets_mode_strips_whitespace(self):
+        """SECRETS_MODE strips surrounding whitespace."""
+        with patch.dict(os.environ, {"AGENTIHOOKS_SECRETS_MODE": "  warn  "}):
+            import importlib
+
+            import hooks.config as cfg
+
+            importlib.reload(cfg)
+            assert cfg.SECRETS_MODE == "warn"
