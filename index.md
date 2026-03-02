@@ -81,6 +81,42 @@ All `${VAR}` placeholders in MCP server configs resolve automatically.
 
 ---
 
+## Restrict which tools load
+
+By default all 45 tools across all 12 categories are active. Use environment variables in the MCP server's `env` block (inside `~/.claude.json`) to cut that down.
+
+**Restrict by category** — only load the categories you need:
+
+```json
+"env": {
+  "MCP_CATEGORIES": "github,utilities"
+}
+```
+
+Valid category names (comma-separated, any order):
+
+```
+github  confluence  aws  email  messaging  storage
+database  compute  observability  smith  agent  utilities
+```
+
+**Restrict to specific tools** — allowlist exact tool names within the loaded categories:
+
+```json
+"env": {
+  "MCP_CATEGORIES": "github,utilities",
+  "ALLOWED_TOOLS": "github_get_token,github_clone_repo,hooks_list_tools"
+}
+```
+
+`ALLOWED_TOOLS` is an **allowlist** — only the tools you name will be active. Tools not in the list are removed at server startup.
+
+**Where to edit:** open `~/.claude.json`, find the `hooks-utils` server under `mcpServers`, and update its `env` block. Restart Claude Code for the change to take effect.
+
+**Verify what's active:** ask Claude Code to call `hooks_list_tools()` — it returns the exact set of loaded categories and tool names.
+
+---
+
 ## Per-project MCP tools
 
 Don't want a global install? Wire the MCP server into a single project instead:
