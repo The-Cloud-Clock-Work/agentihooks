@@ -31,6 +31,14 @@ _USAGE_TEXT = """Examples:
         Re-apply all MCP files previously registered via --mcp.
         agentihooks global calls --sync automatically when state.json exists.
 
+    agentihooks --loadenv [PATH] [-- COMMAND [ARGS...]]
+        Load ~/.agentihooks/.env (or PATH) into the environment, then:
+          - If COMMAND given: exec it with the loaded vars (use in aliases).
+          - If no COMMAND: print 'export KEY=VALUE' lines for eval $().
+        Examples:
+          agentihooks --loadenv -- claude
+          eval $(agentihooks --loadenv)
+
 Re-run 'agentihooks global' after any changes to settings.base.json.
 The script is idempotent.
 
@@ -166,6 +174,50 @@ def _seed_user_env_file() -> None:
         print(f"       Configure your integrations: {_ENV_FILE_DST}")
     else:
         print(f"  [!!] .env.example not found — could not seed {_ENV_FILE_DST}")
+
+
+# ---------------------------------------------------------------------------
+# --loadenv: load ~/.agentihooks/.env then exec or print exports
+# ---------------------------------------------------------------------------
+
+
+def _cmd_loadenv(env_file: Path, exec_cmd: list[str]) -> None:
+    """Load *env_file* then either exec *exec_cmd* or print export statements."""
+    if not env_file.is_file():
+        print(f"[!!] env file not found: {env_file}", file=sys.stderr)
+        sys.exit(1)
+
+    exports: dict[str, str] = {}
+    for raw in env_file.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip()
+        # Strip inline comments from unquoted values
+        if val and val[0] in ('"', "'"):
+            q = val[0]
+            end = val.find(q, 1)
+            val = val[1:end] if end != -1 else val[1:]
+        elif "#" in val:
+            val = val[: val.index("#")].rstrip()
+        if key:
+            exports[key] = val
+
+    if exec_cmd:
+        env = os.environ.copy()
+        env.update(exports)
+        os.execvpe(exec_cmd[0], exec_cmd, env)
+        # unreachable
+    else:
+        for key, val in exports.items():
+            escaped = val.replace("'", "'\"'\"'")
+            print(f"export {key}='{escaped}'")
 
 
 # ---------------------------------------------------------------------------
@@ -379,8 +431,9 @@ def install_global(args: argparse.Namespace) -> None:
     print("To update after settings.base.json changes:")
     print("  agentihooks global")
     print()
-    print("Shell tip: to expose vars in ~/.agentihooks/.env to ALL MCP servers, add to ~/.bashrc:")
-    print("  [ -f ~/.agentihooks/.env ] && set -a && . ~/.agentihooks/.env && set +a")
+    print("Shell tip: wrap Claude Code to load MCP keys from ~/.agentihooks/.env:")
+    print("  alias cc='agentihooks --loadenv -- claude'")
+    print("  Or for eval mode: eval $(agentihooks --loadenv)")
 
 
 # ---------------------------------------------------------------------------
@@ -904,6 +957,12 @@ def install_project(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    # Split argv on '--' so everything after it becomes the exec command.
+    _argv = sys.argv[1:]
+    _sep = _argv.index("--") if "--" in _argv else None
+    _exec_cmd: list[str] = _argv[_sep + 1 :] if _sep is not None else []
+    _argv = _argv[:_sep] if _sep is not None else _argv
+
     parser = argparse.ArgumentParser(
         description="Install agentihooks settings/hooks/skills/agents to ~/.claude or a project.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -934,6 +993,14 @@ def main() -> None:
         action="store_true",
         help=f"Re-apply all MCP files tracked in {STATE_JSON}",
     )
+    parser.add_argument(
+        "--loadenv",
+        nargs="?",
+        const="",
+        metavar="PATH",
+        help="Load ~/.agentihooks/.env (or PATH) then exec COMMAND (after --), "
+             "or print export statements for eval",
+    )
     sub = parser.add_subparsers(dest="command")
 
     glob_p = sub.add_parser("global", help="Install hooks + skills + agents into ~/.claude")
@@ -954,7 +1021,14 @@ def main() -> None:
     unsub = sub.add_parser("uninstall", help="Remove all agentihooks artifacts from the system")
     unsub.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
 
-    args = parser.parse_args()
+    args = parser.parse_args(_argv)
+
+    if args.loadenv is not None:
+        _cmd_loadenv(
+            Path(args.loadenv).expanduser() if args.loadenv else _ENV_FILE_DST,
+            _exec_cmd,
+        )
+        return
 
     if args.list_profiles:
         list_profiles()
