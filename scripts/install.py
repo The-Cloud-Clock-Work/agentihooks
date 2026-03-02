@@ -139,6 +139,19 @@ def _state_add_mcp(mcp_path: Path) -> None:
         _save_state(state)
 
 
+def _state_set_mcp_lib(path: Path) -> None:
+    """Persist the MCP library directory in state.json."""
+    state = _load_state()
+    state["mcpLibPath"] = str(path)
+    _save_state(state)
+
+
+def _state_get_mcp_lib() -> Path | None:
+    """Return the saved MCP library directory, or None if not set."""
+    val = _load_state().get("mcpLibPath")
+    return Path(val) if val else None
+
+
 def _state_remove_mcp(mcp_path: Path) -> None:
     """Remove *mcp_path* from state.json."""
     state = _load_state()
@@ -634,6 +647,81 @@ def _cmd_mcp_interactive_uninstall() -> None:
 
 
 # ---------------------------------------------------------------------------
+# --mcp-lib: browse a directory of .mcp.json files and install one
+# ---------------------------------------------------------------------------
+
+
+def _cmd_mcp_lib(lib_path: Path | None) -> None:
+    """Scan a directory for .mcp.json files and interactively install one."""
+    if lib_path is None:
+        lib_path = _state_get_mcp_lib()
+        if lib_path is None:
+            print("No MCP library path set. Provide one:")
+            print("  agentihooks --mcp-lib /path/to/dir")
+            sys.exit(1)
+        print(f"Using saved MCP library: {lib_path}")
+
+    lib_path = lib_path.expanduser().resolve()
+    if not lib_path.is_dir():
+        print(f"[!!] Not a directory: {lib_path}", file=sys.stderr)
+        sys.exit(1)
+
+    files = sorted(lib_path.glob("*.mcp.json")) + sorted(
+        p for p in lib_path.glob("*.json") if p not in lib_path.glob("*.mcp.json")
+    )
+    # Keep only files that contain mcpServers
+    mcp_files: list[tuple[Path, dict]] = []
+    for f in sorted(lib_path.glob("*.json")):
+        try:
+            data = load_json(f)
+            if "mcpServers" in data:
+                mcp_files.append((f, data["mcpServers"]))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if not mcp_files:
+        print(f"No .json files with mcpServers found in {lib_path}")
+        sys.exit(0)
+
+    # Save path for future --mcp-lib calls
+    _state_set_mcp_lib(lib_path)
+
+    already_tracked = set(_load_state().get("mcpFiles", []))
+
+    print(f"MCP files in {lib_path}:\n")
+    for i, (f, servers) in enumerate(mcp_files, 1):
+        names = ", ".join(servers.keys())
+        tracked = "  [installed]" if str(f) in already_tracked else ""
+        print(f"  {i}. {f.name}{tracked}")
+        print(f"     {len(servers)} server(s): {names}")
+
+    print()
+    try:
+        raw = input(f"Select file to install [1-{len(mcp_files)}] (or q to quit): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborted.")
+        sys.exit(0)
+
+    if raw.lower() == "q":
+        print("Aborted.")
+        sys.exit(0)
+
+    try:
+        idx = int(raw) - 1
+        if not 0 <= idx < len(mcp_files):
+            raise ValueError
+    except ValueError:
+        print("Invalid selection.")
+        sys.exit(1)
+
+    selected, _ = mcp_files[idx]
+    print()
+    manage_user_mcp(selected)
+    print()
+    print("Restart Claude Code for the changes to take effect.")
+
+
+# ---------------------------------------------------------------------------
 # CLI tool install (uv tool install --editable .)
 # ---------------------------------------------------------------------------
 
@@ -1058,6 +1146,14 @@ def main() -> None:
         help=f"Re-apply all MCP files tracked in {STATE_JSON}",
     )
     parser.add_argument(
+        "--mcp-lib",
+        nargs="?",
+        const="",
+        metavar="PATH",
+        help="Browse a directory of .mcp.json files and install one interactively. "
+             "PATH is saved in state.json — omit it on future calls to reuse.",
+    )
+    parser.add_argument(
         "--loadenv",
         nargs="?",
         const="",
@@ -1116,6 +1212,10 @@ def main() -> None:
 
     if args.sync:
         sync_user_mcp()
+        return
+
+    if args.mcp_lib is not None:
+        _cmd_mcp_lib(Path(args.mcp_lib) if args.mcp_lib else None)
         return
 
     if not args.command:
