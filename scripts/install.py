@@ -537,9 +537,64 @@ def _install_cli_symlink() -> None:
         print('       export PATH="$HOME/.local/bin:$PATH"')
 
 
+def _uninstall_cli_tool() -> None:
+    """Uninstall the agentihooks CLI (uv tool or fallback symlink)."""
+    import subprocess
+
+    uv = shutil.which("uv")
+    if uv:
+        result = subprocess.run(
+            [uv, "tool", "uninstall", _CLI_NAME],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            print(f"  [OK] Uninstalled CLI via: uv tool uninstall {_CLI_NAME}")
+        else:
+            stderr = result.stderr.strip()
+            if "not installed" in stderr.lower():
+                print(f"  [--] {_CLI_NAME} was not installed via uv tool (skipping)")
+            else:
+                print(f"  [!!] uv tool uninstall failed: {stderr}")
+        return
+
+    link = _LOCAL_BIN / _CLI_NAME
+    if link.is_symlink() and link.resolve() == _SCRIPT.resolve():
+        link.unlink()
+        print(f"  [OK] Removed CLI symlink: {link}")
+    elif not link.exists():
+        print(f"  [--] CLI not found at {link} — already removed?")
+    else:
+        print(f"  [!!] {link} is not an agentihooks symlink — skipping (remove manually)")
+
+
 # ---------------------------------------------------------------------------
 # Symlink helpers
 # ---------------------------------------------------------------------------
+
+
+def _remove_agentihooks_symlinks(dst_dir: Path, label: str) -> int:
+    """Remove symlinks in *dst_dir* whose resolved target is inside AGENTIHOOKS_ROOT.
+
+    Returns the count of removed links. Non-symlinks and symlinks pointing
+    elsewhere are left untouched (user-created links stay safe).
+    """
+    if not dst_dir.exists():
+        return 0
+    count = 0
+    root_str = str(AGENTIHOOKS_ROOT)
+    for link in sorted(dst_dir.iterdir()):
+        if not link.is_symlink():
+            continue
+        try:
+            target = link.resolve()
+        except OSError:
+            continue
+        if str(target).startswith(root_str):
+            link.unlink()
+            print(f"  [RM] Removed {label} symlink: {link.name}")
+            count += 1
+    return count
 
 
 def _cleanup_stale_links(dst_dir: Path, src_dir: Path, filter_fn: Callable[[Path], bool] | None) -> None:
@@ -675,6 +730,168 @@ def _install_claude_md(src: Path, dst: Path, profile_name: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Uninstall
+# ---------------------------------------------------------------------------
+
+
+def _collect_all_managed_mcp_servers() -> dict:
+    """Return the union of all MCP servers managed by agentihooks.
+
+    Collects servers from:
+    1. All profile .mcp.json files (rendered with path substitution)
+    2. All files tracked in ~/.agentihooks/state.json mcpFiles
+
+    Returns a merged {name: config} dict.
+    """
+    merged: dict = {}
+
+    # --- Profile servers ---
+    for profile_name in _available_profiles():
+        mcp_src = PROFILES_DIR / profile_name / _MCP_JSON_NAME
+        if not mcp_src.exists():
+            continue
+        try:
+            raw = load_json(mcp_src)
+            rendered: dict = substitute_paths(raw)  # NOSONAR
+            for name, cfg in rendered.get("mcpServers", {}).items():
+                merged[name] = cfg
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # --- State-tracked MCP files ---
+    state = _load_state()
+    for path_str in state.get("mcpFiles", []):
+        p = Path(path_str)
+        if not p.exists():
+            continue
+        try:
+            raw = load_json(p)
+            for name, cfg in raw.get("mcpServers", {}).items():
+                merged[name] = cfg
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return merged
+
+
+def uninstall_global(args: argparse.Namespace) -> None:
+    """Remove all agentihooks artifacts installed by 'install global'."""
+    yes: bool = args.yes
+
+    settings_path = CLAUDE_HOME / "settings.json"
+    skills_dir = CLAUDE_HOME / "skills"
+    agents_dir = CLAUDE_HOME / "agents"
+    commands_dir = CLAUDE_HOME / "commands"
+    claude_md_dst = CLAUDE_HOME / _CLAUDE_MD_NAME
+
+    # --- Audit ---
+    remove_settings = False
+    if settings_path.exists():
+        try:
+            remove_settings = load_json(settings_path).get(MANAGED_BY_KEY) == MANAGED_BY_VALUE
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    def _count_agentihooks_symlinks(d: Path) -> int:
+        if not d.exists():
+            return 0
+        root_str = str(AGENTIHOOKS_ROOT)
+        return sum(
+            1
+            for lnk in d.iterdir()
+            if lnk.is_symlink() and str(lnk.resolve()).startswith(root_str)
+        )
+
+    n_skills = _count_agentihooks_symlinks(skills_dir)
+    n_agents = _count_agentihooks_symlinks(agents_dir)
+    n_commands = _count_agentihooks_symlinks(commands_dir)
+
+    remove_claude_md = claude_md_dst.is_symlink() and str(claude_md_dst.resolve()).startswith(
+        str(PROFILES_DIR)
+    )
+
+    managed_servers = _collect_all_managed_mcp_servers()
+
+    # --- Summary ---
+    print("agentihooks uninstall")
+    print("======================")
+    print("Will remove:")
+    if remove_settings:
+        print(f"  {settings_path}  (managed by agentihooks)")
+    else:
+        print(f"  {settings_path}  [SKIP — not managed or not found]")
+    print(f"  {skills_dir}/  → {n_skills} symlink(s)")
+    print(f"  {agents_dir}/  → {n_agents} symlink(s)")
+    print(f"  {commands_dir}/  → {n_commands} symlink(s)")
+    if remove_claude_md:
+        print(f"  {claude_md_dst}  (symlink → profiles/)")
+    else:
+        print(f"  {claude_md_dst}  [SKIP — not a managed symlink]")
+    if managed_servers:
+        print(f"  MCP servers from {_CLAUDE_JSON}: {', '.join(sorted(managed_servers.keys()))}")
+    else:
+        print(f"  MCP servers from {_CLAUDE_JSON}: [none found]")
+    print("  agentihooks CLI (uv tool / symlink)")
+    print()
+    print(f"NOT removed (your data): {STATE_JSON}")
+    print()
+    print("Manual step required after uninstall:")
+    print("  sudo rm /app")
+    print()
+
+    if not yes:
+        answer = input("Proceed? [y/N] ").strip().lower()
+        if answer != "y":
+            print("Aborted.")
+            sys.exit(0)
+
+    # --- 3. Remove settings.json ---
+    if remove_settings:
+        settings_path.unlink()
+        print(f"[OK] Removed {settings_path}")
+    else:
+        print(f"[--] Skipped {settings_path} (not managed)")
+
+    # --- 4. Remove symlinks in skills, agents, commands ---
+    print()
+    for dst_dir, label in [(skills_dir, "skill"), (agents_dir, "agent"), (commands_dir, "command")]:
+        n = _remove_agentihooks_symlinks(dst_dir, label)
+        if n == 0:
+            print(f"  [--] No {label} symlinks found in {dst_dir}")
+
+    # --- 5. Remove CLAUDE.md symlink ---
+    print()
+    if remove_claude_md:
+        claude_md_dst.unlink()
+        print(f"[OK] Removed {claude_md_dst}")
+    else:
+        print(f"[--] Skipped {claude_md_dst} (not a managed symlink)")
+
+    # --- 6. Note about /app ---
+    print()
+    print("Manual step: sudo rm /app")
+
+    # --- 7. Remove MCP servers from ~/.claude.json ---
+    print()
+    if managed_servers:
+        print(f"Removing {len(managed_servers)} MCP server(s) from {_CLAUDE_JSON}:")
+        _remove_mcp_from_user_scope(managed_servers)
+    else:
+        print(f"  [--] No managed MCP servers to remove from {_CLAUDE_JSON}")
+
+    # --- 8. Uninstall CLI ---
+    print()
+    _uninstall_cli_tool()
+
+    # --- Done ---
+    print()
+    print("Uninstall complete.")
+    print()
+    print(f"Note: {AGENTIHOOKS_STATE_DIR}/ was NOT removed (your data).")
+    print(f"      Run 'rm -rf {AGENTIHOOKS_STATE_DIR}' for a full reset.")
+
+
+# ---------------------------------------------------------------------------
 # Project install
 # ---------------------------------------------------------------------------
 
@@ -765,6 +982,9 @@ def main() -> None:
         help="Profile to use (default: 'default')",
     )
 
+    unsub = sub.add_parser("uninstall", help="Remove all agentihooks artifacts from the system")
+    unsub.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+
     args = parser.parse_args()
 
     if args.list_profiles:
@@ -794,6 +1014,8 @@ def main() -> None:
         install_global(args)
     elif args.command == "project":
         install_project(args)
+    elif args.command == "uninstall":
+        uninstall_global(args)
 
 
 if __name__ == "__main__":

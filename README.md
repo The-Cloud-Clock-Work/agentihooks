@@ -120,6 +120,28 @@ agentihooks --sync
 `agentihooks global` calls `--sync` automatically when `state.json` exists, so
 re-running the global install is all you ever need to restore a full setup.
 
+### Uninstall
+
+Remove everything agentihooks installed from the system:
+
+```bash
+agentihooks uninstall         # shows summary, asks for confirmation
+agentihooks uninstall --yes   # skip confirmation (for scripting)
+```
+
+What gets removed:
+
+| Step | Artifact | Action |
+|------|----------|--------|
+| 1 | `~/.claude/settings.json` | Deleted if managed by agentihooks |
+| 2–4 | Skills / agents / commands symlinks in `~/.claude/` | Symlinks whose target is inside the agentihooks repo |
+| 5 | `~/.claude/CLAUDE.md` | Removed if it points into `profiles/` |
+| 6 | `/app` symlink | Prints `sudo rm /app` — requires root to remove |
+| 7 | MCP servers in `~/.claude.json` | All servers from profile `.mcp.json` files and `state.json` |
+| 8 | `agentihooks` CLI | `uv tool uninstall agentihooks` (or removes the symlink fallback) |
+
+`~/.agentihooks/` (your data / state) is **not** removed. Run `rm -rf ~/.agentihooks` manually for a full reset.
+
 ### Project install
 
 Writes a rendered `.mcp.json` directly into a specific project (per-repo approach):
