@@ -198,8 +198,8 @@ _BLOCK_START = "# === agentihooks ==="
 _BLOCK_END = "# === end-agentihooks ==="
 
 
-def _cmd_loadenv(env_file: Path, exec_cmd: list[str]) -> None:
-    """Write a managed alias block into ~/.bashrc so `agentihooksenv` sources the .env."""
+def _cmd_loadenv(env_file: Path, exec_cmd: list[str], *, force: bool = False) -> None:
+    """Write a managed alias block into ~/.bashrc so `agentienv` sources the .env."""
     if not env_file.is_file():
         print(f"[!!] env file not found: {env_file}", file=sys.stderr)
         sys.exit(1)
@@ -239,7 +239,7 @@ def _cmd_loadenv(env_file: Path, exec_cmd: list[str]) -> None:
     print("  agentienv")
     print()
 
-    _prompt_install_requirements()
+    _prompt_install_requirements(force=force)
 
 
 def _find_requirements_files() -> list[Path]:
@@ -271,8 +271,11 @@ def _detect_venv() -> Path | None:
     return None
 
 
-def _prompt_install_requirements() -> None:
-    """Discover requirements.txt files and offer to install each with uv."""
+def _prompt_install_requirements(*, force: bool = False) -> None:
+    """Discover requirements.txt files and offer to install each with uv.
+
+    *force* skips venv detection and installs into system Python (for Docker/CI).
+    """
     import subprocess
 
     req_files = _find_requirements_files()
@@ -295,15 +298,19 @@ def _prompt_install_requirements() -> None:
             print("  [--] Skipped.")
             continue
 
-        python = _detect_venv()
-        if python is None:
-            print("  [!!] No virtual environment found.")
-            print("       Create and activate one first:")
-            print("         python3 -m venv .venv && source .venv/bin/activate")
-            print("       Then re-run: agentihooks --loadenv")
-            continue
-
-        print(f"  [..] Installing into {python.parent.parent} ...")
+        if force:
+            python = Path(sys.executable)
+            print(f"  [..] Installing into system Python ({python}) ...")
+        else:
+            python = _detect_venv()
+            if python is None:
+                print("  [!!] No virtual environment found.")
+                print("       Create and activate one first:")
+                print("         python3 -m venv .venv && source .venv/bin/activate")
+                print("       Or use --force to install into system Python (Docker/CI).")
+                print("       Then re-run: agentihooks --loadenv")
+                continue
+            print(f"  [..] Installing into {python.parent.parent} ...")
         result = subprocess.run(
             [uv, "pip", "install", "--python", str(python), "-r", str(req)],
             capture_output=False,
@@ -1233,8 +1240,12 @@ def main() -> None:
         nargs="?",
         const="",
         metavar="PATH",
-        help="Load ~/.agentihooks/.env (or PATH) then exec COMMAND (after --), "
-             "or print export statements for eval",
+        help="Install agentienv alias into ~/.bashrc and offer to install requirements.txt",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="With --loadenv: install requirements into system Python (for Docker/CI, skips venv check)",
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -1262,6 +1273,7 @@ def main() -> None:
         _cmd_loadenv(
             Path(args.loadenv).expanduser() if args.loadenv else _ENV_FILE_DST,
             _exec_cmd,
+            force=args.force,
         )
         return
 
