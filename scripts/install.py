@@ -237,6 +237,81 @@ def _cmd_loadenv(env_file: Path, exec_cmd: list[str]) -> None:
     print("Now reload your shell and use:")
     print("  source ~/.bashrc")
     print("  agentihooksenv")
+    print()
+
+    _prompt_install_requirements()
+
+
+def _find_requirements_files() -> list[Path]:
+    """Return requirements.txt files found in ~/.agentihooks/ and mcpLibPath."""
+    candidates: list[Path] = []
+    for search_dir in [AGENTIHOOKS_STATE_DIR, _state_get_mcp_lib()]:
+        if search_dir is None:
+            continue
+        req = search_dir / "requirements.txt"
+        if req.is_file() and req not in candidates:
+            candidates.append(req)
+    return candidates
+
+
+def _detect_venv() -> Path | None:
+    """Return the Python executable inside the active or local venv, or None."""
+    # 1. Activated venv via VIRTUAL_ENV
+    venv_env = os.environ.get("VIRTUAL_ENV")
+    if venv_env:
+        python = Path(venv_env) / "bin" / "python"
+        if python.exists():
+            return python
+
+    # 2. .venv directory in cwd
+    local_venv = Path.cwd() / ".venv" / "bin" / "python"
+    if local_venv.exists():
+        return local_venv
+
+    return None
+
+
+def _prompt_install_requirements() -> None:
+    """Discover requirements.txt files and offer to install each with uv."""
+    import subprocess
+
+    req_files = _find_requirements_files()
+    if not req_files:
+        return
+
+    uv = shutil.which("uv")
+    if not uv:
+        print("  [!!] uv not found — skipping requirements install.")
+        return
+
+    for req in req_files:
+        try:
+            answer = input(f"Found {req} — install with uv? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nSkipped.")
+            return
+
+        if answer != "y":
+            print("  [--] Skipped.")
+            continue
+
+        python = _detect_venv()
+        if python is None:
+            print("  [!!] No virtual environment found.")
+            print("       Create and activate one first:")
+            print("         python3 -m venv .venv && source .venv/bin/activate")
+            print("       Then re-run: agentihooks --loadenv")
+            continue
+
+        print(f"  [..] Installing into {python.parent.parent} ...")
+        result = subprocess.run(
+            [uv, "pip", "install", "--python", str(python), "-r", str(req)],
+            capture_output=False,
+        )
+        if result.returncode == 0:
+            print(f"  [OK] Installed {req}")
+        else:
+            print(f"  [!!] uv pip install failed (exit {result.returncode})")
 
 
 # ---------------------------------------------------------------------------
