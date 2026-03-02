@@ -91,6 +91,7 @@ agentihooks project <path>              # write .mcp.json into a project
 agentihooks uninstall                   # remove everything
 agentihooks --mcp <file>                # add MCP servers at user scope
 agentihooks --sync                      # re-apply all tracked MCP files
+agentihooks --loadenv [-- claude]       # inject ~/.agentihooks/.env then exec
 ```
 
 Full reference: [CLI Commands](https://the-cloud-clock-work.github.io/agentihooks/docs/reference/cli-commands/)
@@ -114,6 +115,35 @@ Complete table covering all 40+ variables across every integration: [Configurati
 Profiles bundle a system prompt (`CLAUDE.md`), MCP category selection, and model settings. Switch with `agentihooks global --profile <name>`.
 
 Details: [Profiles](https://the-cloud-clock-work.github.io/agentihooks/docs/getting-started/profiles/)
+
+## Portability
+
+Everything user-specific lives in `~/.agentihooks/`:
+
+```
+~/.agentihooks/
+├── .env        # All integration credentials (seeded from .env.example)
+├── state.json  # Linked MCP files for --sync
+├── logs/       # Hook + MCP logs
+└── memory/     # Cross-session agent memory
+```
+
+To move to a new machine: clone the repo, copy `~/.agentihooks/.env`, run `agentihooks global`. Done.
+
+**Load env vars into Claude Code's process** (so MCP `${VAR}` placeholders resolve):
+
+```bash
+# Add to ~/.bashrc
+alias cc='agentihooks --loadenv -- claude'
+```
+
+**Link an external `.mcp.json`** at user scope (tracked for auto-sync):
+
+```bash
+agentihooks --mcp ~/dev/other-project/.mcp.json
+```
+
+Details: [Portability & Reusability](https://the-cloud-clock-work.github.io/agentihooks/docs/getting-started/portability/)
 
 ## Extending
 

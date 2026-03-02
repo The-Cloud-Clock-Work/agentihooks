@@ -152,6 +152,65 @@ Reads `~/.agentihooks/state.json` and merges each recorded `.mcp.json` file back
 
 ---
 
+## `agentihooks --loadenv`
+
+Load `~/.agentihooks/.env` (or a custom path) into Claude Code's environment so MCP servers can read `${VAR}` placeholders.
+
+```bash
+# Exec mode — replace this process with COMMAND after loading the env
+agentihooks --loadenv [-- COMMAND [ARGS...]]
+
+# Print mode — emit export statements for eval
+eval $(agentihooks --loadenv)
+```
+
+### Why this exists
+
+Claude Code expands `${VAR}` in MCP server configs at process startup. Environment variables set only inside hook subprocesses arrive too late. `--loadenv` injects vars from `~/.agentihooks/.env` into Claude Code's own process before it launches.
+
+### Modes
+
+| Mode | When | What happens |
+|------|------|-------------|
+| **Exec** | `-- COMMAND` present | Calls `os.execvpe` to replace the current process with `COMMAND`, with `.env` vars merged into the environment |
+| **Print** | No `-- COMMAND` | Prints `export KEY='VALUE'` lines — pipe to `eval $()` for shell integration |
+
+### Custom path
+
+```bash
+agentihooks --loadenv /path/to/custom.env -- claude
+```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `PATH` (optional) | Path to env file (default: `~/.agentihooks/.env`) |
+| `-- COMMAND` | Command to exec after loading (optional) |
+
+### Recommended setup
+
+Add to `~/.bashrc`:
+
+```bash
+alias cc='agentihooks --loadenv -- claude'
+```
+
+Then launch Claude Code with `cc` instead of `claude`. All MCP servers that use `${VAR}` in their configs will resolve correctly.
+
+### Env file format
+
+The parser handles the same format as `hooks/config.py`:
+
+- `KEY=value` — basic assignment
+- `export KEY=value` — shell-style (export prefix stripped)
+- `KEY='quoted value'` — single-quoted
+- `KEY="quoted value"` — double-quoted
+- `KEY=value  # comment` — inline comments stripped
+- Lines starting with `#` and blank lines are ignored
+
+---
+
 ## Standalone Python execution
 
 The hook and MCP server modules can be run directly with Python:
