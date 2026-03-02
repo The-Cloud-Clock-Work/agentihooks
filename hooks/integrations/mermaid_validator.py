@@ -545,10 +545,10 @@ class MermaidValidator:
         referenced_nodes = set()
 
         # Patterns
-        node_def_pattern = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)[\[\(\{]")
-        connection_pattern = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:-->|---|==>|-.->|--x|--o|<-->)")
+        node_def_pattern = re.compile(r"([A-Za-z_]\w*)[\[\(\{]")
+        connection_pattern = re.compile(r"([A-Za-z_]\w*)\s*(?:-->|---|==>|-.->|--x|--o|<-->)")
         target_pattern = re.compile(
-            r"(?:-->|---|==>|-.->|--x|--o|<-->)\s*(?:\|[^|]*\|)?\s*([A-Za-z_][A-Za-z0-9_]*)"
+            r"(?:-->|---|==>|-.->|--x|--o|<-->)\s*(?:\|[^|]*\|)?\s*([A-Za-z_]\w*)"
         )
 
         # Track bracket balance
@@ -722,7 +722,7 @@ class MermaidValidator:
                     block_stack.pop()
 
             # SEQ_003: Check arrow syntax
-            arrow_pattern = re.compile(r"[A-Za-z0-9_]+\s*(->>|-->>|->|-->|-x|--x|-\)|--\))\s*[A-Za-z0-9_]+")
+            arrow_pattern = re.compile(r"\w+\s*(->>|-->>|->|-->|-x|--x|-\)|--\))\s*\w+")
             if "-" in stripped and not stripped.lower().startswith("note"):
                 # Line looks like it might have an arrow
                 has_participant = stripped.lower().startswith("participant") or stripped.lower().startswith("actor")

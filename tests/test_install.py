@@ -214,6 +214,47 @@ class TestPromptInstallRequirements:
         assert "--python" in args
         assert str(sys.executable) in args
 
+    def test_eof_on_prompt_skips(self, tmp_path, capsys):
+        req = tmp_path / "requirements.txt"
+        req.write_text("requests\n")
+        with (
+            patch.object(install, "_find_requirements_files", return_value=[req]),
+            patch("shutil.which", return_value="/usr/bin/uv"),
+            patch("builtins.input", side_effect=EOFError),
+        ):
+            install._prompt_install_requirements()
+        assert "Skipped" in capsys.readouterr().out
+
+    def test_venv_install_success(self, tmp_path, capsys):
+        req = tmp_path / "requirements.txt"
+        req.write_text("requests\n")
+        venv_python = tmp_path / ".venv" / "bin" / "python"
+        run_mock = MagicMock(returncode=0)
+        with (
+            patch.object(install, "_find_requirements_files", return_value=[req]),
+            patch("shutil.which", return_value="/usr/bin/uv"),
+            patch("builtins.input", return_value="y"),
+            patch.object(install, "_detect_venv", return_value=venv_python),
+            patch("subprocess.run", return_value=run_mock),
+        ):
+            install._prompt_install_requirements()
+        assert "Installed" in capsys.readouterr().out
+
+    def test_uv_install_failure_prints_error(self, tmp_path, capsys):
+        req = tmp_path / "requirements.txt"
+        req.write_text("requests\n")
+        venv_python = tmp_path / ".venv" / "bin" / "python"
+        run_mock = MagicMock(returncode=1)
+        with (
+            patch.object(install, "_find_requirements_files", return_value=[req]),
+            patch("shutil.which", return_value="/usr/bin/uv"),
+            patch("builtins.input", return_value="y"),
+            patch.object(install, "_detect_venv", return_value=venv_python),
+            patch("subprocess.run", return_value=run_mock),
+        ):
+            install._prompt_install_requirements()
+        assert "failed" in capsys.readouterr().out
+
 
 # ---------------------------------------------------------------------------
 # _state_set_mcp_lib / _state_get_mcp_lib
@@ -293,6 +334,51 @@ class TestCmdMcpLib:
             install._cmd_mcp_lib(tmp_path)
         assert exc.value.code == 0
 
+    def test_uses_saved_path_when_none_given(self, tmp_path, capsys):
+        self._make_mcp_file(tmp_path, "a.json", {"server-a": {}})
+        with (
+            patch.object(install, "_state_get_mcp_lib", return_value=tmp_path),
+            patch.object(install, "_state_set_mcp_lib"),
+            patch.object(install, "_load_state", return_value={"mcpFiles": []}),
+            patch("builtins.input", return_value="q"),
+            pytest.raises(SystemExit),
+        ):
+            install._cmd_mcp_lib(None)
+        assert "Using saved MCP library" in capsys.readouterr().out
+
+    def test_skips_unreadable_json(self, tmp_path):
+        (tmp_path / "bad.json").write_text("not json{{{")
+        self._make_mcp_file(tmp_path, "good.json", {"server-a": {}})
+        with (
+            patch.object(install, "_state_set_mcp_lib"),
+            patch.object(install, "_load_state", return_value={"mcpFiles": []}),
+            patch("builtins.input", return_value="1"),
+            patch.object(install, "manage_user_mcp"),
+        ):
+            install._cmd_mcp_lib(tmp_path)  # should not raise
+
+    def test_eof_aborts(self, tmp_path):
+        self._make_mcp_file(tmp_path, "a.json", {"server-a": {}})
+        with (
+            patch.object(install, "_state_set_mcp_lib"),
+            patch.object(install, "_load_state", return_value={"mcpFiles": []}),
+            patch("builtins.input", side_effect=EOFError),
+            pytest.raises(SystemExit) as exc,
+        ):
+            install._cmd_mcp_lib(tmp_path)
+        assert exc.value.code == 0
+
+    def test_invalid_selection_exits_1(self, tmp_path):
+        self._make_mcp_file(tmp_path, "a.json", {"server-a": {}})
+        with (
+            patch.object(install, "_state_set_mcp_lib"),
+            patch.object(install, "_load_state", return_value={"mcpFiles": []}),
+            patch("builtins.input", return_value="99"),
+            pytest.raises(SystemExit) as exc,
+        ):
+            install._cmd_mcp_lib(tmp_path)
+        assert exc.value.code == 1
+
 
 # ---------------------------------------------------------------------------
 # _cmd_mcp_interactive_uninstall
@@ -327,3 +413,46 @@ class TestInteractiveUninstall:
         ):
             install._cmd_mcp_interactive_uninstall()
         assert exc.value.code == 1
+
+    def test_shows_file_not_found_label(self, tmp_path, capsys):
+        missing = str(tmp_path / "gone.json")
+        with (
+            patch.object(install, "_load_state", return_value={"mcpFiles": [missing]}),
+            patch("builtins.input", return_value="1"),
+            patch.object(install, "manage_user_mcp"),
+        ):
+            install._cmd_mcp_interactive_uninstall()
+        assert "file not found" in capsys.readouterr().out
+
+    def test_shows_unreadable_label(self, tmp_path, capsys):
+        mcp = tmp_path / "bad.json"
+        mcp.write_text("not json{{{")
+        with (
+            patch.object(install, "_load_state", return_value={"mcpFiles": [str(mcp)]}),
+            patch("builtins.input", return_value="1"),
+            patch.object(install, "manage_user_mcp"),
+        ):
+            install._cmd_mcp_interactive_uninstall()
+        assert "unreadable" in capsys.readouterr().out
+
+    def test_q_aborts(self, tmp_path):
+        mcp = tmp_path / "test.json"
+        mcp.write_text(json.dumps({"mcpServers": {"srv": {}}}))
+        with (
+            patch.object(install, "_load_state", return_value={"mcpFiles": [str(mcp)]}),
+            patch("builtins.input", return_value="q"),
+            pytest.raises(SystemExit) as exc,
+        ):
+            install._cmd_mcp_interactive_uninstall()
+        assert exc.value.code == 0
+
+    def test_eof_aborts(self, tmp_path):
+        mcp = tmp_path / "test.json"
+        mcp.write_text(json.dumps({"mcpServers": {"srv": {}}}))
+        with (
+            patch.object(install, "_load_state", return_value={"mcpFiles": [str(mcp)]}),
+            patch("builtins.input", side_effect=EOFError),
+            pytest.raises(SystemExit) as exc,
+        ):
+            install._cmd_mcp_interactive_uninstall()
+        assert exc.value.code == 0
