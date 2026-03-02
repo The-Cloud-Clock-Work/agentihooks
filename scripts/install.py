@@ -177,47 +177,53 @@ def _seed_user_env_file() -> None:
 
 
 # ---------------------------------------------------------------------------
-# --loadenv: load ~/.agentihooks/.env then exec or print exports
+# --loadenv: install agentihooksenv alias into ~/.bashrc (managed block)
 # ---------------------------------------------------------------------------
+
+_BASHRC = Path.home() / ".bashrc"
+_BLOCK_START = "# === agentihooks ==="
+_BLOCK_END = "# === end-agentihooks ==="
 
 
 def _cmd_loadenv(env_file: Path, exec_cmd: list[str]) -> None:
-    """Load *env_file* then either exec *exec_cmd* or print export statements."""
+    """Write a managed alias block into ~/.bashrc so `agentihooksenv` sources the .env."""
     if not env_file.is_file():
         print(f"[!!] env file not found: {env_file}", file=sys.stderr)
         sys.exit(1)
 
-    exports: dict[str, str] = {}
-    for raw in env_file.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[7:].lstrip()
-        if "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        key = key.strip()
-        val = val.strip()
-        # Strip inline comments from unquoted values
-        if val and val[0] in ('"', "'"):
-            q = val[0]
-            end = val.find(q, 1)
-            val = val[1:end] if end != -1 else val[1:]
-        elif "#" in val:
-            val = val[: val.index("#")].rstrip()
-        if key:
-            exports[key] = val
+    block = (
+        f"{_BLOCK_START}\n"
+        f"alias agentihooksenv='set -a && . {env_file} && set +a'\n"
+        f"{_BLOCK_END}\n"
+    )
 
-    if exec_cmd:
-        env = os.environ.copy()
-        env.update(exports)
-        os.execvpe(exec_cmd[0], exec_cmd, env)
-        # unreachable
+    bashrc_text = _BASHRC.read_text(encoding="utf-8") if _BASHRC.exists() else ""
+
+    if _BLOCK_START in bashrc_text:
+        # Replace existing block
+        lines = bashrc_text.splitlines(keepends=True)
+        new_lines = []
+        inside = False
+        for line in lines:
+            if line.rstrip() == _BLOCK_START:
+                inside = True
+                new_lines.append(block)
+            elif line.rstrip() == _BLOCK_END:
+                inside = False
+            elif not inside:
+                new_lines.append(line)
+        _BASHRC.write_text("".join(new_lines), encoding="utf-8")
+        print(f"[OK] Updated agentihooks block in {_BASHRC}")
     else:
-        for key, val in exports.items():
-            escaped = val.replace("'", "'\"'\"'")
-            print(f"export {key}='{escaped}'")
+        # Append new block
+        sep = "\n" if bashrc_text and not bashrc_text.endswith("\n") else ""
+        _BASHRC.write_text(bashrc_text + sep + block, encoding="utf-8")
+        print(f"[OK] Added agentihooks block to {_BASHRC}")
+
+    print()
+    print("Now reload your shell and use:")
+    print("  source ~/.bashrc")
+    print("  agentihooksenv")
 
 
 # ---------------------------------------------------------------------------
