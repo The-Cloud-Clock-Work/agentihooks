@@ -580,6 +580,60 @@ def sync_user_mcp() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Interactive MCP uninstall (--mcp --uninstall without a path)
+# ---------------------------------------------------------------------------
+
+
+def _cmd_mcp_interactive_uninstall() -> None:
+    """Show tracked MCP files, let user pick one, uninstall its servers."""
+    state = _load_state()
+    paths: list[str] = state.get("mcpFiles", [])
+
+    if not paths:
+        print(f"No MCP files tracked in {STATE_JSON} — nothing to uninstall.")
+        return
+
+    print("Tracked MCP files:\n")
+    for i, path_str in enumerate(paths, 1):
+        p = Path(path_str)
+        if not p.exists():
+            print(f"  {i}. {path_str}  [file not found]")
+            continue
+        try:
+            servers = load_json(p).get("mcpServers", {})
+            names = ", ".join(servers.keys()) if servers else "(no servers)"
+            print(f"  {i}. {path_str}")
+            print(f"     {len(servers)} server(s): {names}")
+        except (json.JSONDecodeError, OSError):
+            print(f"  {i}. {path_str}  [unreadable]")
+
+    print()
+    try:
+        raw = input(f"Select file to uninstall [1-{len(paths)}] (or q to quit): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborted.")
+        sys.exit(0)
+
+    if raw.lower() == "q":
+        print("Aborted.")
+        sys.exit(0)
+
+    try:
+        idx = int(raw) - 1
+        if not 0 <= idx < len(paths):
+            raise ValueError
+    except ValueError:
+        print("Invalid selection.")
+        sys.exit(1)
+
+    selected = Path(paths[idx])
+    print()
+    manage_user_mcp(selected, uninstall=True)
+    print()
+    print("Restart Claude Code for the changes to take effect.")
+
+
+# ---------------------------------------------------------------------------
 # CLI tool install (uv tool install --editable .)
 # ---------------------------------------------------------------------------
 
@@ -986,13 +1040,17 @@ def main() -> None:
     )
     parser.add_argument(
         "--mcp",
+        nargs="?",
+        const="",
         metavar="PATH",
-        help="Path to a .mcp.json file to install into (or remove from) user scope",
+        help="Path to a .mcp.json file to install into user scope. "
+             "With --uninstall and no PATH: interactive selection from tracked files.",
     )
     parser.add_argument(
         "--uninstall",
         action="store_true",
-        help="Remove MCP servers listed in --mcp from user scope (requires --mcp)",
+        help="Remove MCP servers from user scope. "
+             "With --mcp PATH: remove that file. Without PATH: pick from tracked files.",
     )
     parser.add_argument(
         "--sync",
@@ -1044,11 +1102,16 @@ def main() -> None:
         query_active_profile()
         return
 
-    if args.mcp:
-        manage_user_mcp(Path(args.mcp).expanduser().resolve(), uninstall=args.uninstall)
+    if args.mcp is not None:
+        if not args.mcp and args.uninstall:
+            _cmd_mcp_interactive_uninstall()
+        elif args.mcp:
+            manage_user_mcp(Path(args.mcp).expanduser().resolve(), uninstall=args.uninstall)
+        else:
+            parser.error("--mcp requires a PATH when not used with --uninstall")
         return
 
-    if args.uninstall and not args.mcp:
+    if args.uninstall and args.mcp is None:
         parser.error("--uninstall requires --mcp <path>")
 
     if args.sync:
