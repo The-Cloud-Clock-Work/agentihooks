@@ -6,34 +6,33 @@ exit
 '''
 # NOTE: The triple-quoted polyglot string above becomes __doc__ in Python,
 # so the real usage text is stored in _USAGE_TEXT and used as the argparse epilog.
-_USAGE_TEXT = """Install agentihooks settings, hooks, skills, and agents to ~/.claude.
-
-Usage:
-    python scripts/install.py global [--profile default]
-        Installs hooks, skills, agents, and CLAUDE.md into ~/.claude.
+_USAGE_TEXT = """Examples:
+    agentihooks global [--profile default]
+        Install hooks, skills, agents, and CLAUDE.md into ~/.claude.
         Also creates /app → <agentihooks root> symlink (needs write access to /).
         --profile selects which profile's CLAUDE.md to link (default: 'default').
-        Available profiles are listed from profiles/ (excluding _base).
+        Available profiles: agentihooks --list-profiles
 
-    python scripts/install.py project <path> [--profile default]
-        Installs a profile's .mcp.json into a target project directory.
+    agentihooks project <path> [--profile default]
+        Install a profile's .mcp.json into a target project directory.
 
-    python scripts/install.py --mcp /path/to/.mcp.json
+    agentihooks uninstall [--yes]
+        Remove all agentihooks artifacts installed by 'agentihooks global'.
+
+    agentihooks --mcp /path/to/.mcp.json
         Merge MCP servers from the given file into user scope (~/.claude.json).
         Servers become available in every project without per-repo .mcp.json files.
         The file path is recorded in ~/.agentihooks/state.json for future syncs.
 
-    python scripts/install.py --mcp /path/to/.mcp.json --uninstall
+    agentihooks --mcp /path/to/.mcp.json --uninstall
         Remove those MCP servers from user scope (~/.claude.json) and
         remove the file path from ~/.agentihooks/state.json.
 
-    python scripts/install.py --sync
+    agentihooks --sync
         Re-apply all MCP files previously registered via --mcp.
-        Use this after a fresh install to restore all custom MCPs at once.
-        `install global` calls --sync automatically when state.json exists.
+        agentihooks global calls --sync automatically when state.json exists.
 
-Re-run `python scripts/install.py global` after any changes to
-settings.base.json to keep ~/.claude/settings.json up to date.
+Re-run 'agentihooks global' after any changes to settings.base.json.
 The script is idempotent.
 
 The /app symlink is the canonical root used by all hook log paths
