@@ -99,6 +99,13 @@ The agent should list tools from agentihooks (e.g., `hooks_list_tools`, `get_env
 uv run agentihooks global --profile coding
 ```
 
+Or use the `AGENTIHOOKS_PROFILE` environment variable:
+
+```bash
+export AGENTIHOOKS_PROFILE=coding
+uv run agentihooks global
+```
+
 List available profiles:
 
 ```bash
@@ -148,6 +155,21 @@ AGENTIHOOKS_CLAUDE_HOME=/some/custom/dir uv run agentihooks global
 ```
 
 All downstream paths (settings.json, skills/, agents/, commands/, CLAUDE.md) resolve relative to that directory automatically.
+
+---
+
+## Auto-merge an MCP file during install
+
+Set `AGENTIHOOKS_MCP_FILE` to have `agentihooks global` automatically merge an external MCP file into `~/.claude.json`:
+
+```bash
+export AGENTIHOOKS_MCP_FILE=/shared/gateway-mcp.json
+agentihooks global
+```
+
+The path is recorded in `state.json` so future `agentihooks global` or `agentihooks --sync` calls re-apply it automatically. If the file does not exist at install time, the step is skipped with a warning.
+
+This is designed for CI/Docker workflows where a gateway MCP file is mounted into the container and should be wired in without manual `--mcp` invocations.
 
 ---
 

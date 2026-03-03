@@ -93,7 +93,16 @@ Re-run the global install with `--profile`:
 agentihooks global --profile coding
 ```
 
-This atomically:
+Or set the `AGENTIHOOKS_PROFILE` environment variable so you don't have to pass `--profile` every time:
+
+```bash
+export AGENTIHOOKS_PROFILE=coding
+agentihooks global
+```
+
+This is especially useful in CI/Docker automation where the profile is set once in the container environment.
+
+Either way, the command atomically:
 1. Replaces the `~/.claude/CLAUDE.md` symlink
 2. Updates `MCP_CATEGORIES` in the hook environment
 3. Re-merges the profile `.mcp.json`

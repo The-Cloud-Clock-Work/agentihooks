@@ -16,6 +16,18 @@ All environment variables recognized by AgentiHooks, grouped by integration. Var
 
 ---
 
+## Install & Automation
+
+These variables control how `agentihooks global` and `agentihooks project` install and configure Claude Code. They are read at install time, not at hook runtime.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENTIHOOKS_CLAUDE_HOME` | `~/.claude` | Target Claude config directory. Override to install hooks/settings into a non-default location. |
+| `AGENTIHOOKS_PROFILE` | `default` | Profile to use when `--profile` is not passed on the command line. Controls which `CLAUDE.md`, settings overrides, and MCP category selection are applied. |
+| `AGENTIHOOKS_MCP_FILE` | — | Absolute path to an MCP JSON file. When set, `agentihooks global` automatically merges the servers from this file into user-scope config (`~/.claude.json`). The path is recorded in `state.json` so subsequent `agentihooks global` or `agentihooks --sync` re-applies it. Useful for CI/Docker automation where a gateway MCP file is injected at container start. |
+
+---
+
 ## Global
 
 | Variable | Default | Description |

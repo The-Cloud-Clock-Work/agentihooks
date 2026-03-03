@@ -34,14 +34,23 @@ agentihooks global [--profile <name>] [--list-profiles] [--query]
 6. Symlinks `~/.claude/CLAUDE.md` → chosen profile's `CLAUDE.md`
 7. Merges profile `.mcp.json` into `~/.claude.json` (user-scope MCP servers)
 8. If `~/.agentihooks/state.json` exists, re-syncs any custom MCP files via `--sync`
+9. If `AGENTIHOOKS_MCP_FILE` is set and the file exists, merges it into `~/.claude.json` and records the path in `state.json`
 
 ### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--profile <name>` | Profile to install (default: `default`) |
+| `--profile <name>` | Profile to install (default: `default`, env: `AGENTIHOOKS_PROFILE`) |
 | `--list-profiles` | Print all available profiles and exit |
 | `--query` | Print the currently active profile name and exit |
+
+### Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `AGENTIHOOKS_PROFILE` | Default profile when `--profile` is not passed (default: `default`) |
+| `AGENTIHOOKS_MCP_FILE` | Path to an MCP JSON file to auto-merge into `~/.claude.json` during install |
+| `AGENTIHOOKS_CLAUDE_HOME` | Target Claude config directory (default: `~/.claude`) |
 
 ### Examples
 
@@ -51,6 +60,12 @@ agentihooks global
 
 # Install with the coding profile
 agentihooks global --profile coding
+
+# Same, using the environment variable
+AGENTIHOOKS_PROFILE=coding agentihooks global
+
+# Auto-merge a gateway MCP file during install
+AGENTIHOOKS_MCP_FILE=/shared/gateway-mcp.json agentihooks global
 
 # List available profiles
 agentihooks global --list-profiles
@@ -75,7 +90,7 @@ This makes agentihooks MCP tools available in a single project without a global 
 
 | Flag | Description |
 |------|-------------|
-| `--profile <name>` | Profile whose MCP config to use (default: `default`) |
+| `--profile <name>` | Profile whose MCP config to use (default: `default`, env: `AGENTIHOOKS_PROFILE`) |
 
 ### Example
 
