@@ -154,66 +154,11 @@ Exit code `2` is only meaningful for `PreToolUse` and `UserPromptSubmit`.
 
 ---
 
----
-
-## Adding agents via Agent Hub
-
-Agent Hub (`scripts/agent_hub.py`) is a third extension point: it lets you maintain agent definitions in a **separate repo** (an "agentihub") and build them through the same `_base` pipeline as local profiles.
-
-### When to use Agent Hub
-
-- Agent identities (CLAUDE.md, workflows, evaluation) are **private** and shouldn't live in this open-source repo
-- Multiple teams share agentihooks but need **different agent personas**
-- You want a clean separation between the **build system** (agentihooks) and **agent definitions** (agentihub)
-
-### agentihub agent structure
-
-```
-agentihub/agents/<name>/
-├── agent.yml                  # Same schema as profile.yml
-├── settings.overrides.json    # Env overrides (merged with _base)
-├── __init__.py                # Package marker
-├── .claude/
-│   └── CLAUDE.md              # Agent personality + workflow instructions
-└── evaluation/                # Eval harness (future)
-    ├── eval.yml               # Criteria, weights, thresholds
-    └── cases/                 # Test cases
-```
-
-### How it works
-
-```bash
-python scripts/agent_hub.py /path/to/agentihub
-```
-
-1. Discovers all `agents/*/agent.yml` in the hub
-2. Copies each agent directory into `profiles/`
-3. Renames `agent.yml` → `profile.yml`
-4. Calls `build_profile()` — generates `settings.json`, `.mcp.json`, symlinks shared skills/agents/commands
-
-The result is a standard profile that agenticore discovers via `AGENTICORE_AGENTIHOOKS_PATH`.
-
-### Data flow
-
-```
-agentihub/agents/publishing/     →  agent_hub.py  →  profiles/publishing/
-  agent.yml                                            profile.yml (renamed)
-  settings.overrides.json                              settings.overrides.json
-  .claude/CLAUDE.md                                    .claude/CLAUDE.md (copied)
-                                                       .claude/settings.json (generated)
-                                                       .mcp.json (generated)
-                                                       .claude/commands → symlink
-```
-
----
-
 ## Architecture reference
 
 The `register()` pattern keeps each category self-contained. `_registry.py` maps string keys to module paths, and `build_server()` in `hooks/mcp/__init__.py` imports and calls `register()` for each active category at startup.
 
 Hook handlers follow the same pattern: `hook_manager.py` dispatches by `hook_event_name` string, and each handler is a standalone function.
-
-Agent Hub follows a similar pattern: `agent_hub.py` discovers agents, copies them, and delegates to `build_profile()` — no new build logic, just a bridge between repos.
 
 ```mermaid
 flowchart LR
@@ -224,10 +169,5 @@ flowchart LR
 
     subgraph "Hook extension"
         HM[hook_manager.py] -->|dispatch| H[on_my_new_event]
-    end
-
-    subgraph "Agent Hub extension"
-        AH[agent_hub.py] -->|discover| HUB[agentihub/agents/]
-        AH -->|calls| BP[build_profile]
     end
 ```

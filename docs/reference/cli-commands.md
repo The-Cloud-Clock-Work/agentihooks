@@ -283,39 +283,6 @@ Found /home/user/.agentitools/requirements.txt — install with uv? [y/N]
 
 ---
 
-## `agent_hub.py` — external agent hub connector
-
-Attach agents from an external hub repo (e.g. agentihub) to the profile build system.
-
-```bash
-python scripts/agent_hub.py /path/to/agentihub
-python scripts/agent_hub.py --output /custom/dir /path/to/agentihub
-AGENTIHUB_PATH=/path/to/agentihub python scripts/agent_hub.py
-```
-
-### What it does
-
-1. Scans `<hub>/agents/` for directories containing `agent.yml`
-2. Copies each agent directory into the output (default: `profiles/`)
-3. Renames `agent.yml` → `profile.yml`
-4. Calls `build_profile()` from `build_profiles.py` — generates `.claude/settings.json`, `.mcp.json`, and symlinks
-
-### Flags
-
-| Flag | Description |
-|------|-------------|
-| `HUB_PATH` (positional) | Path to agentihub repo (or set `AGENTIHUB_PATH` env var) |
-| `--output DIR` | Output directory for built profiles (default: `profiles/` in agentihooks) |
-
-### Environment variables
-
-| Variable | Description |
-|----------|-------------|
-| `AGENTIHUB_PATH` | Default hub path when positional arg is not passed |
-| `AGENTIHOOKS_HOME` | Agentihooks install directory (inherited by `build_profiles.py`) |
-
----
-
 ## Standalone Python execution
 
 The hook and MCP server modules can be run directly with Python:
