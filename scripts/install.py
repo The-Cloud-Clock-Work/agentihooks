@@ -1255,16 +1255,16 @@ def main() -> None:
     glob_p = sub.add_parser("global", help="Install hooks + skills + agents into ~/.claude")
     glob_p.add_argument(
         "--profile",
-        default="default",
-        help=f"Profile whose CLAUDE.md to link (default: 'default'). Available: {', '.join(_available_profiles())}",
+        default=os.environ.get("AGENTIHOOKS_PROFILE", "default"),
+        help=f"Profile whose CLAUDE.md to link (default: 'default', env: AGENTIHOOKS_PROFILE). Available: {', '.join(_available_profiles())}",
     )
 
     proj = sub.add_parser("project", help="Install a profile's .mcp.json into a target project")
     proj.add_argument("path", help="Target project directory")
     proj.add_argument(
         "--profile",
-        default="default",
-        help="Profile to use (default: 'default')",
+        default=os.environ.get("AGENTIHOOKS_PROFILE", "default"),
+        help="Profile to use (default: 'default', env: AGENTIHOOKS_PROFILE)",
     )
 
     unsub = sub.add_parser("uninstall", help="Remove all agentihooks artifacts from the system")
