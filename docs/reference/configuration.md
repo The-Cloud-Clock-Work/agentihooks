@@ -28,6 +28,17 @@ These variables control how `agentihooks global` and `agentihooks project` insta
 
 ---
 
+## Agent Hop
+
+These variables control the Agent Hop connector (`scripts/agent_hop.py`), which builds agent definitions from an external hub into agentihooks profiles.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENTIHUB_PATH` | — | Path to an agentihub repo. Used as the default hub path when the positional argument is not passed to `agent_hop.py`. |
+| `AGENTIHOOKS_HOME` | _(auto-detected)_ | Agentihooks install directory. Controls where `build_profile()` resolves paths and generates artifacts. Inherited by `build_profiles.py`. |
+
+---
+
 ## Global
 
 | Variable | Default | Description |

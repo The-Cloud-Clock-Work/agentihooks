@@ -137,3 +137,51 @@ agentihooks global --query
 
 {: .note }
 Profiles affect the **agent's persona and tool access** but not the underlying hook behavior. Hooks are always wired from `_base/settings.base.json` regardless of profile.
+
+---
+
+## Agent Hop — external agent hubs
+
+Agent Hop (`scripts/agent_hop.py`) lets you maintain agent identities in a separate repo (e.g. a private **agentihub** repo) and build them through the same `_base` pipeline as local profiles.
+
+### Three-layer architecture
+
+```
+agenticore   = execution engine (runs Claude, manages jobs)
+agentihooks  = build system (profiles, hooks, guardrails, Agent Hop connector)
+agentihub    = agent identities (CLAUDE.md, workflows, evaluation) — your private repo
+```
+
+### agentihub agent structure
+
+```
+agentihub/agents/<name>/
+├── agent.yml                  # Same schema as profile.yml
+├── settings.overrides.json    # Env overrides (merged with _base)
+├── .claude/
+│   └── CLAUDE.md              # Agent personality + workflow
+└── evaluation/                # Eval harness (future)
+    ├── eval.yml
+    └── cases/
+```
+
+### Usage
+
+```bash
+# Build all agents from agentihub into agentihooks profiles/
+python scripts/agent_hop.py /path/to/agentihub
+
+# Custom output directory
+python scripts/agent_hop.py --output /custom/profiles/dir /path/to/agentihub
+
+# Via environment variable
+AGENTIHUB_PATH=/path/to/agentihub python scripts/agent_hop.py
+```
+
+Agent Hop:
+1. Discovers all `agents/*/agent.yml` in the hub repo
+2. Copies each agent into the output directory (default: `profiles/`)
+3. Renames `agent.yml` → `profile.yml`
+4. Calls `build_profile()` — generates `settings.json`, `.mcp.json`, symlinks
+
+The result is a standard profile that agenticore discovers normally via `AGENTICORE_AGENTIHOOKS_PATH`.

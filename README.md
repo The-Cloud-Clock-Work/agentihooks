@@ -95,6 +95,9 @@ agentihooks --mcp --uninstall           # interactive: pick a tracked file to re
 agentihooks --mcp-lib [dir]             # browse a dir of MCP files, install one
 agentihooks --sync                      # re-apply all tracked MCP files
 agentihooks --loadenv                   # install agentienv alias into ~/.bashrc
+
+# Agent Hop — build profiles from an external agent hub
+python scripts/agent_hop.py /path/to/agentihub
 ```
 
 Full reference: [CLI Commands](https://the-cloud-clock-work.github.io/agentihooks/docs/reference/cli-commands/)
@@ -119,6 +122,20 @@ Complete table covering all 40+ variables across every integration: [Configurati
 ## Profiles
 
 Profiles bundle a system prompt (`CLAUDE.md`), MCP category selection, and model settings. Switch with `agentihooks global --profile <name>`.
+
+### Agent Hop — external agent hubs
+
+Agent Hop (`scripts/agent_hop.py`) builds agent definitions from a separate repo (e.g. a private **agentihub**) through the same `_base` pipeline. This enables a three-layer architecture where agent identities live separately from the build system:
+
+```
+agenticore   = execution engine
+agentihooks  = build system (profiles, hooks, guardrails, Agent Hop)
+agentihub    = private agent identities (CLAUDE.md, workflows, evaluation)
+```
+
+```bash
+python scripts/agent_hop.py /path/to/agentihub
+```
 
 Details: [Profiles](https://the-cloud-clock-work.github.io/agentihooks/docs/getting-started/profiles/)
 
@@ -175,6 +192,7 @@ Continuously analyzed by [SonarQube](https://sonar.homeofanton.com/dashboard?id=
 |---------|-------------|
 | [agenticore](https://github.com/The-Cloud-Clock-Work/agenticore) | Claude Code runner and orchestrator |
 | [agentibridge](https://github.com/The-Cloud-Clock-Work/agentibridge) | MCP server for session persistence and remote control |
+| agentihub (private) | Private agent identities — CLAUDE.md, workflows, evaluation. Built by Agent Hop into agentihooks profiles. |
 
 ## License
 

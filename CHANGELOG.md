@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] - 2026-03-03
+
+### Added
+
+- **Agent Hop connector** (`scripts/agent_hop.py`) — attach external agent hubs to the profile build system. Reads agent definitions from an agentihub repo, builds them through `_base` template, outputs ready-to-use profiles. Reuses `build_profile()` from `build_profiles.py` with zero changes to existing code.
+- **Publishing profile** (`profiles/publishing/`) — content publishing agent for LinkedIn/Medium. Built from agentihub via Agent Hop. model=sonnet, max_turns=40, timeout=30min, auto_pr=false.
+- **Admin profile** (`profiles/admin/`) — minimal guardrails, secrets warn-only mode.
+
 ## [0.1.0] - 2026-02-23
 
 ### Added
