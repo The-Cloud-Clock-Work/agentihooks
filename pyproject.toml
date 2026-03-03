@@ -45,7 +45,13 @@ dev = [
 agentihooks = "scripts.install:main"
 
 [tool.setuptools.packages.find]
-include = ["hooks*", "scripts*"]
+include = ["hooks*", "scripts*", "profiles*"]
+
+[tool.setuptools.package-data]
+"profiles._base" = ["*.json"]
+"profiles.default" = ["*.yml", "*.json", ".mcp.json", ".claude/*"]
+"profiles.admin" = ["*.yml", "*.json", ".mcp.json", ".claude/*"]
+"profiles.coding" = ["*.yml", "*.json", ".mcp.json", ".claude/*"]
 
 [project.urls]
 Homepage = "https://github.com/The-Cloud-Clock-Work/agentihooks"
