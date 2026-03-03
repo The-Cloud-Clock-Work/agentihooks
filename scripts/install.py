@@ -601,6 +601,7 @@ def _install_user_mcp(profile_name: str) -> None:
 
     raw_mcp = load_json(mcp_src)
     rendered_mcp: dict = substitute_paths(raw_mcp)  # NOSONAR
+    rendered_mcp = substitute_paths(rendered_mcp, "__PYTHON__", sys.executable)  # NOSONAR
     profile_servers: dict = rendered_mcp.get("mcpServers", {})
 
     if not profile_servers:
@@ -1010,6 +1011,7 @@ def _collect_all_managed_mcp_servers() -> dict:
         try:
             raw = load_json(mcp_src)
             rendered: dict = substitute_paths(raw)  # NOSONAR
+            rendered = substitute_paths(rendered, "__PYTHON__", sys.executable)  # NOSONAR
             for name, cfg in rendered.get("mcpServers", {}).items():
                 merged[name] = cfg
         except (json.JSONDecodeError, OSError):
@@ -1167,6 +1169,7 @@ def install_project(args: argparse.Namespace) -> None:
 
     raw_mcp = load_json(mcp_src)
     rendered_mcp: dict = substitute_paths(raw_mcp)  # NOSONAR — intentional object→dict cast
+    rendered_mcp = substitute_paths(rendered_mcp, "__PYTHON__", sys.executable)  # NOSONAR
 
     mcp_dst = project_path / _MCP_JSON_NAME
     if mcp_dst.exists():

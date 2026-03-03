@@ -1,12 +1,12 @@
 {
   "mcpServers": {
     "hooks-utils": {
-      "command": "/home/iamroot/dev/agentihooks/.venv/bin/python3",
+      "command": "__PYTHON__",
       "args": [
         "-m",
         "hooks.mcp"
       ],
-      "cwd": "/home/iamroot/dev/agentihooks",
+      "cwd": "/app",
       "env": {
         "MCP_CATEGORIES": "all"
       }
