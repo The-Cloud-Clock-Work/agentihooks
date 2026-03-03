@@ -156,11 +156,11 @@ Exit code `2` is only meaningful for `PreToolUse` and `UserPromptSubmit`.
 
 ---
 
-## Adding agents via Agent Hop
+## Adding agents via Agent Hub
 
-Agent Hop (`scripts/agent_hop.py`) is a third extension point: it lets you maintain agent definitions in a **separate repo** (an "agentihub") and build them through the same `_base` pipeline as local profiles.
+Agent Hub (`scripts/agent_hub.py`) is a third extension point: it lets you maintain agent definitions in a **separate repo** (an "agentihub") and build them through the same `_base` pipeline as local profiles.
 
-### When to use Agent Hop
+### When to use Agent Hub
 
 - Agent identities (CLAUDE.md, workflows, evaluation) are **private** and shouldn't live in this open-source repo
 - Multiple teams share agentihooks but need **different agent personas**
@@ -183,7 +183,7 @@ agentihub/agents/<name>/
 ### How it works
 
 ```bash
-python scripts/agent_hop.py /path/to/agentihub
+python scripts/agent_hub.py /path/to/agentihub
 ```
 
 1. Discovers all `agents/*/agent.yml` in the hub
@@ -196,7 +196,7 @@ The result is a standard profile that agenticore discovers via `AGENTICORE_AGENT
 ### Data flow
 
 ```
-agentihub/agents/publishing/     →  agent_hop.py  →  profiles/publishing/
+agentihub/agents/publishing/     →  agent_hub.py  →  profiles/publishing/
   agent.yml                                            profile.yml (renamed)
   settings.overrides.json                              settings.overrides.json
   .claude/CLAUDE.md                                    .claude/CLAUDE.md (copied)
@@ -213,7 +213,7 @@ The `register()` pattern keeps each category self-contained. `_registry.py` maps
 
 Hook handlers follow the same pattern: `hook_manager.py` dispatches by `hook_event_name` string, and each handler is a standalone function.
 
-Agent Hop follows a similar pattern: `agent_hop.py` discovers agents, copies them, and delegates to `build_profile()` — no new build logic, just a bridge between repos.
+Agent Hub follows a similar pattern: `agent_hub.py` discovers agents, copies them, and delegates to `build_profile()` — no new build logic, just a bridge between repos.
 
 ```mermaid
 flowchart LR
@@ -226,8 +226,8 @@ flowchart LR
         HM[hook_manager.py] -->|dispatch| H[on_my_new_event]
     end
 
-    subgraph "Agent Hop extension"
-        AH[agent_hop.py] -->|discover| HUB[agentihub/agents/]
+    subgraph "Agent Hub extension"
+        AH[agent_hub.py] -->|discover| HUB[agentihub/agents/]
         AH -->|calls| BP[build_profile]
     end
 ```

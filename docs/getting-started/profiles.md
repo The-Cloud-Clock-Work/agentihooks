@@ -140,15 +140,15 @@ Profiles affect the **agent's persona and tool access** but not the underlying h
 
 ---
 
-## Agent Hop — external agent hubs
+## Agent Hub — external agent hubs
 
-Agent Hop (`scripts/agent_hop.py`) lets you maintain agent identities in a separate repo (e.g. a private **agentihub** repo) and build them through the same `_base` pipeline as local profiles.
+Agent Hub (`scripts/agent_hub.py`) lets you maintain agent identities in a separate repo (e.g. a private **agentihub** repo) and build them through the same `_base` pipeline as local profiles.
 
 ### Three-layer architecture
 
 ```
 agenticore   = execution engine (runs Claude, manages jobs)
-agentihooks  = build system (profiles, hooks, guardrails, Agent Hop connector)
+agentihooks  = build system (profiles, hooks, guardrails, Agent Hub connector)
 agentihub    = agent identities (CLAUDE.md, workflows, evaluation) — your private repo
 ```
 
@@ -169,16 +169,16 @@ agentihub/agents/<name>/
 
 ```bash
 # Build all agents from agentihub into agentihooks profiles/
-python scripts/agent_hop.py /path/to/agentihub
+python scripts/agent_hub.py /path/to/agentihub
 
 # Custom output directory
-python scripts/agent_hop.py --output /custom/profiles/dir /path/to/agentihub
+python scripts/agent_hub.py --output /custom/profiles/dir /path/to/agentihub
 
 # Via environment variable
-AGENTIHUB_PATH=/path/to/agentihub python scripts/agent_hop.py
+AGENTIHUB_PATH=/path/to/agentihub python scripts/agent_hub.py
 ```
 
-Agent Hop:
+Agent Hub:
 1. Discovers all `agents/*/agent.yml` in the hub repo
 2. Copies each agent into the output directory (default: `profiles/`)
 3. Renames `agent.yml` → `profile.yml`

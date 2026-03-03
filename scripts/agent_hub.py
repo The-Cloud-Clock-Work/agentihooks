@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Agent Hop — attach an external agent hub to the agentihooks profile system.
+"""Agent Hub — attach an external agent hub to the agentihooks profile system.
 
 Reads agent definitions from an agentihub repo, builds them using
 agentihooks' _base template, and outputs ready-to-use profiles.
 
 Usage:
-    python scripts/agent_hop.py /path/to/agentihub
-    python scripts/agent_hop.py --output /custom/profiles/dir /path/to/agentihub
-    AGENTIHUB_PATH=/path/to/agentihub python scripts/agent_hop.py
+    python scripts/agent_hub.py /path/to/agentihub
+    python scripts/agent_hub.py --output /custom/profiles/dir /path/to/agentihub
+    AGENTIHUB_PATH=/path/to/agentihub python scripts/agent_hub.py
 """
 
 import argparse
@@ -96,7 +96,7 @@ def attach_hub(hub_path: str, output_dir: str = "") -> list[str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Agent Hop — attach an external agent hub to agentihooks profiles"
+        description="Agent Hub — attach an external agent hub to agentihooks profiles"
     )
     parser.add_argument(
         "hub_path",

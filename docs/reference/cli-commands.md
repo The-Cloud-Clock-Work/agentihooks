@@ -283,14 +283,14 @@ Found /home/user/.agentitools/requirements.txt — install with uv? [y/N]
 
 ---
 
-## `agent_hop.py` — external agent hub connector
+## `agent_hub.py` — external agent hub connector
 
 Attach agents from an external hub repo (e.g. agentihub) to the profile build system.
 
 ```bash
-python scripts/agent_hop.py /path/to/agentihub
-python scripts/agent_hop.py --output /custom/dir /path/to/agentihub
-AGENTIHUB_PATH=/path/to/agentihub python scripts/agent_hop.py
+python scripts/agent_hub.py /path/to/agentihub
+python scripts/agent_hub.py --output /custom/dir /path/to/agentihub
+AGENTIHUB_PATH=/path/to/agentihub python scripts/agent_hub.py
 ```
 
 ### What it does
