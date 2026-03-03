@@ -106,6 +106,7 @@ All integrations are configured via environment variables. Key ones:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AGENTIHOOKS_HOME` | `~/.agentihooks` | Root for logs, memory, and state |
+| `AGENTIHOOKS_CLAUDE_HOME` | `~/.claude` | Target Claude config dir for global install |
 | `MCP_CATEGORIES` | `all` | Comma-separated list of tool categories to load |
 | `LOG_ENABLED` | `true` | Enable hook logging |
 | `MEMORY_AUTO_SAVE` | `true` | Auto-save session digest on Stop |

@@ -64,7 +64,7 @@ AGENTIHOOKS_ROOT = Path(__file__).resolve().parent.parent
 PROFILES_DIR = AGENTIHOOKS_ROOT / "profiles"
 BASE_SETTINGS = PROFILES_DIR / "_base" / "settings.base.json"
 
-CLAUDE_HOME = Path.home() / ".claude"
+CLAUDE_HOME = Path(os.environ.get("AGENTIHOOKS_CLAUDE_HOME", str(Path.home() / ".claude")))
 
 # Persistent state directory for user-level agentihooks configuration.
 AGENTIHOOKS_STATE_DIR = Path.home() / ".agentihooks"
