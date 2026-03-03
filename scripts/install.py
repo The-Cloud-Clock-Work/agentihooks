@@ -511,6 +511,16 @@ def install_global(args: argparse.Namespace) -> None:
         print()
         sync_user_mcp()
 
+    # --- 9b. Auto-install MCP file from AGENTIHOOKS_MCP_FILE env var ---
+    mcp_file_env = os.environ.get("AGENTIHOOKS_MCP_FILE", "")
+    if mcp_file_env:
+        mcp_path = Path(mcp_file_env).expanduser().resolve()
+        if mcp_path.exists():
+            print()
+            manage_user_mcp(mcp_path)
+        else:
+            print(f"  [--] AGENTIHOOKS_MCP_FILE={mcp_file_env} not found — skipping.")
+
     # --- 10. Install agentihooks CLI tool to ~/.local/bin ---
     print()
     _install_cli_tool()
