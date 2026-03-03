@@ -48,12 +48,14 @@ class TestBlockActionIntegration:
     """Integration tests: BlockAction propagates through main() with exit 2."""
 
     def _run(self, payload: dict) -> subprocess.CompletedProcess:
+        env = {**os.environ, "AGENTIHOOKS_SECRETS_MODE": "standard"}
         return subprocess.run(
             [sys.executable, "-m", "hooks"],
             input=json.dumps(payload),
             capture_output=True,
             text=True,
             cwd=_PROJECT_ROOT,
+            env=env,
         )
 
     def _bash_payload(self, command: str) -> dict:

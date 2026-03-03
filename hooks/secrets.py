@@ -102,11 +102,7 @@ def scan(text: str, *, mode: str | None = None) -> list[str]:
         return []
 
     # Strip suppressed lines before pattern matching
-    filtered = "".join(
-        line
-        for line in text.splitlines(keepends=True)
-        if not _NOSECRET_RE.search(line)
-    )
+    filtered = "".join(line for line in text.splitlines(keepends=True) if not _NOSECRET_RE.search(line))
     hits: list[str] = []
     for pattern in patterns:
         if pattern.regex.search(filtered):

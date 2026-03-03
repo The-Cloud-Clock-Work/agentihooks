@@ -9,7 +9,7 @@ import pytest
 
 # Add scripts/ to path so we can import install directly
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-import install
+import install  # noqa: I001
 
 
 # ---------------------------------------------------------------------------

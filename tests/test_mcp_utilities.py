@@ -66,7 +66,9 @@ class TestValidateMermaid:
 
     def test_exception_returns_error(self, mcp_tools):
         fn = mcp_tools["validate_mermaid"]
-        with patch("hooks.mcp.utilities.json.dumps", side_effect=[Exception("boom"), '{"success": false, "error": "boom"}']):
+        with patch(
+            "hooks.mcp.utilities.json.dumps", side_effect=[Exception("boom"), '{"success": false, "error": "boom"}']
+        ):
             # Trigger the except branch
             pass
         # Simpler: cause an import error inside the tool

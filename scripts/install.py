@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # If accidentally run with bash, re-exec with python3 (polyglot trick).
-''':'
+""":'
 exec python3 "$0" "$@"
 exit
-'''
+"""
+
 # NOTE: The triple-quoted polyglot string above becomes __doc__ in Python,
 # so the real usage text is stored in _USAGE_TEXT and used as the argparse epilog.
 _USAGE_TEXT = """Examples:
@@ -204,11 +205,7 @@ def _cmd_loadenv(env_file: Path, exec_cmd: list[str], *, force: bool = False) ->
         print(f"[!!] env file not found: {env_file}", file=sys.stderr)
         sys.exit(1)
 
-    block = (
-        f"{_BLOCK_START}\n"
-        f"alias agentienv='set -a && . {env_file} && set +a'\n"
-        f"{_BLOCK_END}\n"
-    )
+    block = f"{_BLOCK_START}\nalias agentienv='set -a && . {env_file} && set +a'\n{_BLOCK_END}\n"
 
     bashrc_text = _BASHRC.read_text(encoding="utf-8") if _BASHRC.exists() else ""
 
@@ -759,9 +756,6 @@ def _cmd_mcp_lib(lib_path: Path | None) -> None:
         print(f"[!!] Not a directory: {lib_path}", file=sys.stderr)
         sys.exit(1)
 
-    files = sorted(lib_path.glob("*.mcp.json")) + sorted(
-        p for p in lib_path.glob("*.json") if p not in lib_path.glob("*.mcp.json")
-    )
     # Keep only files that contain mcpServers
     mcp_files: list[tuple[Path, dict]] = []
     for f in sorted(lib_path.glob("*.json")):
@@ -1065,19 +1059,13 @@ def uninstall_global(args: argparse.Namespace) -> None:
         if not d.exists():
             return 0
         root_str = str(AGENTIHOOKS_ROOT)
-        return sum(
-            1
-            for lnk in d.iterdir()
-            if lnk.is_symlink() and str(lnk.resolve()).startswith(root_str)
-        )
+        return sum(1 for lnk in d.iterdir() if lnk.is_symlink() and str(lnk.resolve()).startswith(root_str))
 
     n_skills = _count_agentihooks_symlinks(skills_dir)
     n_agents = _count_agentihooks_symlinks(agents_dir)
     n_commands = _count_agentihooks_symlinks(commands_dir)
 
-    remove_claude_md = claude_md_dst.is_symlink() and str(claude_md_dst.resolve()).startswith(
-        str(PROFILES_DIR)
-    )
+    remove_claude_md = claude_md_dst.is_symlink() and str(claude_md_dst.resolve()).startswith(str(PROFILES_DIR))
 
     managed_servers = _collect_all_managed_mcp_servers()
 
@@ -1227,13 +1215,13 @@ def main() -> None:
         const="",
         metavar="PATH",
         help="Path to a .mcp.json file to install into user scope. "
-             "With --uninstall and no PATH: interactive selection from tracked files.",
+        "With --uninstall and no PATH: interactive selection from tracked files.",
     )
     parser.add_argument(
         "--uninstall",
         action="store_true",
         help="Remove MCP servers from user scope. "
-             "With --mcp PATH: remove that file. Without PATH: pick from tracked files.",
+        "With --mcp PATH: remove that file. Without PATH: pick from tracked files.",
     )
     parser.add_argument(
         "--sync",
@@ -1246,7 +1234,7 @@ def main() -> None:
         const="",
         metavar="PATH",
         help="Browse a directory of .mcp.json files and install one interactively. "
-             "PATH is saved in state.json — omit it on future calls to reuse.",
+        "PATH is saved in state.json — omit it on future calls to reuse.",
     )
     parser.add_argument(
         "--loadenv",

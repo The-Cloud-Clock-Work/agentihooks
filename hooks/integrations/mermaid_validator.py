@@ -547,9 +547,7 @@ class MermaidValidator:
         # Patterns
         node_def_pattern = re.compile(r"([A-Za-z_]\w*)[\[\(\{]")
         connection_pattern = re.compile(r"([A-Za-z_]\w*)\s*(?:-->|---|==>|-.->|--x|--o|<-->)")
-        target_pattern = re.compile(
-            r"(?:-->|---|==>|-.->|--x|--o|<-->)\s*(?:\|[^|]*\|)?\s*([A-Za-z_]\w*)"
-        )
+        target_pattern = re.compile(r"(?:-->|---|==>|-.->|--x|--o|<-->)\s*(?:\|[^|]*\|)?\s*([A-Za-z_]\w*)")
 
         # Track bracket balance
         bracket_types = {"[": "]", "(": ")", "{": "}", "[[": "]]", "((": "))"}
@@ -859,9 +857,8 @@ class MermaidValidator:
         """
         issues = []
 
-        for i, line in enumerate(diagram.lines):
+        for _i, line in enumerate(diagram.lines):
             stripped = line.strip()
-            line_num = diagram.start_line + i
 
             # Skip empty lines, comments, and diagram declaration
             if not stripped or stripped.startswith("%%") or stripped.lower() == "classdiagram":
@@ -890,9 +887,8 @@ class MermaidValidator:
         # State diagrams use --> for transitions
         # [*] for start/end states
 
-        for i, line in enumerate(diagram.lines):
+        for _i, line in enumerate(diagram.lines):
             stripped = line.strip()
-            line_num = diagram.start_line + i
 
             # Skip empty lines, comments, and diagram declarations
             if not stripped or stripped.startswith("%%"):

@@ -183,7 +183,7 @@ class TestScanModes:
     def test_scan_strict_detects_jwt(self):
         """mode='strict' catches JWT tokens."""
         # Build a realistic JWT-shaped string
-        header = "eyJhbGciOiJIUzI1NiJ9"   # nosecret
+        header = "eyJhbGciOiJIUzI1NiJ9"  # nosecret
         payload = "eyJzdWIiOiIxMjM0NTY3ODkwIn0"  # nosecret
         sig = "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"  # nosecret
         jwt = f"{header}.{payload}.{sig}"
@@ -194,7 +194,7 @@ class TestScanModes:
 
     def test_scan_standard_misses_jwt(self):
         """mode='standard' does NOT catch JWT tokens."""
-        header = "eyJhbGciOiJIUzI1NiJ9"   # nosecret
+        header = "eyJhbGciOiJIUzI1NiJ9"  # nosecret
         payload = "eyJzdWIiOiIxMjM0NTY3ODkwIn0"  # nosecret
         sig = "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"  # nosecret
         jwt = f"{header}.{payload}.{sig}"

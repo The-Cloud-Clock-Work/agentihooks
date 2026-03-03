@@ -37,6 +37,7 @@ from hooks.common import log
 class BlockAction(Exception):
     """Raised by a hook handler to block the current Claude Code action (exit 2)."""
 
+
 # Heavy imports are lazy-loaded in functions that need them:
 # - hooks.integrations.email.send_email -> only in notify_on_error()
 # - hooks.observability.transcript.log_new_entries -> only in handlers that need it
@@ -385,8 +386,8 @@ def on_user_prompt_submit(payload: dict) -> None:
 
     prompt = payload.get("prompt", "")
     if prompt:
-        from hooks.secrets import scan
         from hooks.common import inject_context
+        from hooks.secrets import scan
 
         hits = scan(prompt, mode=SECRETS_MODE)
         if hits:
@@ -408,7 +409,7 @@ def on_pre_tool_use(payload: dict) -> None:
     if SECRETS_MODE == "off":
         log(f"Pre tool use: {tool_name} (secrets scanning skipped, mode=off)", {"tool": tool_name})
     else:
-        from hooks.secrets import scan, redact
+        from hooks.secrets import redact, scan
 
         # Log command details for Bash
         if tool_name == "Bash":
@@ -599,7 +600,7 @@ def main() -> None:
 
     except BlockAction as e:
         print(str(e), flush=True)  # injected into Claude's context
-        sys.exit(2)                # blocks the action
+        sys.exit(2)  # blocks the action
     except json.JSONDecodeError:
         log("Failed to parse JSON payload")
     except Exception as e:
