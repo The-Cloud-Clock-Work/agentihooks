@@ -5,7 +5,7 @@ claude:
   model: sonnet
   max_turns: 80
   permission_mode: bypassPermissions
-  no_session_persistence: true
+  no_session_persistence: false
   output_format: json
   worktree: true
   effort: high
