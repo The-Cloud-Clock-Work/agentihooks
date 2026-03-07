@@ -33,9 +33,9 @@ profiles/
 ├── _base/
 │   └── settings.base.json      # Canonical settings (hooks, permissions, MCP servers)
 ├── default/
-│   ├── profile.yml             # Model, turns, timeout, MCP_CATEGORIES
+│   ├── profile.yml             # agentihooks: name, description, mcp_categories
+│   │                           # agenticore: model, turns, timeout, etc.
 │   ├── settings.overrides.json # Optional per-profile env/setting overrides
-│   ├── .mcp.json               # MCP server config template (has /app placeholders)
 │   └── .claude/
 │       └── CLAUDE.md           # Agent system prompt for this profile
 └── coding/
@@ -54,13 +54,26 @@ All paths use `/app` as a placeholder. The install script substitutes `/app` wit
 
 ### `profile.yml`
 
-Controls runtime behavior:
+Contains fields for both agentihooks and agenticore:
+
+**agentihooks fields** (read by `install.py`):
+- `name` — profile identifier
+- `description` — shown by `--list-profiles`
+- `mcp_categories` — comma-separated tool categories to enable (default: `all`)
+
+**agenticore fields** (read by agenticore, ignored by agentihooks):
+- `claude.model`, `claude.max_turns`, `claude.timeout`, etc. — passed as Claude Code CLI args
 
 ```yaml
-model: claude-sonnet-4-6
-max_turns: 50
-timeout: 600
+# agentihooks fields
+name: coding
+description: "Autonomous coding agent"
 mcp_categories: github,utilities,observability
+
+# agenticore fields
+claude:
+  model: sonnet
+  max_turns: 80
 ```
 
 ### `.claude/CLAUDE.md`

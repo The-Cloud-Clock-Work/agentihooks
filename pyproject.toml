@@ -49,9 +49,9 @@ include = ["hooks*", "scripts*", "profiles*"]
 
 [tool.setuptools.package-data]
 "profiles._base" = ["*.json"]
-"profiles.default" = ["*.yml", "*.json", ".mcp.json", ".claude/CLAUDE.md"]
-"profiles.admin" = ["*.yml", "*.json", ".mcp.json", ".claude/CLAUDE.md"]
-"profiles.coding" = ["*.yml", "*.json", ".mcp.json", ".claude/CLAUDE.md"]
+"profiles.default" = ["*.yml", "*.json", ".claude/CLAUDE.md"]
+"profiles.admin" = ["*.yml", "*.json", ".claude/CLAUDE.md"]
+"profiles.coding" = ["*.yml", "*.json", ".claude/CLAUDE.md"]
 
 [project.urls]
 Homepage = "https://github.com/The-Cloud-Clock-Work/agentihooks"

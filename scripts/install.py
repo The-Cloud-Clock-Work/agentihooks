@@ -360,17 +360,22 @@ def _available_profiles() -> list[str]:
     return sorted(d.name for d in PROFILES_DIR.iterdir() if d.is_dir() and not d.name.startswith("_"))
 
 
-def _read_profile_description(profile_dir: Path) -> str:
-    """Return the description field from profile.yml, or '' if absent."""
+def _read_profile_field(profile_dir: Path, field: str) -> str:
+    """Read a top-level field from profile.yml (simple key: value only)."""
     yml = profile_dir / "profile.yml"
     if not yml.exists():
         return ""
+    prefix = f"{field}:"
     for line in yml.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
-        if stripped.startswith("description:"):
-            value = stripped[len("description:") :].strip().strip('"').strip("'")
-            return value
+        if stripped.startswith(prefix):
+            return stripped[len(prefix) :].strip().strip('"').strip("'")
     return ""
+
+
+def _read_profile_description(profile_dir: Path) -> str:
+    """Return the description field from profile.yml, or '' if absent."""
+    return _read_profile_field(profile_dir, "description")
 
 
 def query_active_profile() -> None:
@@ -405,9 +410,6 @@ def list_profiles() -> None:
         claude_md = PROFILES_DIR / name / _CLAUDE_SUBDIR / _CLAUDE_MD_NAME
         if not claude_md.exists():
             marker = f"  [no {_CLAUDE_MD_NAME}]"
-        mcp = PROFILES_DIR / name / _MCP_JSON_NAME
-        if not mcp.exists():
-            marker += f"  [no {_MCP_JSON_NAME}]"
         desc_str = f"  — {desc}" if desc else ""
         print(f"  {name}{desc_str}{marker}")
     print()
@@ -457,6 +459,15 @@ def _backup_settings(existing_path: Path) -> None:
 
 def install_global(args: argparse.Namespace) -> None:
     profile_name: str = args.profile
+
+    # Validate profile exists
+    profile_dir = PROFILES_DIR / profile_name
+    if not profile_dir.is_dir():
+        available = _available_profiles()
+        print(f"ERROR: Profile '{profile_name}' not found.", file=sys.stderr)
+        print(f"Available profiles: {', '.join(available)}", file=sys.stderr)
+        sys.exit(1)
+
     print(f"agentihooks root : {AGENTIHOOKS_ROOT}")
     print(f"Target           : {CLAUDE_HOME}")
     print(f"Profile          : {profile_name}")
@@ -625,27 +636,30 @@ def _remove_mcp_from_user_scope(servers: dict) -> None:
         print(f"  [--] Not found (already removed?)  : {', '.join(missing)}")
 
 
+def _build_mcp_config(mcp_categories: str) -> dict:
+    """Build MCP server config for the hooks-utils server."""
+    return {
+        "mcpServers": {
+            "hooks-utils": {
+                "command": sys.executable,
+                "args": ["-m", "hooks.mcp"],
+                "cwd": str(AGENTIHOOKS_ROOT),
+                "env": {"MCP_CATEGORIES": mcp_categories},
+            }
+        }
+    }
+
+
 def _install_user_mcp(profile_name: str) -> None:
-    """Merge profile's .mcp.json servers into ~/.claude.json top-level mcpServers.
+    """Generate and merge MCP server config into ~/.claude.json.
 
-    This installs MCP servers at user scope so they are available in every
-    project without needing a per-project .mcp.json.
+    Reads ``mcp_categories`` from ``profile.yml`` (defaults to ``all``)
+    and builds the hooks-utils MCP server config dynamically.
     """
-    mcp_src = PROFILES_DIR / profile_name / _MCP_JSON_NAME
-    if not mcp_src.exists():
-        print(f"  (no {_MCP_JSON_NAME} in profile '{profile_name}', skipping user-scope MCP)")
-        return
-
-    raw_mcp = load_json(mcp_src)
-    rendered_mcp: dict = substitute_paths(raw_mcp)  # NOSONAR
-    rendered_mcp = substitute_paths(rendered_mcp, "__PYTHON__", sys.executable)  # NOSONAR
-    profile_servers: dict = rendered_mcp.get("mcpServers", {})
-
-    if not profile_servers:
-        print(f"  (profile '{profile_name}' .mcp.json has no mcpServers, skipping)")
-        return
-
-    _merge_mcp_to_user_scope(profile_servers)
+    profile_dir = PROFILES_DIR / profile_name
+    mcp_categories = _read_profile_field(profile_dir, "mcp_categories") or "all"
+    mcp_config = _build_mcp_config(mcp_categories)
+    _merge_mcp_to_user_scope(mcp_config["mcpServers"])
 
 
 def manage_user_mcp(mcp_path: Path, *, uninstall: bool = False) -> None:
@@ -1030,26 +1044,16 @@ def _collect_all_managed_mcp_servers() -> dict:
     """Return the union of all MCP servers managed by agentihooks.
 
     Collects servers from:
-    1. All profile .mcp.json files (rendered with path substitution)
+    1. The hooks-utils server (generated from profile mcp_categories)
     2. All files tracked in ~/.agentihooks/state.json mcpFiles
 
     Returns a merged {name: config} dict.
     """
     merged: dict = {}
 
-    # --- Profile servers ---
-    for profile_name in _available_profiles():
-        mcp_src = PROFILES_DIR / profile_name / _MCP_JSON_NAME
-        if not mcp_src.exists():
-            continue
-        try:
-            raw = load_json(mcp_src)
-            rendered: dict = substitute_paths(raw)  # NOSONAR
-            rendered = substitute_paths(rendered, "__PYTHON__", sys.executable)  # NOSONAR
-            for name, cfg in rendered.get("mcpServers", {}).items():
-                merged[name] = cfg
-        except (json.JSONDecodeError, OSError):
-            pass
+    # --- hooks-utils server (always present, categories don't matter for uninstall) ---
+    mcp_config = _build_mcp_config("all")
+    merged.update(mcp_config["mcpServers"])
 
     # --- State-tracked MCP files ---
     state = _load_state()
@@ -1189,15 +1193,16 @@ def install_project(args: argparse.Namespace) -> None:
         print(f"ERROR: Project path is not a directory: {project_path}", file=sys.stderr)
         sys.exit(1)
 
-    mcp_src = PROFILES_DIR / profile_name / _MCP_JSON_NAME
-    if not mcp_src.exists():
-        print(f"ERROR: Profile '{_MCP_JSON_NAME}' not found: {mcp_src}", file=sys.stderr)
-        print(f"Available profiles: {_available_profiles()}", file=sys.stderr)
+    # Validate profile
+    profile_dir = PROFILES_DIR / profile_name
+    if not profile_dir.is_dir():
+        available = _available_profiles()
+        print(f"ERROR: Profile '{profile_name}' not found.", file=sys.stderr)
+        print(f"Available profiles: {', '.join(available)}", file=sys.stderr)
         sys.exit(1)
 
-    raw_mcp = load_json(mcp_src)
-    rendered_mcp: dict = substitute_paths(raw_mcp)  # NOSONAR — intentional object→dict cast
-    rendered_mcp = substitute_paths(rendered_mcp, "__PYTHON__", sys.executable)  # NOSONAR
+    mcp_categories = _read_profile_field(profile_dir, "mcp_categories") or "all"
+    rendered_mcp = _build_mcp_config(mcp_categories)
 
     mcp_dst = project_path / _MCP_JSON_NAME
     if mcp_dst.exists():

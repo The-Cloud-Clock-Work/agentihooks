@@ -1,6 +1,9 @@
+# -- agentihooks fields (read by install.py) --
 name: admin
 description: "Admin — minimal guardrails, secrets warn-only"
+mcp_categories: all
 
+# -- agenticore fields (read by agenticore, not agentihooks) --
 claude:
   model: sonnet
   max_turns: 80
@@ -12,4 +15,3 @@ claude:
   timeout: 3600
 
 auto_pr: false
-mcp_categories: all
