@@ -34,10 +34,10 @@ profiles/
 │   └── settings.base.json      # Canonical settings (hooks, permissions, MCP servers)
 ├── default/
 │   ├── profile.yml             # Model, turns, timeout, MCP_CATEGORIES
-│   ├── .mcp.json               # Generated MCP server config (has /app paths)
+│   ├── settings.overrides.json # Optional per-profile env/setting overrides
+│   ├── .mcp.json               # MCP server config template (has /app placeholders)
 │   └── .claude/
-│       ├── CLAUDE.md           # Agent system prompt for this profile
-│       └── settings.json       # Generated hook wiring + permissions
+│       └── CLAUDE.md           # Agent system prompt for this profile
 └── coding/
     └── ...                     # Same structure
 ```
