@@ -148,13 +148,24 @@ MCP_CATEGORIES=github,utilities python -m hooks.mcp
 
 ## Custom Claude config directory
 
-By default the installer targets `~/.claude`. To redirect to a different location (e.g. when using `CLAUDE_CONFIG_DIR` or a non-standard home layout), set `AGENTIHOOKS_CLAUDE_HOME`:
+By default the installer targets `~/.claude`. If `$HOME` differs from where
+Claude Code actually stores its config, set `CLAUDE_CODE_HOME_DIR` to the
+correct home-directory root — agentihooks appends `.claude` automatically:
 
 ```bash
-AGENTIHOOKS_CLAUDE_HOME=/some/custom/dir uv run agentihooks global
+CLAUDE_CODE_HOME_DIR=/shared/home agentihooks global
+# installs into /shared/home/.claude/
 ```
 
-All downstream paths (settings.json, skills/, agents/, commands/, CLAUDE.md) resolve relative to that directory automatically.
+The legacy `AGENTIHOOKS_CLAUDE_HOME` still works and points directly at the
+`.claude` directory (no `.claude` appended). Priority order:
+
+1. `CLAUDE_CODE_HOME_DIR` (home-dir root, `.claude` appended)
+2. `AGENTIHOOKS_CLAUDE_HOME` (direct `.claude` path, legacy)
+3. `~/.claude` (default)
+
+All downstream paths (settings.json, skills/, agents/, commands/, CLAUDE.md)
+resolve relative to the resolved directory automatically.
 
 ---
 

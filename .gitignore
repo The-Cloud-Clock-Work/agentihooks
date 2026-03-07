@@ -39,3 +39,6 @@ logs/
 # Tool memory (runtime state)
 .agenticore_tool_memory.ndjson
 .coverage
+
+# Generated profile build artifacts
+profiles/*/.claude/settings.json

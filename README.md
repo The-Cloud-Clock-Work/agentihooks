@@ -107,7 +107,8 @@ All integrations are configured via environment variables. Key ones:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AGENTIHOOKS_HOME` | `~/.agentihooks` | Root for logs, memory, and state |
-| `AGENTIHOOKS_CLAUDE_HOME` | `~/.claude` | Target Claude config dir for global install |
+| `CLAUDE_CODE_HOME_DIR` | `$HOME` | Home-directory root override (`.claude` appended automatically) |
+| `AGENTIHOOKS_CLAUDE_HOME` | `~/.claude` | Legacy: direct path to `.claude` directory |
 | `AGENTIHOOKS_PROFILE` | `default` | Profile to use for `agentihooks global` / `project` (env alternative to `--profile`) |
 | `AGENTIHOOKS_MCP_FILE` | — | Path to an MCP JSON file to auto-merge during `agentihooks global` |
 | `MCP_CATEGORIES` | `all` | Comma-separated list of tool categories to load |

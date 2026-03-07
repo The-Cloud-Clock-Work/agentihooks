@@ -65,7 +65,28 @@ AGENTIHOOKS_ROOT = Path(__file__).resolve().parent.parent
 PROFILES_DIR = AGENTIHOOKS_ROOT / "profiles"
 BASE_SETTINGS = PROFILES_DIR / "_base" / "settings.base.json"
 
-CLAUDE_HOME = Path(os.environ.get("AGENTIHOOKS_CLAUDE_HOME", str(Path.home() / ".claude")))
+
+def _resolve_claude_home() -> Path:
+    """Resolve the Claude config directory.
+
+    Priority: CLAUDE_CODE_HOME_DIR > AGENTIHOOKS_CLAUDE_HOME > ~/.claude
+
+    CLAUDE_CODE_HOME_DIR points at the home-dir root (like $HOME);
+    we append .claude automatically.
+    AGENTIHOOKS_CLAUDE_HOME points directly at the .claude directory (legacy).
+    """
+    home_dir = os.environ.get("CLAUDE_CODE_HOME_DIR")
+    if home_dir:
+        return Path(home_dir) / ".claude"
+
+    claude_home = os.environ.get("AGENTIHOOKS_CLAUDE_HOME")
+    if claude_home:
+        return Path(claude_home)
+
+    return Path.home() / ".claude"
+
+
+CLAUDE_HOME = _resolve_claude_home()
 
 # Persistent state directory for user-level agentihooks configuration.
 AGENTIHOOKS_STATE_DIR = Path.home() / ".agentihooks"
@@ -548,7 +569,16 @@ def install_global(args: argparse.Namespace) -> None:
 # User-scope MCP install (~/.claude.json)
 # ---------------------------------------------------------------------------
 
-_CLAUDE_JSON = Path.home() / ".claude.json"
+
+def _resolve_claude_json() -> Path:
+    """Resolve ~/.claude.json, respecting CLAUDE_CODE_HOME_DIR."""
+    home_dir = os.environ.get("CLAUDE_CODE_HOME_DIR")
+    if home_dir:
+        return Path(home_dir) / ".claude.json"
+    return Path.home() / ".claude.json"
+
+
+_CLAUDE_JSON = _resolve_claude_json()
 
 
 def _merge_mcp_to_user_scope(servers: dict) -> None:

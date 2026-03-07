@@ -50,7 +50,8 @@ agentihooks global [--profile <name>] [--list-profiles] [--query]
 |----------|-------------|
 | `AGENTIHOOKS_PROFILE` | Default profile when `--profile` is not passed (default: `default`) |
 | `AGENTIHOOKS_MCP_FILE` | Path to an MCP JSON file to auto-merge into `~/.claude.json` during install |
-| `AGENTIHOOKS_CLAUDE_HOME` | Target Claude config directory (default: `~/.claude`) |
+| `CLAUDE_CODE_HOME_DIR` | Home-directory root override — `.claude` is appended automatically (default: `$HOME`) |
+| `AGENTIHOOKS_CLAUDE_HOME` | Legacy: direct path to the `.claude` directory (default: `~/.claude`) |
 
 ### Examples
 
