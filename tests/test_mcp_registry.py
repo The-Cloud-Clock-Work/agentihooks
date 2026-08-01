@@ -184,15 +184,36 @@ class TestSessionScopedTools:
         assert timings["ticker_done"] < timings["slow_done"]
         assert timings["ticker_done"] < 0.45
 
-    def test_pool_status_rejects_unresolvable_caller(self, tools):
+    def test_pool_status_rejects_unresolvable_caller(self, tools, monkeypatch):
+        """The downstream call must never be reached.
+
+        Asserting only on the error string is not enough: set_summary("") fails
+        for its own unrelated reasons ("not registered in the pool"), so the
+        test would keep passing if the guard were deleted. The explosive mock
+        pins the guard itself.
+        """
+
+        def _explode(*args, **kwargs):
+            raise AssertionError("set_summary must not be reached without a caller")
+
+        monkeypatch.setattr("hooks.context.agent_pool.set_summary", _explode)
         result = json.loads(tools["pool_status"]("doing a thing"))
 
         assert result["success"] is False
         assert "session_id" in result["error"]
 
-    def test_channel_acknowledge_rejects_unresolvable_caller(self, tools):
+    def test_channel_acknowledge_rejects_unresolvable_caller(self, tools, monkeypatch):
         """Regression: this used to ack against the literal "unknown", so the
-        broadcast kept re-injecting for every real session forever."""
+        broadcast kept re-injecting for every real session forever.
+
+        Same reasoning as above — acknowledge_broadcast("") would fail anyway
+        with "message not found", masking a deleted guard.
+        """
+
+        def _explode(*args, **kwargs):
+            raise AssertionError("acknowledge_broadcast must not be reached without a caller")
+
+        monkeypatch.setattr("hooks.context.broadcast.acknowledge_broadcast", _explode)
         result = json.loads(tools["channel_acknowledge"]("some-message-id"))
 
         assert result["success"] is False

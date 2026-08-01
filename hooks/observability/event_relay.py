@@ -362,6 +362,21 @@ def events_from_stop_payload(payload: dict) -> list[dict]:
     return out
 
 
+def resolve_event_session_id(event: dict) -> str:
+    """Session id for a hook event: the payload first, then the environment.
+
+    ``CLAUDE_CODE_SESSION_ID`` is the variable Claude Code actually injects;
+    ``CLAUDE_SESSION_ID`` is a legacy name nothing sets, kept only for anything
+    populating it out-of-band. The payload wins because it is per-event, while
+    the environment belongs to the process.
+    """
+    return (
+        event.get("session_id", "")
+        or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+        or os.environ.get("CLAUDE_SESSION_ID", "")
+    )
+
+
 def main() -> None:
     correlation_id = os.environ.get("AGENTICORE_CORRELATION_ID", "")
     if not correlation_id:
@@ -377,11 +392,7 @@ def main() -> None:
         sys.exit(0)
 
     hook_name = event.get("hook_event_name", "") or event.get("hook_name", "") or os.environ.get("CLAUDE_HOOK_NAME", "")
-    session_id = (
-        event.get("session_id", "")
-        or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
-        or os.environ.get("CLAUDE_SESSION_ID", "")
-    )
+    session_id = resolve_event_session_id(event)
     transcript_path = event.get("transcript_path", "")
 
     try:

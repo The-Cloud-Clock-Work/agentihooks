@@ -2483,6 +2483,11 @@ def _install_global_inner(args: argparse.Namespace) -> None:
     print(f"Python           : {_canonical_python}")
     print()
 
+    # --- 0. Reject an unusable MCP transport before anything is written ---
+    # Step 6 is where the transport is actually used, but by then settings,
+    # hooks, skills and CLAUDE.md are already on disk. Fail here instead.
+    _mcp_transport = _validate_mcp_transport_or_exit()
+
     # --- 1. Load and render base settings ---
     if not BASE_SETTINGS.exists():
         print(f"ERROR: {BASE_SETTINGS} not found.", file=sys.stderr)
@@ -2654,9 +2659,13 @@ def _install_global_inner(args: argparse.Namespace) -> None:
     _install_user_mcp(last_profile)
 
     # Network transport needs a persistent server; stdio does not. Only in
-    # network mode does a systemd artifact appear on the machine at all.
-    if _resolve_installer_mcp_transport() != "stdio":
+    # network mode does a systemd artifact appear on the machine at all — and
+    # reverting to stdio tears down a unit left over from a previous run, so a
+    # downgrade cannot orphan a daemon the config no longer points at.
+    if _mcp_transport != "stdio":
         _install_systemd_user_unit()
+    else:
+        _remove_systemd_user_unit()
 
     # Layer 2: bundle .claude/.mcp.json — always installed; profile MCPs layer on top (override per-name)
     if bundle_dir:
@@ -2960,28 +2969,83 @@ def _remove_mcp_from_user_scope(servers: dict) -> None:
         _cprint(f"  [--] Not found (already removed?)  : {', '.join(missing)}")
 
 
+VALID_MCP_TRANSPORTS = ("stdio", "sse", "streamable-http")
+
+
+def _scan_env_file_value(env_file: Path, key: str) -> str | None:
+    """Read *key* from a dotenv file, or None if absent.
+
+    This MIRRORS ``hooks/config.py::_parse_env_file`` — ``export`` prefixes,
+    quoted values, and inline ``#`` comments all handled the same way. It is a
+    copy rather than an import because install.py deliberately does not depend
+    on ``hooks.*``, and the two are pinned together by a parity test.
+
+    Getting this wrong is not a cosmetic bug: the daemon reads the same file
+    through the real parser, so a weaker scan here makes the installer and the
+    daemon silently disagree about which transport is in play.
+    """
+    try:
+        raw_text = env_file.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    for raw in raw_text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            continue
+        name, _, val = line.partition("=")
+        if name.strip() != key:
+            continue
+        val = val.strip()
+        if val and val[0] in ('"', "'"):
+            quote = val[0]
+            end = val.find(quote, 1)
+            val = val[1:end] if end != -1 else val[1:]
+        elif "#" in val:
+            val = val[: val.index("#")].rstrip()
+        # First assignment wins: _parse_env_file uses os.environ.setdefault, so
+        # a later duplicate never overwrites an earlier one.
+        return val
+    return None
+
+
 def _resolve_installer_mcp_transport() -> str:
     """Transport for the ~/.claude.json hooks-utils entry. ``stdio`` by default.
 
     Resolved from ``AGENTIHOOKS_MCP_TRANSPORT`` in the installer's environment,
-    then from a plain-text scan of ``~/.agentihooks/.env`` for ``MCP_TRANSPORT``
-    — the same file the daemon itself reads at runtime, so one operator edit
-    drives both sides. The scan is deliberately textual: install.py does not
-    import ``hooks.*``.
+    then from ``~/.agentihooks/.env`` — the same file the daemon reads at
+    runtime, so one operator edit drives both sides.
     """
     val = os.environ.get("AGENTIHOOKS_MCP_TRANSPORT", "").strip().lower()
     if val:
         return val
-    env_file = Path.home() / ".agentihooks" / ".env"
-    if env_file.is_file():
-        try:
-            for line in env_file.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line.startswith("MCP_TRANSPORT="):
-                    return line.split("=", 1)[1].strip().strip("\"'").lower()
-        except OSError:
-            pass
+    from_file = _scan_env_file_value(Path.home() / ".agentihooks" / ".env", "MCP_TRANSPORT")
+    if from_file:
+        return from_file.strip().lower()
     return "stdio"
+
+
+def _validate_mcp_transport_or_exit() -> str:
+    """Resolve the transport, rejecting an unusable value before anything is written.
+
+    Called at the top of the install flow. ``_build_mcp_config`` runs at step 6,
+    by which point settings, hooks, skills and CLAUDE.md are already on disk —
+    exiting there leaves a half-installed tree with no state.json record.
+    """
+    transport = _resolve_installer_mcp_transport()
+    if transport not in VALID_MCP_TRANSPORTS:
+        print(
+            f"ERROR: unusable MCP transport {transport!r}.\n"
+            "Set AGENTIHOOKS_MCP_TRANSPORT, or MCP_TRANSPORT in ~/.agentihooks/.env, "
+            f"to one of: {', '.join(VALID_MCP_TRANSPORTS)}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return transport
 
 
 def _probe_mcp_url_reachable(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -4199,6 +4263,11 @@ def uninstall_global(args: argparse.Namespace) -> None:
     # that run unconditionally — a bashrc block or an installed CLI on its own
     # is still an install, and returning here would silently skip both.
     bashrc_block_present = _BASHRC.exists() and _BLOCK_START in _BASHRC.read_text(encoding="utf-8")
+    # The systemd unit counts too: on a machine where it is the last surviving
+    # artifact, omitting it here reports "nothing to uninstall" and returns
+    # before the removal step, leaving an enabled daemon running past a green
+    # uninstall.
+    systemd_unit_present = _systemd_user_unit_path().exists()
     total_work = (
         int(remove_settings)
         + n_skills
@@ -4209,6 +4278,7 @@ def uninstall_global(args: argparse.Namespace) -> None:
         + len(managed_servers)
         + int(bashrc_block_present)
         + int(_cli_tool_is_installed())
+        + int(systemd_unit_present)
     )
     if total_work == 0:
         print("Nothing to uninstall — agentihooks is not installed.")

@@ -935,6 +935,88 @@ class TestMcpTransportModes:
         assert install._resolve_installer_mcp_transport() == "stdio"
 
 
+class TestEnvScanParity:
+    """The installer's dotenv scan must agree with the daemon's real parser.
+
+    They read the SAME file. Any divergence means the installer writes a config
+    for one transport while the daemon speaks another — silently, exit 0. The
+    original scan handled neither `export ` nor inline comments, so
+    `export MCP_TRANSPORT=sse` resolved to stdio on the exact enterprise client
+    the network path exists for.
+    """
+
+    CASES = [
+        "MCP_TRANSPORT=sse\n",
+        "export MCP_TRANSPORT=sse\n",
+        "MCP_TRANSPORT=sse   # use network transport\n",
+        'MCP_TRANSPORT="streamable-http"\n',
+        "MCP_TRANSPORT='sse'\n",
+        "  MCP_TRANSPORT=sse\n",
+        "export MCP_TRANSPORT='sse'  # quoted and exported\n",
+        "#MCP_TRANSPORT=sse\n",
+        "# MCP_TRANSPORT=sse\n",
+        "MCP_TRANSPORT_EXTRA=nonsense\n",
+        "MCP_TRANSPORT=stdio\nMCP_TRANSPORT=sse\n",
+        "",
+    ]
+
+    @pytest.mark.parametrize("content", CASES)
+    def test_scan_matches_hooks_config_parser(self, tmp_path, content):
+        import os
+
+        from hooks.config import _parse_env_file
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(content)
+
+        # _parse_env_file mutates os.environ directly via setdefault, which
+        # monkeypatch cannot track or undo — snapshot and restore by hand or the
+        # resolved value leaks into every later test in the session.
+        saved = os.environ.copy()
+        try:
+            os.environ.pop("MCP_TRANSPORT", None)
+            _parse_env_file(env_file)
+            canonical = os.environ.get("MCP_TRANSPORT")
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+
+        assert install._scan_env_file_value(env_file, "MCP_TRANSPORT") == canonical
+
+    def test_export_prefix_resolves_to_the_network_transport(self, tmp_path, monkeypatch):
+        """The exact regression: this used to silently resolve to stdio."""
+        home = tmp_path / "home"
+        (home / ".agentihooks").mkdir(parents=True)
+        (home / ".agentihooks" / ".env").write_text("export MCP_TRANSPORT=sse\n")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.delenv("AGENTIHOOKS_MCP_TRANSPORT", raising=False)
+
+        assert install._resolve_installer_mcp_transport() == "sse"
+
+    def test_inline_comment_does_not_produce_a_bogus_transport(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        (home / ".agentihooks").mkdir(parents=True)
+        (home / ".agentihooks" / ".env").write_text("MCP_TRANSPORT=sse  # enterprise\n")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.delenv("AGENTIHOOKS_MCP_TRANSPORT", raising=False)
+
+        assert install._resolve_installer_mcp_transport() == "sse"
+
+    def test_bad_transport_is_rejected_before_anything_is_written(self, monkeypatch):
+        """Validation runs at step 0, not step 6 — a half-installed tree is worse
+        than a refused install."""
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "carrier-pigeon")
+
+        with pytest.raises(SystemExit):
+            install._validate_mcp_transport_or_exit()
+
+    @pytest.mark.parametrize("transport", ["stdio", "sse", "streamable-http"])
+    def test_valid_transports_pass_validation(self, monkeypatch, transport):
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", transport)
+
+        assert install._validate_mcp_transport_or_exit() == transport
+
+
 class TestManagedMcpChainCollection:
     """Regression guard for Defect B: _collect_all_managed_mcp_servers must walk
     the FULL comma-separated profile chain, not pass the joined string to
