@@ -438,7 +438,10 @@ def call_agent(target_session_id: str, message: str, caller_session_id: str = ""
     if not target_session_id or not message or not message.strip():
         return {"success": False, "error": "target_session_id and message are required"}
 
-    caller = caller_session_id or os.getenv("CLAUDE_SESSION_ID", "")
+    # CLAUDE_CODE_SESSION_ID is the var Claude Code actually injects into an MCP
+    # subprocess; CLAUDE_SESSION_ID is a legacy name nothing sets. Only reachable
+    # under stdio anyway — the MCP wrapper resolves the caller before calling in.
+    caller = caller_session_id or os.getenv("CLAUDE_CODE_SESSION_ID", "") or os.getenv("CLAUDE_SESSION_ID", "")
     if target_session_id == caller:
         return {"success": False, "error": "cannot call your own session"}
 

@@ -377,7 +377,11 @@ def main() -> None:
         sys.exit(0)
 
     hook_name = event.get("hook_event_name", "") or event.get("hook_name", "") or os.environ.get("CLAUDE_HOOK_NAME", "")
-    session_id = event.get("session_id", "") or os.environ.get("CLAUDE_SESSION_ID", "")
+    session_id = (
+        event.get("session_id", "")
+        or os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+        or os.environ.get("CLAUDE_SESSION_ID", "")
+    )
     transcript_path = event.get("transcript_path", "")
 
     try:

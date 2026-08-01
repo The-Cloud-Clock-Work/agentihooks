@@ -143,6 +143,12 @@ FILE_READ_CACHE_TTL = int(os.getenv("FILE_READ_CACHE_TTL", "21600"))
 
 MCP_HYGIENE_ENABLED = _env_bool("MCP_HYGIENE_ENABLED", "true")
 
+# Tell the agent its own session id at SessionStart. The session-scoped
+# hooks-utils tools (call_agent, pool_list, pool_status, channel_acknowledge)
+# take it as an argument, which is the only identity mechanism that works when
+# hooks-utils runs as a network server shared by every session.
+MCP_SESSION_ID_BANNER_ENABLED = _env_bool("MCP_SESSION_ID_BANNER_ENABLED", "true")
+
 # =============================================================================
 # RETRY CIRCUIT BREAKER
 # =============================================================================

@@ -19,7 +19,12 @@ classifiers = [
 ]
 
 dependencies = [
-    "mcp[cli]>=1.0.0",
+    # Upper bound is load-bearing: mcp 2.0.0 removes `mcp.server.fastmcp`
+    # outright (replaced by `mcp.server.mcpserver.MCPServer`, a different API),
+    # so an unbounded spec resolves to a version where `hooks/mcp/__init__.py`
+    # fails at import. Lift only alongside a migration off FastMCP.
+    "mcp[cli]>=1.0.0,<2.0.0",
+    "anyio>=4.0",
     "PyJWT>=2.8.0",
     "requests>=2.31.0",
     "httpx>=0.27.0",
@@ -69,6 +74,9 @@ include = ["hooks*", "scripts*", "profiles*"]
 
 [tool.setuptools.package-data]
 "hooks.context" = ["data/*.json"]
+# systemd unit template for the network-transport hooks-utils daemon. Lives
+# under scripts/ so AGENTIHOOKS_ROOT-relative resolution works from a wheel too.
+"scripts" = ["packaging/**/*.template"]
 # Ship every json / yaml / md anywhere under profiles/ — personas (CLAUDE.md),
 # rules (rules/*.md), settings (*.json), profile manifests (*.yml) — and nothing
 # else. Recursive ** globs cover .claude/ and rules/ subdirs at any depth.

@@ -2653,6 +2653,11 @@ def _install_global_inner(args: argparse.Namespace) -> None:
     # Layer 1: hooks-utils from agentihooks
     _install_user_mcp(last_profile)
 
+    # Network transport needs a persistent server; stdio does not. Only in
+    # network mode does a systemd artifact appear on the machine at all.
+    if _resolve_installer_mcp_transport() != "stdio":
+        _install_systemd_user_unit()
+
     # Layer 2: bundle .claude/.mcp.json — always installed; profile MCPs layer on top (override per-name)
     if bundle_dir:
         bundle_mcp = bundle_dir / _CLAUDE_SUBDIR / _MCP_JSON_NAME
@@ -2955,12 +2960,43 @@ def _remove_mcp_from_user_scope(servers: dict) -> None:
         _cprint(f"  [--] Not found (already removed?)  : {', '.join(missing)}")
 
 
-def _build_mcp_config(mcp_categories: str) -> dict:
-    """Build MCP server config for the hooks-utils server.
+def _resolve_installer_mcp_transport() -> str:
+    """Transport for the ~/.claude.json hooks-utils entry. ``stdio`` by default.
 
-    The ``command`` path must be a python that can ``import hooks`` from
-    any cwd — Claude Code launches the MCP from its own working directory
-    and relying on cwd-on-sys.path produces silent ModuleNotFoundError.
+    Resolved from ``AGENTIHOOKS_MCP_TRANSPORT`` in the installer's environment,
+    then from a plain-text scan of ``~/.agentihooks/.env`` for ``MCP_TRANSPORT``
+    — the same file the daemon itself reads at runtime, so one operator edit
+    drives both sides. The scan is deliberately textual: install.py does not
+    import ``hooks.*``.
+    """
+    val = os.environ.get("AGENTIHOOKS_MCP_TRANSPORT", "").strip().lower()
+    if val:
+        return val
+    env_file = Path.home() / ".agentihooks" / ".env"
+    if env_file.is_file():
+        try:
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("MCP_TRANSPORT="):
+                    return line.split("=", 1)[1].strip().strip("\"'").lower()
+        except OSError:
+            pass
+    return "stdio"
+
+
+def _probe_mcp_url_reachable(host: str, port: int, timeout: float = 1.0) -> bool:
+    """Best-effort TCP probe. Never a gate — the daemon may not be started yet."""
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _resolve_hooks_python() -> Path:
+    """Return a python that can ``import hooks`` from a neutral cwd, or exit.
 
     Resolution order:
     1. ``_detect_venv()`` — VIRTUAL_ENV first, then ``~/.agentihooks/.venv``,
@@ -2969,7 +3005,8 @@ def _build_mcp_config(mcp_categories: str) -> dict:
 
     Each candidate is probed via ``_python_can_import_hooks`` from cwd ``/``;
     the first that succeeds wins. If none pass, install bails with a clear
-    error rather than baking a broken path into ``~/.claude.json``.
+    error rather than baking a broken path into ``~/.claude.json`` or a
+    systemd unit.
     """
     candidates: list[Path] = []
     detected = _detect_venv()
@@ -3002,16 +3039,136 @@ def _build_mcp_config(mcp_categories: str) -> dict:
         print("\n".join(msg_parts), file=sys.stderr)
         sys.exit(1)
 
-    return {
-        "mcpServers": {
-            "hooks-utils": {
-                "command": str(chosen),
-                "args": ["-m", "hooks.mcp"],
-                "cwd": str(AGENTIHOOKS_ROOT),
-                "env": {"MCP_CATEGORIES": mcp_categories},
+    return chosen
+
+
+def _build_mcp_config(mcp_categories: str) -> dict:
+    """Build the ~/.claude.json entry for the hooks-utils MCP server.
+
+    Two shapes, selected by ``_resolve_installer_mcp_transport()``:
+
+    * ``stdio`` (default) — ``command``/``args``/``cwd``/``env``, spawned
+      per-session by Claude Code.
+    * ``sse`` / ``streamable-http`` — a ``url`` entry pointing at a persistent
+      daemon. For clients that filter stdio MCP servers out at load time.
+
+    In url mode *mcp_categories* has no effect: a remote entry carries no per-
+    client ``env`` block, so the daemon's own ``~/.agentihooks/.env`` decides
+    its category set for every client pointing at it.
+    """
+    transport = _resolve_installer_mcp_transport()
+
+    if transport == "stdio":
+        return {
+            "mcpServers": {
+                "hooks-utils": {
+                    "command": str(_resolve_hooks_python()),
+                    "args": ["-m", "hooks.mcp"],
+                    "cwd": str(AGENTIHOOKS_ROOT),
+                    "env": {"MCP_CATEGORIES": mcp_categories},
+                }
             }
         }
-    }
+
+    if transport not in ("sse", "streamable-http"):
+        print(
+            f"ERROR: unknown transport {transport!r} (from AGENTIHOOKS_MCP_TRANSPORT "
+            "or ~/.agentihooks/.env MCP_TRANSPORT).\n"
+            "Valid values: stdio, sse, streamable-http.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    host = os.environ.get("MCP_HOST", "127.0.0.1")
+    try:
+        port = int(os.environ.get("MCP_PORT", "8642"))
+    except ValueError:
+        print("ERROR: MCP_PORT is not an integer.", file=sys.stderr)
+        sys.exit(1)
+
+    if transport == "sse":
+        path = os.environ.get("MCP_SSE_PATH", "/sse")
+        # Claude Code's config schema names streamable-http "http" — it does not
+        # accept the SDK's own "streamable-http" literal. Mismatching these
+        # produces an entry that silently never connects.
+        client_type = "sse"
+    else:
+        path = os.environ.get("MCP_STREAMABLE_HTTP_PATH", "/mcp")
+        client_type = "http"
+
+    if not _probe_mcp_url_reachable(host, port):
+        _cprint(f"  [--] hooks-utils daemon not answering on {host}:{port} yet. Expected if you have not started it:")
+        _cprint("         systemctl --user enable --now agentihooks-mcp.service")
+
+    return {"mcpServers": {"hooks-utils": {"type": client_type, "url": f"http://{host}:{port}{path}"}}}
+
+
+_SYSTEMD_UNIT_NAME = "agentihooks-mcp.service"
+
+
+def _systemd_user_unit_path() -> Path:
+    return Path.home() / ".config" / "systemd" / "user" / _SYSTEMD_UNIT_NAME
+
+
+def _install_systemd_user_unit() -> None:
+    """Write the hooks-utils daemon unit into the user systemd directory.
+
+    Only called when the MCP transport is network-mode, so stdio machines get no
+    systemd artifact at all. The unit is written and reloaded but never started
+    — ``agentihooks init`` does not own background processes; the operator does.
+    """
+    # Under scripts/ so it resolves identically from a source checkout and from
+    # an installed wheel (AGENTIHOOKS_ROOT is site-packages there).
+    template = AGENTIHOOKS_ROOT / "scripts" / "packaging" / "systemd" / f"{_SYSTEMD_UNIT_NAME}.template"
+    if not template.is_file():
+        _cprint(f"  [WARN] systemd unit template missing at {template}; skipping.")
+        return
+
+    rendered = (
+        template.read_text(encoding="utf-8")
+        .replace("__PYTHON__", str(_resolve_hooks_python()))
+        .replace("__CWD__", str(AGENTIHOOKS_ROOT))
+    )
+    unit_path = _systemd_user_unit_path()
+    unit_path.parent.mkdir(parents=True, exist_ok=True)
+    unit_path.write_text(rendered, encoding="utf-8")
+    _cprint(f"  [OK] Wrote {unit_path}")
+
+    import subprocess
+
+    try:
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        _cprint("  [--] systemctl unavailable (no systemd user session). Run the daemon directly:")
+        _cprint("         MCP_TRANSPORT=streamable-http python -m hooks.mcp")
+        return
+
+    _cprint("  [--] Not started. Start it with:")
+    _cprint(f"         systemctl --user enable --now {_SYSTEMD_UNIT_NAME}")
+
+
+def _remove_systemd_user_unit() -> None:
+    """Best-effort teardown of the daemon unit. Never fails an uninstall."""
+    unit_path = _systemd_user_unit_path()
+    if not unit_path.exists():
+        return
+
+    import subprocess
+
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "disable", "--now", _SYSTEMD_UNIT_NAME],
+            check=False,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        unit_path.unlink()
+        _cprint(f"  [OK] Removed {unit_path}")
+    except OSError as exc:
+        _cprint(f"  [WARN] Could not remove {unit_path}: {exc}")
 
 
 def _install_user_mcp(profile_name: str) -> None:
@@ -4113,6 +4270,9 @@ def uninstall_global(args: argparse.Namespace) -> None:
             _cprint(f"[OK] Removed {settings_path}")
     else:
         print(f"[--] Skipped {settings_path} (not managed)")
+
+    # --- 3b. Remove the hooks-utils daemon unit (network-transport installs) ---
+    _remove_systemd_user_unit()
 
     # --- 4. Remove symlinks in skills, agents, commands ---
     print()

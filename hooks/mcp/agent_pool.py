@@ -10,14 +10,16 @@
 """
 
 import json
-import os
+
+import anyio
 
 from hooks.common import log
+from hooks.mcp._session import resolve_session_id
 
 
 def register(mcp):
     @mcp.tool()
-    def call_agent(target_session_id: str, message: str) -> str:
+    async def call_agent(target_session_id: str, message: str, session_id: str = "") -> str:
         """Send a message to a specific fleet agent by its session id.
 
         Use this to coordinate directly with a peer — e.g. you find (via
@@ -41,6 +43,10 @@ def register(mcp):
         Args:
             target_session_id: The peer's session id (from ``pool_list``).
             message: What to say/ask. Coordination and status questions.
+            session_id: THIS session's own id, shown to you at session start as
+                "Your Claude Code session_id is ...". Always pass it — under a
+                network MCP transport one server process serves every session,
+                so there is no per-caller environment to fall back on.
 
         Returns:
             JSON: success, mode (live|dormant), delivered, their_state, and note.
@@ -48,19 +54,32 @@ def register(mcp):
         try:
             from hooks.context.agent_pool import call_agent as _call_agent
 
-            caller = os.getenv("CLAUDE_SESSION_ID", "")
-            result = _call_agent(target_session_id, message, caller_session_id=caller)
+            caller = resolve_session_id(session_id)
+            # Offloaded to a worker thread: the underlying call spawns a headless
+            # claude subprocess and blocks for up to AGENT_POOL_CALL_TIMEOUT (120s
+            # default). FastMCP runs sync tools directly on the event loop, and the
+            # SSE / streamable-http servers are single-threaded — so left sync this
+            # would freeze hooks-utils for every other session for the duration.
+            result = await anyio.to_thread.run_sync(
+                lambda: _call_agent(target_session_id, message, caller_session_id=caller)
+            )
             return json.dumps(result)
         except Exception as e:
             log("MCP call_agent failed", {"error": str(e)})
             return json.dumps({"success": False, "error": str(e)})
 
     @mcp.tool()
-    def pool_list() -> str:
+    def pool_list(session_id: str = "") -> str:
         """List the live agents in the fleet pool and what each is working on.
 
         Read this before ``call_agent`` to find who is active and whether anyone
         is touching the same work you are. Excludes your own session.
+
+        Args:
+            session_id: THIS session's own id, so it can be excluded from the
+                listing. Shown to you at session start. Pass it under a network
+                MCP transport, where the server cannot infer who is calling —
+                omit it and you will see yourself in your own peer list.
 
         Returns:
             JSON with the peer list: session_id, cwd, model, status, summary, last_seen.
@@ -68,7 +87,7 @@ def register(mcp):
         try:
             from hooks.context.agent_pool import list_pool
 
-            caller = os.getenv("CLAUDE_SESSION_ID", "")
+            caller = resolve_session_id(session_id)
             peers = list_pool(include_self=caller)
             return json.dumps({"success": True, "count": len(peers), "agents": peers})
         except Exception as e:
@@ -76,7 +95,7 @@ def register(mcp):
             return json.dumps({"success": False, "error": str(e)})
 
     @mcp.tool()
-    def pool_status(summary: str) -> str:
+    def pool_status(summary: str, session_id: str = "") -> str:
         """Declare what THIS session is currently working on, for the pool.
 
         A peer scanning ``pool_list`` sees this line. Set it when you start a
@@ -88,6 +107,10 @@ def register(mcp):
 
         Args:
             summary: Short description of your current task (one line). Empty to clear.
+            session_id: THIS session's own id, shown to you at session start.
+                Required in practice — a network MCP transport has no per-caller
+                environment to fall back on, so without it this call fails
+                rather than pinning a summary on the wrong session.
 
         Returns:
             JSON with success status.
@@ -95,9 +118,9 @@ def register(mcp):
         try:
             from hooks.context.agent_pool import set_summary
 
-            caller = os.getenv("CLAUDE_SESSION_ID", "")
+            caller = resolve_session_id(session_id)
             if not caller:
-                return json.dumps({"success": False, "error": "no session id in environment"})
+                return json.dumps({"success": False, "error": "no session id resolvable — pass session_id explicitly"})
             # A non-empty self-declare pins the summary; empty clears the pin.
             ok = set_summary(caller, summary, sticky=bool(summary.strip()))
             if not ok:

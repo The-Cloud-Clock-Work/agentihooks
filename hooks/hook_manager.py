@@ -312,6 +312,17 @@ def on_session_start(payload: dict) -> None:
     # Log output token limit so Claude is aware of response size constraints
     log_claude_max_output_tokens()
 
+    from hooks.config import MCP_SESSION_ID_BANNER_ENABLED
+
+    if session_id and MCP_SESSION_ID_BANNER_ENABLED:
+        from hooks.common import inject_context as _inject_sid
+
+        _inject_sid(
+            f"Your Claude Code session_id is `{session_id}`. Pass it as the "
+            "`session_id` argument to the hooks-utils tools that need caller "
+            "identity — call_agent, pool_list, pool_status, channel_acknowledge."
+        )
+
     from hooks.config import MCP_HYGIENE_ENABLED
 
     if MCP_HYGIENE_ENABLED:

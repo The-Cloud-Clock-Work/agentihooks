@@ -93,7 +93,7 @@ def register(mcp):
             return json.dumps({"success": False, "error": str(e)})
 
     @mcp.tool()
-    def channel_acknowledge(message_id: str) -> str:
+    def channel_acknowledge(message_id: str, session_id: str = "") -> str:
         """Acknowledge a broadcast message — stops it from re-injecting for this session.
 
         Use when you've processed a persistent broadcast and don't need to see it again.
@@ -102,17 +102,26 @@ def register(mcp):
 
         Args:
             message_id: The broadcast message ID to acknowledge
+            session_id: THIS session's own id, shown to you at session start.
+                The ack is recorded against it, so it must name a real session
+                — required under a network MCP transport, which has no
+                per-caller environment to fall back on.
 
         Returns:
             JSON with success status.
         """
         try:
-            import os
-
             from hooks.context.broadcast import acknowledge_broadcast
+            from hooks.mcp._session import resolve_session_id
 
-            session_id = os.getenv("CLAUDE_SESSION_ID", "unknown")
-            found = acknowledge_broadcast(session_id, message_id)
+            caller = resolve_session_id(session_id)
+            if not caller:
+                # Previously this defaulted to the literal "unknown", which
+                # recorded the ack against a session that does not exist — the
+                # broadcast then kept re-injecting for every real session
+                # forever. Failing loudly is the fix.
+                return json.dumps({"success": False, "error": "no session id resolvable — pass session_id explicitly"})
+            found = acknowledge_broadcast(caller, message_id)
             if found:
                 return json.dumps({"success": True, "message_id": message_id, "acknowledged": True})
             return json.dumps({"success": False, "error": f"Message {message_id} not found"})

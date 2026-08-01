@@ -1,0 +1,20 @@
+[Unit]
+Description=agentihooks hooks-utils MCP server (network transport)
+Documentation=https://github.com/The-Cloud-Clockwork/agentihooks
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=__PYTHON__ -m hooks.mcp
+WorkingDirectory=__CWD__
+# Every knob (MCP_TRANSPORT, MCP_CATEGORIES, MCP_HOST, MCP_PORT, ...) comes from
+# the same env file every other hook process reads. Changing configuration is an
+# edit there plus a restart — this unit never needs re-rendering for it.
+EnvironmentFile=-%h/.agentihooks/.env
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

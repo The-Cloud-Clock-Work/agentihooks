@@ -837,6 +837,104 @@ class TestMcpMerge:
         assert "profile-server" in result["mcpServers"]
 
 
+class TestMcpTransportModes:
+    """_build_mcp_config emits a stdio entry by default and a url entry in
+    network mode, for clients that filter stdio MCP servers out at load time.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_transport_env(self, monkeypatch):
+        for var in ("AGENTIHOOKS_MCP_TRANSPORT", "MCP_HOST", "MCP_PORT", "MCP_SSE_PATH", "MCP_STREAMABLE_HTTP_PATH"):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_stdio_is_the_default_and_unchanged(self, monkeypatch):
+        monkeypatch.setattr(install, "_resolve_hooks_python", lambda: Path("/venv/bin/python"))
+
+        entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
+
+        assert entry["command"] == "/venv/bin/python"
+        assert entry["args"] == ["-m", "hooks.mcp"]
+        assert entry["env"] == {"MCP_CATEGORIES": "all"}
+        assert "url" not in entry
+
+    def test_sse_mode_emits_url_entry(self, monkeypatch):
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
+        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
+
+        entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
+
+        assert entry == {"type": "sse", "url": "http://127.0.0.1:8642/sse"}
+
+    def test_streamable_http_registers_as_type_http(self, monkeypatch):
+        """Claude Code's config schema calls it "http" — the SDK's own
+        "streamable-http" literal is rejected and silently never connects."""
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "streamable-http")
+        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
+
+        entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
+
+        assert entry == {"type": "http", "url": "http://127.0.0.1:8642/mcp"}
+
+    def test_url_mode_honours_host_and_port(self, monkeypatch):
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_HOST", "10.0.0.5")
+        monkeypatch.setenv("MCP_PORT", "9100")
+        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
+
+        entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
+
+        assert entry["url"] == "http://10.0.0.5:9100/sse"
+
+    def test_unreachable_daemon_warns_but_does_not_fail(self, monkeypatch):
+        """A not-yet-started daemon is the expected state right after install."""
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "streamable-http")
+        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: False)
+
+        entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
+
+        assert entry["type"] == "http"
+
+    def test_url_mode_never_probes_a_local_python(self, monkeypatch):
+        """There is no local interpreter to validate for a remote server."""
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
+        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
+
+        def _explode():
+            raise AssertionError("_resolve_hooks_python must not run in url mode")
+
+        monkeypatch.setattr(install, "_resolve_hooks_python", _explode)
+        install._build_mcp_config("all")
+
+    def test_unknown_transport_exits(self, monkeypatch):
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "carrier-pigeon")
+
+        with pytest.raises(SystemExit):
+            install._build_mcp_config("all")
+
+    def test_transport_read_from_agentihooks_env_file(self, monkeypatch, tmp_path):
+        """One operator edit in ~/.agentihooks/.env drives installer and daemon."""
+        home = tmp_path / "home"
+        (home / ".agentihooks").mkdir(parents=True)
+        (home / ".agentihooks" / ".env").write_text('MCP_TRANSPORT="sse"\n')
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+        assert install._resolve_installer_mcp_transport() == "sse"
+
+    def test_process_env_beats_env_file(self, monkeypatch, tmp_path):
+        home = tmp_path / "home"
+        (home / ".agentihooks").mkdir(parents=True)
+        (home / ".agentihooks" / ".env").write_text("MCP_TRANSPORT=sse\n")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "streamable-http")
+
+        assert install._resolve_installer_mcp_transport() == "streamable-http"
+
+    def test_defaults_to_stdio_with_no_signal(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "empty-home"))
+
+        assert install._resolve_installer_mcp_transport() == "stdio"
+
+
 class TestManagedMcpChainCollection:
     """Regression guard for Defect B: _collect_all_managed_mcp_servers must walk
     the FULL comma-separated profile chain, not pass the joined string to

@@ -21,6 +21,49 @@ from mcp.server.fastmcp import FastMCP
 
 from hooks.common import log
 from hooks.mcp._registry import ALL_CATEGORIES, CATEGORY_MODULES
+from hooks.mcp._session import set_env_fallback_allowed
+
+# Transport settings live here rather than in hooks/config.py: they are read
+# only by the MCP entry point, alongside the MCP_CATEGORIES / ALLOWED_TOOLS
+# precedent already in this module.
+VALID_TRANSPORTS = ("stdio", "sse", "streamable-http")
+_DEFAULT_HOST = "127.0.0.1"
+_DEFAULT_PORT = 8642
+
+
+def _env_flag(key: str) -> bool:
+    return os.getenv(key, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_int(key: str, default: int) -> int:
+    raw = os.getenv(key, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        print(
+            f"[hooks-utils] WARNING: {key}={raw!r} is not an integer; using {default}.",
+            file=sys.stderr,
+        )
+        return default
+
+
+def resolve_transport() -> str:
+    """Resolve MCP_TRANSPORT to a transport name, defaulting to stdio.
+
+    An unrecognised value falls back to stdio with a stderr warning rather than
+    crashing — a typo should not take the whole toolbelt offline.
+    """
+    raw = os.getenv("MCP_TRANSPORT", "stdio").strip().lower()
+    if raw not in VALID_TRANSPORTS:
+        print(
+            f"[hooks-utils] WARNING: unknown MCP_TRANSPORT={raw!r}; falling back to stdio. "
+            f"Valid values: {', '.join(VALID_TRANSPORTS)}",
+            file=sys.stderr,
+        )
+        return "stdio"
+    return raw
 
 
 def build_server(categories=None, name="hooks-utils"):
@@ -34,7 +77,22 @@ def build_server(categories=None, name="hooks-utils"):
     Returns:
         Configured FastMCP instance ready to .run().
     """
-    mcp = FastMCP(name)
+    # Host/port/paths are FastMCP *constructor* settings, not .run() arguments —
+    # .run() takes only transport and mount_path. They are inert under stdio, so
+    # they are set unconditionally and the transport choice stays in __main__.
+    # Under a network transport the process serves every session at once, so an
+    # inherited CLAUDE_CODE_SESSION_ID names some unrelated session rather than
+    # the caller. Shut the env fallback off before any tool can consult it.
+    set_env_fallback_allowed(resolve_transport() == "stdio")
+
+    mcp = FastMCP(
+        name,
+        host=os.getenv("MCP_HOST", _DEFAULT_HOST),
+        port=_env_int("MCP_PORT", _DEFAULT_PORT),
+        sse_path=os.getenv("MCP_SSE_PATH", "/sse"),
+        streamable_http_path=os.getenv("MCP_STREAMABLE_HTTP_PATH", "/mcp"),
+        stateless_http=_env_flag("MCP_STATELESS_HTTP"),
+    )
 
     if categories is None:
         categories = _resolve_categories()
