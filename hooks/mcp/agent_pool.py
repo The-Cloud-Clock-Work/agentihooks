@@ -55,6 +55,11 @@ def register(mcp):
             from hooks.context.agent_pool import call_agent as _call_agent
 
             caller = resolve_session_id(session_id)
+            if not caller:
+                # This writes to another agent's inbox attributed to the caller,
+                # so an unattributable call must not proceed — same bar as
+                # pool_status and channel_acknowledge.
+                return json.dumps({"success": False, "error": "no session id resolvable — pass session_id explicitly"})
             # Offloaded to a worker thread: the underlying call spawns a headless
             # claude subprocess and blocks for up to AGENT_POOL_CALL_TIMEOUT (120s
             # default). FastMCP runs sync tools directly on the event loop, and the

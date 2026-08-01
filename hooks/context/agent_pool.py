@@ -438,10 +438,15 @@ def call_agent(target_session_id: str, message: str, caller_session_id: str = ""
     if not target_session_id or not message or not message.strip():
         return {"success": False, "error": "target_session_id and message are required"}
 
-    # CLAUDE_CODE_SESSION_ID is the var Claude Code actually injects into an MCP
-    # subprocess; CLAUDE_SESSION_ID is a legacy name nothing sets. Only reachable
-    # under stdio anyway — the MCP wrapper resolves the caller before calling in.
-    caller = caller_session_id or os.getenv("CLAUDE_CODE_SESSION_ID", "") or os.getenv("CLAUDE_SESSION_ID", "")
+    # No env fallback here on purpose. Callers resolve identity themselves via
+    # hooks.mcp._session.resolve_session_id, which knows whether an environment
+    # lookup is even meaningful — under a network daemon it is not, because the
+    # process inherited some unrelated session's id. Reading os.environ at this
+    # depth would silently override that decision and attribute the message to
+    # the daemon's phantom identity.
+    caller = caller_session_id
+    if not caller:
+        return {"success": False, "error": "caller_session_id is required"}
     if target_session_id == caller:
         return {"success": False, "error": "cannot call your own session"}
 

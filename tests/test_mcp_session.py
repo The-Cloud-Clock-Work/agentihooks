@@ -78,6 +78,50 @@ class TestEnvFallbackDisabled:
         assert resolve_session_id("real-caller") == "real-caller"
 
 
+class TestNoSecondaryEnvFallback:
+    """The guard must hold all the way down, not just at the MCP wrapper.
+
+    Regression: ``hooks.context.agent_pool.call_agent`` used to do its own
+    ``os.getenv`` fallback when handed an empty caller. That silently re-opened
+    the hole the wrapper had just closed — under a daemon it attributed the
+    message to whatever session the process had inherited. The earlier
+    event-loop test monkeypatched this function out, so it never caught it.
+    """
+
+    def test_context_call_agent_refuses_empty_caller_despite_env(self, monkeypatch):
+        from hooks.context import agent_pool
+
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "daemons-inherited-session")
+        monkeypatch.setattr(agent_pool, "AGENT_POOL_ENABLED", True)
+
+        result = agent_pool.call_agent("some-peer", "hello", caller_session_id="")
+
+        assert result["success"] is False
+        assert "caller_session_id" in result["error"]
+
+    def test_mcp_call_agent_refuses_when_nothing_resolves(self, monkeypatch):
+        import json
+
+        from hooks.mcp import build_server
+
+        monkeypatch.setenv("MCP_TRANSPORT", "streamable-http")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "daemons-inherited-session")
+        server = build_server()
+        call_agent = server._tool_manager._tools["call_agent"].fn
+
+        def _explode(*args, **kwargs):
+            raise AssertionError("must not reach the pool with an unattributable caller")
+
+        monkeypatch.setattr("hooks.context.agent_pool.call_agent", _explode)
+
+        import anyio
+
+        result = json.loads(anyio.run(lambda: call_agent("peer", "hi")))
+
+        assert result["success"] is False
+        assert "session_id" in result["error"]
+
+
 class TestBuildServerSetsFallbackPolicy:
     """build_server decides the policy once, so tool bodies never branch."""
 
