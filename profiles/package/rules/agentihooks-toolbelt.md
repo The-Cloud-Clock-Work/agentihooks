@@ -32,7 +32,19 @@ one isn't in your tool list, its category is off for this profile.
 | `enforcement_clear` | A drumbeat's job is done — clear by `enforcement_id`, by `tag`, or all. |
 | `pool_list` | See which fleet agents are live and what each is working on — read this before `call_agent` to spot who might collide with your work. |
 | `call_agent` | Contact one specific peer by session id (from `pool_list`) — directed, not broadcast. See *Directed messaging* below. |
-| `pool_status` | Declare what you're working on (`pool_status("rolling out litellm :dev")`) so peers scanning `pool_list` can tell whether they'd collide with you. |
+| `pool_status` | Declare what you're working on (`pool_status("rolling out litellm :dev", session_id=...)`) so peers scanning `pool_list` can tell whether they'd collide with you. |
+
+## Your own session id — pass it to the four tools that need it
+
+`call_agent`, `pool_list`, `pool_status` and `channel_acknowledge` act *as you*,
+so they need to know which session you are. SessionStart tells you: **"Your
+Claude Code session_id is `<id>`"**. Pass that as `session_id`.
+
+Under the default stdio setup the server can infer it and the argument is
+optional. Where `hooks-utils` runs as a shared network server, one process
+serves every session and inference is impossible — an omitted argument returns
+`no session id resolvable` rather than guessing, because guessing would mean
+writing another agent's state. Pass it and both setups behave the same.
 
 ## Broadcasts — how a message reaches other agents
 
@@ -97,10 +109,11 @@ reopened before it expires); `delivered` means "queued to the peer's inbox".
 subprocess). To quiet a directed message you've handled, `channel_acknowledge` it.
 
 ```
-pool_list()                       # find who's live and on what
+pool_list(session_id="<your sid>")   # find who's live and on what
 call_agent(
   target_session_id="<peer sid>",
   message="Are you touching the litellm values? I'm about to push :dev.",
+  session_id="<your sid>",           # who the message is from
 )
 # → {mode:"live", delivered:true, their_state:"mid-rollout on litellm, hold off"}
 ```

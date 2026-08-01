@@ -8,6 +8,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`hooks-utils` can run over `sse` / `streamable-http` instead of stdio.**
+  Some Claude Code deployments filter every stdio-transport MCP server out at
+  load time, taking the whole toolbelt with them. `MCP_TRANSPORT` selects the
+  transport (`stdio` default, so nothing changes unless you opt in);
+  `agentihooks init` then writes a `url` entry instead of `command`/`args` and
+  installs a systemd `--user` unit, which it never starts. Reverting to `stdio`
+  restores the stdio entry and removes the unit. See
+  [MCP Transport](docs/hooks/mcp-transport.md).
+- **The four session-scoped MCP tools take an explicit `session_id`** —
+  `call_agent`, `pool_list`, `pool_status`, `channel_acknowledge`. A network
+  server is one process serving every session, so no environment lookup can
+  identify the caller. SessionStart now names the session's own id
+  (`MCP_SESSION_ID_BANNER_ENABLED`, default on). Under stdio the argument stays
+  optional; under a network transport the environment fallback is disabled and
+  an omitted argument fails rather than acting as whichever session the daemon
+  happened to inherit.
+
+### Fixed
+
+- **Session identity was resolved from a variable nothing sets.** The code read
+  `CLAUDE_SESSION_ID`; Claude Code injects `CLAUDE_CODE_SESSION_ID`. Under stdio
+  this silently degraded four tools: `pool_status` failed every call,
+  `pool_list` could not exclude self, `call_agent` lost caller attribution, and
+  `channel_acknowledge` recorded the ack against the literal string `"unknown"`
+  — so a persistent broadcast kept re-injecting for every real session forever.
+- **`mcp[cli]` had no upper bound.** `mcp` 2.0.0 removes `mcp.server.fastmcp`
+  outright, so a fresh resolve broke `hooks/mcp` at import. Pinned `<2.0.0`.
+- **The installer's `.env` scan disagreed with the daemon's parser on the same
+  file.** It stripped neither an `export ` prefix nor inline comments, and took
+  the last duplicate assignment where `hooks/config.py` takes the first. A
+  `.env` reading `export MCP_TRANSPORT=sse` therefore resolved to `stdio` —
+  silently, exit 0 — writing a stdio entry on the exact client the network path
+  exists for. The scan now mirrors `_parse_env_file`, pinned by a parity test.
+- **A bad transport value aborted `agentihooks init` midway.** Validation ran at
+  the MCP step, after settings, hooks, skills and CLAUDE.md were already
+  written but before the state record — leaving a half-installed tree. It now
+  runs before anything is written.
+- **The systemd unit could report success while serving nothing.** Its
+  `EnvironmentFile=` pointed at `~/.agentihooks/.env`, but systemd's parser is
+  not a shell and does not strip `export `, so the daemon fell back to stdio,
+  exited 0, and `Restart=on-failure` ignored it. The directive is removed —
+  `hooks/config.py` already parses that file correctly at import — and the
+  transport is baked into the unit from the value `init` validated, so the
+  daemon and `~/.claude.json` cannot disagree. `Restart=always` and `Type=exec`
+  replace `on-failure` and `simple`; `StartLimit*` moved to `[Unit]`, where
+  systemd actually honours it.
+- **Reverting to stdio orphaned a running daemon**, and `agentihooks uninstall`
+  could report "nothing to uninstall" while leaving an enabled unit running.
+
 - **Built-in features now ship in the wheel and install from `profiles/package/`.**
   `profiles/package/` is the packaged emulation of a `.claude/` tree and the
   Layer 1 (agentihooks built-in) source for the install symlink merge
