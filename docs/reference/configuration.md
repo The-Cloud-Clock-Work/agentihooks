@@ -51,6 +51,7 @@ load time. See [MCP Transport](../hooks/mcp-transport.md) for the full setup.
 |----------|---------|-------------|
 | `MCP_TRANSPORT` | `stdio` | `stdio`, `sse`, or `streamable-http`. An unrecognised value warns on stderr and falls back to `stdio`. |
 | `MCP_HOST` | `127.0.0.1` | Bind address for network transports. The loopback bind is the only access boundary -- neither transport carries authentication. |
+| `MCP_SCHEME` | `http` | Scheme in the `~/.claude.json` url. The daemon serves plaintext, which is correct for a loopback bind; set `https` only when a TLS reverse proxy fronts it. |
 | `MCP_PORT` | `8642` | Bind port for network transports. |
 | `MCP_SSE_PATH` | `/sse` | Event-stream path under `sse`. |
 | `MCP_STREAMABLE_HTTP_PATH` | `/mcp` | Endpoint path under `streamable-http`. |

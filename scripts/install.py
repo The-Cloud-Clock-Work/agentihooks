@@ -3160,11 +3160,21 @@ def _build_mcp_config(mcp_categories: str) -> dict:
         path = os.environ.get("MCP_STREAMABLE_HTTP_PATH", "/mcp")
         client_type = "http"
 
+    # The daemon itself serves plaintext, which is correct for the default
+    # loopback bind — the bind is the boundary and TLS to 127.0.0.1 buys
+    # nothing. An operator who fronts it with a TLS reverse proxy, or moves it
+    # off loopback, needs the client to address it as https, so the scheme is a
+    # knob rather than a literal.
+    scheme = os.environ.get("MCP_SCHEME", "http").strip().lower()
+    if scheme not in ("http", "https"):
+        print(f"ERROR: MCP_SCHEME must be http or https, got {scheme!r}.", file=sys.stderr)
+        sys.exit(1)
+
     if not _probe_mcp_url_reachable(host, port):
         _cprint(f"  [--] hooks-utils daemon not answering on {host}:{port} yet. Expected if you have not started it:")
         _cprint("         systemctl --user enable --now agentihooks-mcp.service")
 
-    return {"mcpServers": {"hooks-utils": {"type": client_type, "url": f"http://{host}:{port}{path}"}}}
+    return {"mcpServers": {"hooks-utils": {"type": client_type, "url": f"{scheme}://{host}:{port}{path}"}}}
 
 
 _SYSTEMD_UNIT_NAME = "agentihooks-mcp.service"

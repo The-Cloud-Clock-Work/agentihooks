@@ -163,6 +163,7 @@ should return success, and a call with the argument omitted should return
 |---|---|---|
 | `MCP_TRANSPORT` | `stdio` | `stdio`, `sse`, or `streamable-http`. An unrecognised value warns and falls back to stdio. |
 | `MCP_HOST` | `127.0.0.1` | Bind address. Widening this removes the only access boundary. |
+| `MCP_SCHEME` | `http` | Scheme written into the `~/.claude.json` url. The daemon serves plaintext — correct for loopback, where TLS buys nothing. Set `https` only when a TLS reverse proxy fronts it. |
 | `MCP_PORT` | `8642` | Bind port. |
 | `MCP_SSE_PATH` | `/sse` | SSE event-stream path. |
 | `MCP_STREAMABLE_HTTP_PATH` | `/mcp` | streamable-http endpoint path. |

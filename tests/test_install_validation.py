@@ -844,7 +844,14 @@ class TestMcpTransportModes:
 
     @pytest.fixture(autouse=True)
     def _clean_transport_env(self, monkeypatch):
-        for var in ("AGENTIHOOKS_MCP_TRANSPORT", "MCP_HOST", "MCP_PORT", "MCP_SSE_PATH", "MCP_STREAMABLE_HTTP_PATH"):
+        for var in (
+            "AGENTIHOOKS_MCP_TRANSPORT",
+            "MCP_HOST",
+            "MCP_PORT",
+            "MCP_SSE_PATH",
+            "MCP_STREAMABLE_HTTP_PATH",
+            "MCP_SCHEME",
+        ):
             monkeypatch.delenv(var, raising=False)
 
     def test_stdio_is_the_default_and_unchanged(self, monkeypatch):
@@ -884,6 +891,34 @@ class TestMcpTransportModes:
         entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
         assert entry["url"] == "http://10.0.0.5:9100/sse"
+
+    def test_scheme_defaults_to_http_for_the_loopback_bind(self, monkeypatch):
+        """Plaintext is correct for 127.0.0.1 — the bind is the boundary and TLS
+        to loopback buys nothing."""
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
+        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
+
+        entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
+
+        assert entry["url"].startswith("http://127.0.0.1:")
+
+    def test_scheme_can_be_https_for_a_tls_fronted_daemon(self, monkeypatch):
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "streamable-http")
+        monkeypatch.setenv("MCP_SCHEME", "https")
+        monkeypatch.setenv("MCP_HOST", "mcp.internal")
+        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
+
+        entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
+
+        assert entry["url"] == "https://mcp.internal:8642/mcp"
+
+    def test_bad_scheme_is_rejected(self, monkeypatch):
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_SCHEME", "ftp")
+        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
+
+        with pytest.raises(SystemExit):
+            install._build_mcp_config("all")
 
     def test_unreachable_daemon_warns_but_does_not_fail(self, monkeypatch):
         """A not-yet-started daemon is the expected state right after install."""
