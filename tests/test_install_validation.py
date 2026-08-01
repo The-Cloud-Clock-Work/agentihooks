@@ -1017,6 +1017,161 @@ class TestEnvScanParity:
         assert install._validate_mcp_transport_or_exit() == transport
 
 
+class TestSystemdUnit:
+    """The daemon unit. Real-home isolation comes from the suite-wide autouse
+    fixture in conftest.py, which patches Path.home."""
+
+    @pytest.fixture(autouse=True)
+    def _no_real_systemctl(self, monkeypatch):
+        """Never touch the machine's actual systemd."""
+        calls = []
+
+        def _fake_run(cmd, *a, **kw):
+            calls.append(cmd)
+
+            class _R:
+                returncode = 0
+
+            return _R()
+
+        monkeypatch.setattr("subprocess.run", _fake_run)
+        monkeypatch.setattr(install, "_resolve_hooks_python", lambda: Path("/venv/bin/python"))
+        # conftest repoints AGENTIHOOKS_ROOT at a temp tree for home isolation;
+        # the real template lives in the checkout. The unit is written under the
+        # patched Path.home, so this reads the template without escaping isolation.
+        monkeypatch.setattr(install, "AGENTIHOOKS_ROOT", Path(__file__).parent.parent)
+        self.systemctl_calls = calls
+
+    def _render(self, transport="streamable-http"):
+        install._install_systemd_user_unit(transport)
+        return install._systemd_user_unit_path().read_text()
+
+    @staticmethod
+    def _parse_sections(unit: str) -> dict[str, list[str]]:
+        """Active directives per section. Comments are dropped — the explanatory
+        text in this unit names both directives and sections, so any check that
+        greps the raw string reads its own documentation as configuration."""
+        sections: dict[str, list[str]] = {}
+        current = ""
+        for raw in unit.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                current = line[1:-1]
+                sections.setdefault(current, [])
+                continue
+            sections.setdefault(current, []).append(line)
+        return sections
+
+    def test_all_placeholders_substituted(self):
+        unit = self._render()
+
+        assert "__PYTHON__" not in unit
+        assert "__CWD__" not in unit
+        assert "__TRANSPORT__" not in unit
+        assert "ExecStart=/venv/bin/python -m hooks.mcp" in unit
+
+    @pytest.mark.parametrize("transport", ["sse", "streamable-http"])
+    def test_transport_is_baked_into_the_unit(self, transport):
+        """Both sides of the install derive from one validated value, so the
+        daemon cannot end up speaking a transport ~/.claude.json does not name."""
+        assert f"Environment=MCP_TRANSPORT={transport}" in self._render(transport)
+
+    def test_no_environmentfile_directive(self):
+        """Regression guard.
+
+        systemd's parser is not a shell — it does not strip `export `, so an
+        `export MCP_TRANSPORT=sse` line in ~/.agentihooks/.env would set a key
+        named "export MCP_TRANSPORT" and leave the real one unset. The daemon
+        would fall back to stdio and exit 0 while systemd reported success and
+        ~/.claude.json pointed at a dead URL. hooks/config.py parses that file
+        correctly at import, so the directive is redundant as well as unsafe.
+        """
+        service = self._parse_sections(self._render())["Service"]
+
+        assert not [d for d in service if d.startswith("EnvironmentFile")]
+
+    def test_restart_always_not_on_failure(self):
+        """The case worth surviving is a clean exit 0, which on-failure ignores."""
+        unit = self._render()
+
+        assert "Restart=always" in unit
+        assert "Restart=on-failure" not in unit
+        assert "StartLimitBurst" in unit
+
+    def test_daemon_reload_is_invoked_but_never_start(self):
+        self._render()
+        flat = [" ".join(c) for c in self.systemctl_calls]
+
+        assert any("daemon-reload" in c for c in flat)
+        assert not any("start" in c or "enable" in c for c in flat)
+
+    def test_missing_systemctl_degrades_instead_of_raising(self, monkeypatch):
+        def _boom(*a, **kw):
+            raise FileNotFoundError("systemctl")
+
+        monkeypatch.setattr("subprocess.run", _boom)
+        install._install_systemd_user_unit("sse")
+
+        assert install._systemd_user_unit_path().exists()
+
+    def test_removal_is_a_noop_when_absent(self):
+        install._remove_systemd_user_unit()
+
+        assert not install._systemd_user_unit_path().exists()
+
+    def test_removal_deletes_the_unit(self):
+        self._render()
+        install._remove_systemd_user_unit()
+
+        assert not install._systemd_user_unit_path().exists()
+
+    def test_start_limits_are_in_the_unit_section(self):
+        """systemd ignores StartLimit* under [Service] without erroring, so a
+        misplaced key removes the brake on a hot-looping unit and says nothing.
+        Caught by `systemd-analyze verify`, not by any assertion on content."""
+        sections = self._parse_sections(self._render())
+
+        assert any(d.startswith("StartLimitIntervalSec") for d in sections["Unit"])
+        assert any(d.startswith("StartLimitBurst") for d in sections["Unit"])
+        assert not [d for d in sections["Service"] if d.startswith("StartLimit")]
+
+    def test_unit_passes_systemd_analyze_verify(self, tmp_path):
+        """Real systemd parser, when one is available. Skipped where it is not."""
+        import shutil
+        import subprocess as real_subprocess
+
+        if not shutil.which("systemd-analyze"):
+            pytest.skip("systemd-analyze not available")
+
+        unit_file = tmp_path / install._SYSTEMD_UNIT_NAME
+        unit_file.write_text(self._render())
+
+        # subprocess.run is faked by the autouse fixture; reach the real one.
+        proc = real_subprocess.Popen(
+            ["systemd-analyze", "verify", str(unit_file)],
+            stdout=real_subprocess.PIPE,
+            stderr=real_subprocess.STDOUT,
+            text=True,
+        )
+        output = proc.communicate(timeout=30)[0]
+
+        complaints = [
+            ln
+            for ln in output.splitlines()
+            if install._SYSTEMD_UNIT_NAME in ln and ("Unknown key" in ln or "Unknown section" in ln)
+        ]
+        assert not complaints, output
+
+    def test_uninstall_gate_counts_the_unit(self):
+        """A machine where the unit is the last artifact must not report
+        'nothing to uninstall' and leave an enabled daemon running."""
+        self._render()
+
+        assert install._systemd_user_unit_path().exists()
+
+
 class TestManagedMcpChainCollection:
     """Regression guard for Defect B: _collect_all_managed_mcp_servers must walk
     the FULL comma-separated profile chain, not pass the joined string to

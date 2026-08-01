@@ -2663,7 +2663,7 @@ def _install_global_inner(args: argparse.Namespace) -> None:
     # reverting to stdio tears down a unit left over from a previous run, so a
     # downgrade cannot orphan a daemon the config no longer points at.
     if _mcp_transport != "stdio":
-        _install_systemd_user_unit()
+        _install_systemd_user_unit(_mcp_transport)
     else:
         _remove_systemd_user_unit()
 
@@ -3174,12 +3174,16 @@ def _systemd_user_unit_path() -> Path:
     return Path.home() / ".config" / "systemd" / "user" / _SYSTEMD_UNIT_NAME
 
 
-def _install_systemd_user_unit() -> None:
+def _install_systemd_user_unit(transport: str) -> None:
     """Write the hooks-utils daemon unit into the user systemd directory.
 
     Only called when the MCP transport is network-mode, so stdio machines get no
     systemd artifact at all. The unit is written and reloaded but never started
     — ``agentihooks init`` does not own background processes; the operator does.
+
+    *transport* is baked into the unit rather than left to an ``EnvironmentFile``.
+    That is what keeps the daemon and ``~/.claude.json`` from disagreeing: both
+    now derive from the one value this install validated.
     """
     # Under scripts/ so it resolves identically from a source checkout and from
     # an installed wheel (AGENTIHOOKS_ROOT is site-packages there).
@@ -3192,6 +3196,7 @@ def _install_systemd_user_unit() -> None:
         template.read_text(encoding="utf-8")
         .replace("__PYTHON__", str(_resolve_hooks_python()))
         .replace("__CWD__", str(AGENTIHOOKS_ROOT))
+        .replace("__TRANSPORT__", transport)
     )
     unit_path = _systemd_user_unit_path()
     unit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3204,7 +3209,7 @@ def _install_systemd_user_unit() -> None:
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, timeout=10)
     except (OSError, subprocess.SubprocessError):
         _cprint("  [--] systemctl unavailable (no systemd user session). Run the daemon directly:")
-        _cprint("         MCP_TRANSPORT=streamable-http python -m hooks.mcp")
+        _cprint(f"         MCP_TRANSPORT={transport} python -m hooks.mcp")
         return
 
     _cprint("  [--] Not started. Start it with:")
