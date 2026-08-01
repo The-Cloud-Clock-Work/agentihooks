@@ -7,6 +7,46 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
+class TestResolveEventSessionId:
+    """Claude Code injects CLAUDE_CODE_SESSION_ID, not CLAUDE_SESSION_ID.
+
+    The relay read only the legacy name, which nothing sets, so an event that
+    arrived without a session_id in its payload was relayed unattributed.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_env(self, monkeypatch):
+        for var in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID"):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_payload_wins_over_environment(self, monkeypatch):
+        from hooks.observability.event_relay import resolve_event_session_id
+
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "from-env")
+
+        assert resolve_event_session_id({"session_id": "from-payload"}) == "from-payload"
+
+    def test_falls_back_to_the_var_claude_code_actually_sets(self, monkeypatch):
+        from hooks.observability.event_relay import resolve_event_session_id
+
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "from-env")
+
+        assert resolve_event_session_id({}) == "from-env"
+
+    def test_legacy_name_is_the_last_resort(self, monkeypatch):
+        from hooks.observability.event_relay import resolve_event_session_id
+
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "real")
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "legacy")
+
+        assert resolve_event_session_id({}) == "real"
+
+    def test_empty_when_nothing_resolves(self):
+        from hooks.observability.event_relay import resolve_event_session_id
+
+        assert resolve_event_session_id({}) == ""
+
+
 @pytest.fixture
 def fake_redis(monkeypatch):
     import fakeredis

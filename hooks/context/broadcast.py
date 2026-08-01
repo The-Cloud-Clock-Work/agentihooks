@@ -4,6 +4,7 @@ File-based pub/sub: operator writes messages, all active sessions receive them.
 Severity levels: critical (every turn + every tool call), alert (every turn), info (once).
 """
 
+import contextlib
 import hashlib
 import json
 import os
@@ -11,6 +12,41 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # non-POSIX (e.g. Windows) — locking degrades to a no-op
+    fcntl = None
+
+
+@contextlib.contextmanager
+def _file_lock(path):
+    """Best-effort exclusive lock via a sidecar ``<path>.lock`` file.
+
+    Serializes the read-modify-write on the shared JSON stores (broadcasts,
+    sessions, delivery-state, pool counters) so concurrent sessions — which the
+    agent pool makes a genuinely multi-writer workload — don't lose updates.
+    No-op if ``fcntl`` is unavailable.
+    """
+    if fcntl is None:
+        yield
+        return
+    lock_path = Path(str(path) + ".lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        f = open(lock_path, "w")
+    except OSError:
+        yield
+        return
+    try:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        finally:
+            f.close()
+
 
 from hooks.config import (
     BASE_CHANNELS,
@@ -108,7 +144,7 @@ def _load_delivery_state() -> dict:
 def _save_delivery_state(state: dict) -> None:
     p = _delivery_state_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp = p.with_suffix(f".{os.getpid()}.{uuid.uuid4().hex}.tmp")
     tmp.write_text(json.dumps(state))
     os.replace(str(tmp), str(p))
 
@@ -122,6 +158,7 @@ def _msg_hash(msg: dict) -> str:
     raw = "|".join(
         [
             str(msg.get("channel", "")),
+            str(msg.get("target_session", "")),
             str(msg.get("severity", "")),
             msg.get("message", ""),
         ]
@@ -153,12 +190,13 @@ def _should_skip(msg: dict, sess_state: dict, now_ts: float) -> str:
 
 
 def _record_delivery(sid: str, msg: dict, now_ts: float) -> None:
-    state = _load_delivery_state()
-    sess = state.setdefault(sid, {})
-    # Match _should_skip: per-message id, not per-channel.
-    key = msg.get("id") or msg.get("channel") or "_global"
-    sess[key] = {"hash": _msg_hash(msg), "ts": now_ts}
-    _save_delivery_state(state)
+    with _file_lock(_delivery_state_path()):
+        state = _load_delivery_state()
+        sess = state.setdefault(sid, {})
+        # Match _should_skip: per-message id, not per-channel.
+        key = msg.get("id") or msg.get("channel") or "_global"
+        sess[key] = {"hash": _msg_hash(msg), "ts": now_ts}
+        _save_delivery_state(state)
 
 
 # Default TTL per severity (seconds). 0 = use default.
@@ -220,10 +258,16 @@ def _load_broadcasts(cleanup: bool = False) -> list[dict]:
     return data
 
 
+def _unique_tmp(path: Path) -> Path:
+    """A writer-private temp path. A fixed ``.tmp`` is shared by every concurrent
+    writer and races ``os.replace`` (lost writes + FileNotFoundError)."""
+    return path.with_suffix(f".{os.getpid()}.{uuid.uuid4().hex}.tmp")
+
+
 def _save_broadcasts(messages: list[dict]) -> None:
     path = _broadcast_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    tmp = _unique_tmp(path)
     tmp.write_text(json.dumps(messages, indent=2))
     os.replace(str(tmp), str(path))
 
@@ -248,7 +292,7 @@ def _is_expired(msg: dict, now: datetime | None = None) -> bool:
 def _save_sessions(sessions: dict) -> None:
     path = _sessions_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    tmp = _unique_tmp(path)
     tmp.write_text(json.dumps(sessions, indent=2))
     os.replace(str(tmp), str(path))
 
@@ -280,8 +324,17 @@ def _get_session_channels(session_id: str) -> list[str]:
     return list(BASE_CHANNELS)
 
 
-def _message_matches_channel(msg: dict, session_channels: list[str]) -> bool:
-    """Check if a message should be delivered to a session based on channels."""
+def _message_matches_channel(msg: dict, session_channels: list[str], session_id: str = "") -> bool:
+    """Check if a message should be delivered to a session.
+
+    Directed messages (``target_session`` set) are private: they reach ONLY the
+    addressed session and bypass channel subscription entirely — a wildcard
+    subscriber must NOT receive another agent's directed message. This check
+    runs first and short-circuits.
+    """
+    target = msg.get("target_session")
+    if target:
+        return session_id == target
     msg_channel = msg.get("channel")
     # Global messages (no channel) → always deliver
     if not msg_channel:
@@ -305,6 +358,7 @@ def create_broadcast(
     source: str = "operator",
     persistent: bool | None = None,
     channel: str | None = None,
+    target_session: str | None = None,
 ) -> str | None:
     """Publish a broadcast to the shared file (and Redis if configured).
 
@@ -322,6 +376,11 @@ def create_broadcast(
             sessions whose ``AGENTIHOOKS_BASE_CHANNELS`` env var includes this
             channel name (or contains the wildcard ``*``). When ``None``, the
             message is global and reaches every session regardless of subscription.
+        target_session: Optional directed delivery. When set, the message is
+            PRIVATE to that one session id — it reaches only that session (on its
+            next turn / tool call) and bypasses channel subscription; no other
+            session, wildcard-subscribed or not, receives it. This is the
+            substrate for agent-to-agent (``call_agent``) inbox delivery.
 
     Returns:
         The 12-char message ID on success, or ``None`` for empty input.
@@ -355,19 +414,22 @@ def create_broadcast(
     }
     if channel:
         entry["channel"] = channel
+    if target_session:
+        entry["target_session"] = target_session
     # Stable content hash decouples dedup from the random uuid above so the
     # brain adapter (which republishes the same content with fresh ids each
     # tick) does not generate false-novelty injections.
     entry["content_hash"] = _msg_hash(entry)
 
-    msgs = _load_broadcasts()
-    msgs.append(entry)
+    with _file_lock(_broadcast_path()):
+        msgs = _load_broadcasts()
+        msgs.append(entry)
 
-    # Enforce max messages — keep newest
-    if len(msgs) > BROADCAST_MAX_MESSAGES:
-        msgs = msgs[-BROADCAST_MAX_MESSAGES:]
+        # Enforce max messages — keep newest
+        if len(msgs) > BROADCAST_MAX_MESSAGES:
+            msgs = msgs[-BROADCAST_MAX_MESSAGES:]
 
-    _save_broadcasts(msgs)
+        _save_broadcasts(msgs)
     return msg_id
 
 
@@ -432,7 +494,7 @@ def get_pending_broadcasts(session_id: str) -> list[dict]:
     for m in msgs:
         if _is_expired(m):
             continue
-        if not _message_matches_channel(m, channels):
+        if not _message_matches_channel(m, channels, session_id):
             continue
         if session_id in m.get("acknowledged_by", []):
             continue
@@ -458,7 +520,7 @@ def get_critical_broadcasts(session_id: str) -> list[dict]:
         if m.get("severity") == "critical"
         and m.get("persistent")
         and not _is_expired(m)
-        and _message_matches_channel(m, channels)
+        and _message_matches_channel(m, channels, session_id)
         and session_id not in m.get("acknowledged_by", [])
     ]
 
@@ -476,15 +538,27 @@ def get_pretool_broadcasts(session_id: str) -> list[dict]:
     min_rank = _SEVERITY_RANK.get(BROADCAST_PRETOOL_MIN_SEVERITY, 2)
     msgs = _load_broadcasts(cleanup=True)
     channels = _get_session_channels(session_id)
-    return [
-        m
-        for m in msgs
-        if _SEVERITY_RANK.get(m.get("severity", "info"), 9) <= min_rank
-        and m.get("persistent")
-        and not _is_expired(m)
-        and _message_matches_channel(m, channels)
-        and session_id not in m.get("acknowledged_by", [])
-    ]
+    out = []
+    for m in msgs:
+        if not m.get("persistent") or _is_expired(m) or session_id in m.get("acknowledged_by", []):
+            continue
+        if m.get("target_session"):
+            # Directed (agent-to-agent) messages ALWAYS inject at PreToolUse,
+            # regardless of the critical-on-pretool gate — so an autonomous peer
+            # mid multi-tool turn (no fresh user prompt) sees it before its next
+            # tool call rather than waiting for a prompt that may never come.
+            # channel_acknowledge to silence it.
+            if m["target_session"] == session_id:
+                out.append(m)
+            continue
+        # Non-directed broadcasts still require the operator opt-in + severity.
+        if (
+            BROADCAST_CRITICAL_ON_PRETOOL
+            and _SEVERITY_RANK.get(m.get("severity", "info"), 9) <= min_rank
+            and _message_matches_channel(m, channels, session_id)
+        ):
+            out.append(m)
+    return out
 
 
 def mark_delivered(session_id: str, message_id: str) -> None:
@@ -594,34 +668,35 @@ def derive_session_title(session_id: str, cwd: str, max_len: int = 60) -> str:
 
 
 def register_session(session_id: str, pid: int, cwd: str, model: str) -> None:
-    sessions = _load_sessions()
-    now = _now_iso()
-    # A single Claude Code PID only hosts ONE active session at a time.
-    # When a new session_id registers from the same pid, supersede any
-    # previously-alive entries for that pid (they're from an earlier
-    # session lifecycle — /resume or /clear).
-    if pid:
-        for existing_sid, existing_info in sessions.items():
-            if existing_sid == session_id:
-                continue
-            if existing_info.get("pid") == pid and existing_info.get("status") == "alive":
-                existing_info["status"] = "superseded"
-                existing_info["superseded_at"] = now
-                existing_info["superseded_by"] = session_id
-    # Preserve started_at across re-registrations (SessionStart can fire
-    # multiple times per session — resume, reconnect — and we want the
-    # age to reflect the true session start, not the last event).
-    existing = sessions.get(session_id)
-    started_at = existing.get("started_at", now) if existing else now
-    sessions[session_id] = {
-        "started_at": started_at,
-        "last_seen": now,
-        "status": "alive",
-        "pid": pid,
-        "cwd": cwd,
-        "model": model,
-    }
-    _save_sessions(sessions)
+    with _file_lock(_sessions_path()):
+        sessions = _load_sessions()
+        now = _now_iso()
+        # A single Claude Code PID only hosts ONE active session at a time.
+        # When a new session_id registers from the same pid, supersede any
+        # previously-alive entries for that pid (they're from an earlier
+        # session lifecycle — /resume or /clear).
+        if pid:
+            for existing_sid, existing_info in sessions.items():
+                if existing_sid == session_id:
+                    continue
+                if existing_info.get("pid") == pid and existing_info.get("status") == "alive":
+                    existing_info["status"] = "superseded"
+                    existing_info["superseded_at"] = now
+                    existing_info["superseded_by"] = session_id
+        # Preserve started_at across re-registrations (SessionStart can fire
+        # multiple times per session — resume, reconnect — and we want the
+        # age to reflect the true session start, not the last event).
+        existing = sessions.get(session_id)
+        started_at = existing.get("started_at", now) if existing else now
+        sessions[session_id] = {
+            "started_at": started_at,
+            "last_seen": now,
+            "status": "alive",
+            "pid": pid,
+            "cwd": cwd,
+            "model": model,
+        }
+        _save_sessions(sessions)
 
 
 def deregister_session(session_id: str) -> None:
@@ -634,13 +709,14 @@ def deregister_session(session_id: str) -> None:
 def mark_session_closed(session_id: str) -> None:
     """Flip a session to status=closed on clean SessionEnd. Keeps the entry
     for the 24h retention window so `sessions reopen` can still recover it."""
-    sessions = _load_sessions()
-    entry = sessions.get(session_id)
-    if entry is None:
-        return
-    entry["status"] = "closed"
-    entry["last_seen"] = _now_iso()
-    _save_sessions(sessions)
+    with _file_lock(_sessions_path()):
+        sessions = _load_sessions()
+        entry = sessions.get(session_id)
+        if entry is None:
+            return
+        entry["status"] = "closed"
+        entry["last_seen"] = _now_iso()
+        _save_sessions(sessions)
 
 
 def heartbeat_sessions() -> dict:
@@ -860,7 +936,10 @@ def check_and_inject_broadcasts(session_id: str) -> None:
 
 
 def get_pretool_context(session_id: str) -> str | None:
-    if not BROADCAST_ENABLED or not BROADCAST_CRITICAL_ON_PRETOOL:
+    # Not gated on BROADCAST_CRITICAL_ON_PRETOOL: directed agent-to-agent messages
+    # must inject here even when the operator hasn't opted broadcasts into
+    # PreToolUse. get_pretool_broadcasts applies that gate to non-directed ones.
+    if not BROADCAST_ENABLED:
         return None
 
     try:

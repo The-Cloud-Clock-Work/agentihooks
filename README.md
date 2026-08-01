@@ -142,7 +142,9 @@ Claude Code
   |     pipes JSON on every turn       --> 2-3 line status bar
   |
   +-- MCP Tools --> python -m hooks.mcp --> category modules
-        channels, enforcement                 --> hooks/mcp/*
+        channels, enforcement, agent_pool     --> hooks/mcp/*
+        stdio by default; sse / streamable-http for clients
+        that filter stdio MCP servers out -- see docs/hooks/mcp-transport.md
 ```
 
 ## CLI Reference

@@ -13,6 +13,48 @@ pytestmark = pytest.mark.unit
 _PROJECT_ROOT = Path(__file__).parent.parent
 
 
+class TestSessionIdBanner:
+    """SessionStart tells the agent its own session id.
+
+    That id is the argument the session-scoped hooks-utils tools take, and it is
+    the only identity that works when hooks-utils runs as one network server
+    shared by every session — so the agent has to be told it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_empty_home(self, tmp_path):
+        self._empty_home = str(tmp_path / "empty_agentihooks")
+
+    def _run(self, *, enabled: str) -> subprocess.CompletedProcess:
+        env = {
+            **os.environ,
+            "AGENTIHOOKS_HOME": self._empty_home,
+            "AGENTIHOOKS_DISABLE_BYPASS_LOOKUP": "1",
+            "MCP_SESSION_ID_BANNER_ENABLED": enabled,
+        }
+        return subprocess.run(
+            [sys.executable, "-m", "hooks"],
+            input=json.dumps(
+                {"hook_event_name": "SessionStart", "session_id": "sid-abc-123", "cwd": str(_PROJECT_ROOT)}
+            ),
+            capture_output=True,
+            text=True,
+            cwd=_PROJECT_ROOT,
+            env=env,
+        )
+
+    def test_banner_names_the_session_id(self):
+        result = self._run(enabled="true")
+
+        assert "sid-abc-123" in result.stdout
+        assert "session_id" in result.stdout
+
+    def test_banner_suppressed_when_disabled(self):
+        result = self._run(enabled="false")
+
+        assert "sid-abc-123" not in result.stdout
+
+
 class TestHookManager:
     """Test the central event dispatcher."""
 

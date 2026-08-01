@@ -837,6 +837,376 @@ class TestMcpMerge:
         assert "profile-server" in result["mcpServers"]
 
 
+class TestMcpTransportModes:
+    """_build_mcp_config emits a stdio entry by default and a url entry in
+    network mode, for clients that filter stdio MCP servers out at load time.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_transport_env(self, monkeypatch):
+        for var in (
+            "AGENTIHOOKS_MCP_TRANSPORT",
+            "MCP_HOST",
+            "MCP_PORT",
+            "MCP_SSE_PATH",
+            "MCP_STREAMABLE_HTTP_PATH",
+            "MCP_SCHEME",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_stdio_is_the_default_and_unchanged(self, monkeypatch):
+        monkeypatch.setattr(install, "_resolve_hooks_python", lambda: Path("/venv/bin/python"))
+
+        entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
+
+        assert entry["command"] == "/venv/bin/python"
+        assert entry["args"] == ["-m", "hooks.mcp"]
+        assert entry["env"] == {"MCP_CATEGORIES": "all"}
+        assert "url" not in entry
+
+    def test_sse_mode_emits_url_entry(self, monkeypatch):
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
+        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
+
+        entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
+
+        assert entry == {"type": "sse", "url": "http://127.0.0.1:8642/sse"}
+
+    def test_streamable_http_registers_as_type_http(self, monkeypatch):
+        """Claude Code's config schema calls it "http" — the SDK's own
+        "streamable-http" literal is rejected and silently never connects."""
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "streamable-http")
+        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
+
+        entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
+
+        assert entry == {"type": "http", "url": "http://127.0.0.1:8642/mcp"}
+
+    def test_url_mode_honours_host_and_port(self, monkeypatch):
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_HOST", "10.0.0.5")
+        monkeypatch.setenv("MCP_PORT", "9100")
+        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
+
+        entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
+
+        assert entry["url"] == "http://10.0.0.5:9100/sse"
+
+    def test_scheme_defaults_to_http_for_the_loopback_bind(self, monkeypatch):
+        """Plaintext is correct for 127.0.0.1 — the bind is the boundary and TLS
+        to loopback buys nothing."""
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
+        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
+
+        entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
+
+        assert entry["url"].startswith("http://127.0.0.1:")
+
+    def test_scheme_can_be_https_for_a_tls_fronted_daemon(self, monkeypatch):
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "streamable-http")
+        monkeypatch.setenv("MCP_SCHEME", "https")
+        monkeypatch.setenv("MCP_HOST", "mcp.internal")
+        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
+
+        entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
+
+        assert entry["url"] == "https://mcp.internal:8642/mcp"
+
+    def test_bad_scheme_is_rejected(self, monkeypatch):
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_SCHEME", "ftp")
+        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
+
+        with pytest.raises(SystemExit):
+            install._build_mcp_config("all")
+
+    def test_unreachable_daemon_warns_but_does_not_fail(self, monkeypatch):
+        """A not-yet-started daemon is the expected state right after install."""
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "streamable-http")
+        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: False)
+
+        entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
+
+        assert entry["type"] == "http"
+
+    def test_url_mode_never_probes_a_local_python(self, monkeypatch):
+        """There is no local interpreter to validate for a remote server."""
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
+        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
+
+        def _explode():
+            raise AssertionError("_resolve_hooks_python must not run in url mode")
+
+        monkeypatch.setattr(install, "_resolve_hooks_python", _explode)
+        install._build_mcp_config("all")
+
+    def test_unknown_transport_exits(self, monkeypatch):
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "carrier-pigeon")
+
+        with pytest.raises(SystemExit):
+            install._build_mcp_config("all")
+
+    def test_transport_read_from_agentihooks_env_file(self, monkeypatch, tmp_path):
+        """One operator edit in ~/.agentihooks/.env drives installer and daemon."""
+        home = tmp_path / "home"
+        (home / ".agentihooks").mkdir(parents=True)
+        (home / ".agentihooks" / ".env").write_text('MCP_TRANSPORT="sse"\n')
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+        assert install._resolve_installer_mcp_transport() == "sse"
+
+    def test_process_env_beats_env_file(self, monkeypatch, tmp_path):
+        home = tmp_path / "home"
+        (home / ".agentihooks").mkdir(parents=True)
+        (home / ".agentihooks" / ".env").write_text("MCP_TRANSPORT=sse\n")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "streamable-http")
+
+        assert install._resolve_installer_mcp_transport() == "streamable-http"
+
+    def test_defaults_to_stdio_with_no_signal(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "empty-home"))
+
+        assert install._resolve_installer_mcp_transport() == "stdio"
+
+
+class TestEnvScanParity:
+    """The installer's dotenv scan must agree with the daemon's real parser.
+
+    They read the SAME file. Any divergence means the installer writes a config
+    for one transport while the daemon speaks another — silently, exit 0. The
+    original scan handled neither `export ` nor inline comments, so
+    `export MCP_TRANSPORT=sse` resolved to stdio on the exact enterprise client
+    the network path exists for.
+    """
+
+    CASES = [
+        "MCP_TRANSPORT=sse\n",
+        "export MCP_TRANSPORT=sse\n",
+        "MCP_TRANSPORT=sse   # use network transport\n",
+        'MCP_TRANSPORT="streamable-http"\n',
+        "MCP_TRANSPORT='sse'\n",
+        "  MCP_TRANSPORT=sse\n",
+        "export MCP_TRANSPORT='sse'  # quoted and exported\n",
+        "#MCP_TRANSPORT=sse\n",
+        "# MCP_TRANSPORT=sse\n",
+        "MCP_TRANSPORT_EXTRA=nonsense\n",
+        "MCP_TRANSPORT=stdio\nMCP_TRANSPORT=sse\n",
+        "",
+    ]
+
+    @pytest.mark.parametrize("content", CASES)
+    def test_scan_matches_hooks_config_parser(self, tmp_path, content):
+        import os
+
+        from hooks.config import _parse_env_file
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(content)
+
+        # _parse_env_file mutates os.environ directly via setdefault, which
+        # monkeypatch cannot track or undo — snapshot and restore by hand or the
+        # resolved value leaks into every later test in the session.
+        saved = os.environ.copy()
+        try:
+            os.environ.pop("MCP_TRANSPORT", None)
+            _parse_env_file(env_file)
+            canonical = os.environ.get("MCP_TRANSPORT")
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+
+        assert install._scan_env_file_value(env_file, "MCP_TRANSPORT") == canonical
+
+    def test_export_prefix_resolves_to_the_network_transport(self, tmp_path, monkeypatch):
+        """The exact regression: this used to silently resolve to stdio."""
+        home = tmp_path / "home"
+        (home / ".agentihooks").mkdir(parents=True)
+        (home / ".agentihooks" / ".env").write_text("export MCP_TRANSPORT=sse\n")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.delenv("AGENTIHOOKS_MCP_TRANSPORT", raising=False)
+
+        assert install._resolve_installer_mcp_transport() == "sse"
+
+    def test_inline_comment_does_not_produce_a_bogus_transport(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        (home / ".agentihooks").mkdir(parents=True)
+        (home / ".agentihooks" / ".env").write_text("MCP_TRANSPORT=sse  # enterprise\n")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.delenv("AGENTIHOOKS_MCP_TRANSPORT", raising=False)
+
+        assert install._resolve_installer_mcp_transport() == "sse"
+
+    def test_bad_transport_is_rejected_before_anything_is_written(self, monkeypatch):
+        """Validation runs at step 0, not step 6 — a half-installed tree is worse
+        than a refused install."""
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "carrier-pigeon")
+
+        with pytest.raises(SystemExit):
+            install._validate_mcp_transport_or_exit()
+
+    @pytest.mark.parametrize("transport", ["stdio", "sse", "streamable-http"])
+    def test_valid_transports_pass_validation(self, monkeypatch, transport):
+        monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", transport)
+
+        assert install._validate_mcp_transport_or_exit() == transport
+
+
+class TestSystemdUnit:
+    """The daemon unit. Real-home isolation comes from the suite-wide autouse
+    fixture in conftest.py, which patches Path.home."""
+
+    @pytest.fixture(autouse=True)
+    def _no_real_systemctl(self, monkeypatch):
+        """Never touch the machine's actual systemd."""
+        calls = []
+
+        def _fake_run(cmd, *a, **kw):
+            calls.append(cmd)
+
+            class _R:
+                returncode = 0
+
+            return _R()
+
+        monkeypatch.setattr("subprocess.run", _fake_run)
+        monkeypatch.setattr(install, "_resolve_hooks_python", lambda: Path("/venv/bin/python"))
+        # conftest repoints AGENTIHOOKS_ROOT at a temp tree for home isolation;
+        # the real template lives in the checkout. The unit is written under the
+        # patched Path.home, so this reads the template without escaping isolation.
+        monkeypatch.setattr(install, "AGENTIHOOKS_ROOT", Path(__file__).parent.parent)
+        self.systemctl_calls = calls
+
+    def _render(self, transport="streamable-http"):
+        install._install_systemd_user_unit(transport)
+        return install._systemd_user_unit_path().read_text()
+
+    @staticmethod
+    def _parse_sections(unit: str) -> dict[str, list[str]]:
+        """Active directives per section. Comments are dropped — the explanatory
+        text in this unit names both directives and sections, so any check that
+        greps the raw string reads its own documentation as configuration."""
+        sections: dict[str, list[str]] = {}
+        current = ""
+        for raw in unit.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                current = line[1:-1]
+                sections.setdefault(current, [])
+                continue
+            sections.setdefault(current, []).append(line)
+        return sections
+
+    def test_all_placeholders_substituted(self):
+        unit = self._render()
+
+        assert "__PYTHON__" not in unit
+        assert "__CWD__" not in unit
+        assert "__TRANSPORT__" not in unit
+        assert "ExecStart=/venv/bin/python -m hooks.mcp" in unit
+
+    @pytest.mark.parametrize("transport", ["sse", "streamable-http"])
+    def test_transport_is_baked_into_the_unit(self, transport):
+        """Both sides of the install derive from one validated value, so the
+        daemon cannot end up speaking a transport ~/.claude.json does not name."""
+        assert f"Environment=MCP_TRANSPORT={transport}" in self._render(transport)
+
+    def test_no_environmentfile_directive(self):
+        """Regression guard.
+
+        systemd's parser is not a shell — it does not strip `export `, so an
+        `export MCP_TRANSPORT=sse` line in ~/.agentihooks/.env would set a key
+        named "export MCP_TRANSPORT" and leave the real one unset. The daemon
+        would fall back to stdio and exit 0 while systemd reported success and
+        ~/.claude.json pointed at a dead URL. hooks/config.py parses that file
+        correctly at import, so the directive is redundant as well as unsafe.
+        """
+        service = self._parse_sections(self._render())["Service"]
+
+        assert not [d for d in service if d.startswith("EnvironmentFile")]
+
+    def test_restart_always_not_on_failure(self):
+        """The case worth surviving is a clean exit 0, which on-failure ignores."""
+        unit = self._render()
+
+        assert "Restart=always" in unit
+        assert "Restart=on-failure" not in unit
+        assert "StartLimitBurst" in unit
+
+    def test_daemon_reload_is_invoked_but_never_start(self):
+        self._render()
+        flat = [" ".join(c) for c in self.systemctl_calls]
+
+        assert any("daemon-reload" in c for c in flat)
+        assert not any("start" in c or "enable" in c for c in flat)
+
+    def test_missing_systemctl_degrades_instead_of_raising(self, monkeypatch):
+        def _boom(*a, **kw):
+            raise FileNotFoundError("systemctl")
+
+        monkeypatch.setattr("subprocess.run", _boom)
+        install._install_systemd_user_unit("sse")
+
+        assert install._systemd_user_unit_path().exists()
+
+    def test_removal_is_a_noop_when_absent(self):
+        install._remove_systemd_user_unit()
+
+        assert not install._systemd_user_unit_path().exists()
+
+    def test_removal_deletes_the_unit(self):
+        self._render()
+        install._remove_systemd_user_unit()
+
+        assert not install._systemd_user_unit_path().exists()
+
+    def test_start_limits_are_in_the_unit_section(self):
+        """systemd ignores StartLimit* under [Service] without erroring, so a
+        misplaced key removes the brake on a hot-looping unit and says nothing.
+        Caught by `systemd-analyze verify`, not by any assertion on content."""
+        sections = self._parse_sections(self._render())
+
+        assert any(d.startswith("StartLimitIntervalSec") for d in sections["Unit"])
+        assert any(d.startswith("StartLimitBurst") for d in sections["Unit"])
+        assert not [d for d in sections["Service"] if d.startswith("StartLimit")]
+
+    def test_unit_passes_systemd_analyze_verify(self, tmp_path):
+        """Real systemd parser, when one is available. Skipped where it is not."""
+        import shutil
+        import subprocess as real_subprocess
+
+        if not shutil.which("systemd-analyze"):
+            pytest.skip("systemd-analyze not available")
+
+        unit_file = tmp_path / install._SYSTEMD_UNIT_NAME
+        unit_file.write_text(self._render())
+
+        # subprocess.run is faked by the autouse fixture; reach the real one.
+        proc = real_subprocess.Popen(
+            ["systemd-analyze", "verify", str(unit_file)],
+            stdout=real_subprocess.PIPE,
+            stderr=real_subprocess.STDOUT,
+            text=True,
+        )
+        output = proc.communicate(timeout=30)[0]
+
+        complaints = [
+            ln
+            for ln in output.splitlines()
+            if install._SYSTEMD_UNIT_NAME in ln and ("Unknown key" in ln or "Unknown section" in ln)
+        ]
+        assert not complaints, output
+
+    def test_uninstall_gate_counts_the_unit(self):
+        """A machine where the unit is the last artifact must not report
+        'nothing to uninstall' and leave an enabled daemon running."""
+        self._render()
+
+        assert install._systemd_user_unit_path().exists()
+
+
 class TestManagedMcpChainCollection:
     """Regression guard for Defect B: _collect_all_managed_mcp_servers must walk
     the FULL comma-separated profile chain, not pass the joined string to

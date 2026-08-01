@@ -35,9 +35,29 @@ These variables control how `agentihooks init` installs and configures Claude Co
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AGENTIHOOKS_HOME` | `~/.agentihooks` | Root directory for all runtime data: logs, memory, state. Set to a shared mount for Kubernetes deployments. |
-| `MCP_CATEGORIES` | `all` | Comma-separated list of MCP tool categories to load. Valid values: `aws,email,storage,database,compute,observability,utilities`. |
+| `MCP_CATEGORIES` | `all` | Comma-separated list of MCP tool categories to load. Valid values: `channels,enforcement,agent_pool` (see `hooks/mcp/_registry.py`). |
 | `ALLOWED_TOOLS` | -- | Legacy: comma-separated list of specific tool names. Takes precedence over category filtering after categories are loaded. |
 | `ENABLE_TOOL_SEARCH` | `true` | Set in the `env` block of `settings.json`. Makes all MCP tools lazy-loaded on demand -- shown as "(loaded on-demand)" in `/context`. Eliminates approximately 79K token upfront cost from MCP tool schemas. |
+
+---
+
+## MCP Transport
+
+Only relevant when running `hooks-utils` as a network server instead of a
+per-session stdio subprocess -- for clients that filter stdio MCP servers out at
+load time. See [MCP Transport](../hooks/mcp-transport.md) for the full setup.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_TRANSPORT` | `stdio` | `stdio`, `sse`, or `streamable-http`. An unrecognised value warns on stderr and falls back to `stdio`. |
+| `MCP_HOST` | `127.0.0.1` | Bind address for network transports. The loopback bind is the only access boundary -- neither transport carries authentication. |
+| `MCP_SCHEME` | `http` | Scheme in the `~/.claude.json` url. The daemon serves plaintext, which is correct for a loopback bind; set `https` only when a TLS reverse proxy fronts it. |
+| `MCP_PORT` | `8642` | Bind port for network transports. |
+| `MCP_SSE_PATH` | `/sse` | Event-stream path under `sse`. |
+| `MCP_STREAMABLE_HTTP_PATH` | `/mcp` | Endpoint path under `streamable-http`. |
+| `MCP_STATELESS_HTTP` | `false` | Stateless HTTP mode. Only relevant behind a non-sticky reverse proxy. |
+| `MCP_SESSION_ID_BANNER_ENABLED` | `true` | Inject the session's own id at SessionStart, so the agent can pass it to the session-scoped tools (`call_agent`, `pool_list`, `pool_status`, `channel_acknowledge`). Required under a network transport, where one process serves every session and the environment cannot identify the caller. |
+| `AGENTIHOOKS_MCP_TRANSPORT` | -- | Read by `agentihooks init` only, overriding `MCP_TRANSPORT` for that run. Use for a one-off install without editing `~/.agentihooks/.env`. |
 
 ---
 

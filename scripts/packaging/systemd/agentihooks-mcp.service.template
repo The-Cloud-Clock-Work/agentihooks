@@ -1,0 +1,48 @@
+[Unit]
+Description=agentihooks hooks-utils MCP server (network transport)
+Documentation=https://github.com/The-Cloud-Clockwork/agentihooks
+After=network.target
+
+# Start limits belong to [Unit], not [Service] — systemd silently ignores them
+# there, which is how a hot-looping unit ends up with no brake at all.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+# Type=exec, not simple: systemd reports a start failure if the interpreter path
+# is wrong, rather than counting a fork that immediately dies as a success.
+Type=exec
+ExecStart=__PYTHON__ -m hooks.mcp
+WorkingDirectory=__CWD__
+
+# The transport is baked in at render time, and there is deliberately no
+# EnvironmentFile= here.
+#
+# systemd's parser is not a shell: it does not strip an `export ` prefix, so
+# `export MCP_TRANSPORT=sse` in ~/.agentihooks/.env sets a key literally named
+# "export MCP_TRANSPORT" and leaves MCP_TRANSPORT unset. The daemon would fall
+# back to stdio, read an empty stdin, exit 0 — and systemd would report a clean
+# run while ~/.claude.json pointed at a URL with nothing listening.
+#
+# The daemon does not need the line anyway: hooks/config.py parses that same
+# file at import with full export/quote/comment handling. Worse, it parses with
+# os.environ.setdefault, so anything systemd injected would win over the
+# correctly-parsed value.
+#
+# Transport is an install-time decision, not a runtime knob — changing it must
+# also rewrite the url in ~/.claude.json, so it belongs to `agentihooks init`.
+# Every other knob (MCP_CATEGORIES, MCP_HOST, MCP_PORT, ...) remains an edit to
+# ~/.agentihooks/.env plus a restart.
+Environment=MCP_TRANSPORT=__TRANSPORT__
+
+# Restart=always, not on-failure: the case worth surviving is the daemon exiting
+# 0, which on-failure ignores. The start limit stops a misconfigured unit from
+# hot-looping.
+Restart=always
+RestartSec=3
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

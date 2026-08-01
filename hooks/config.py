@@ -143,6 +143,12 @@ FILE_READ_CACHE_TTL = int(os.getenv("FILE_READ_CACHE_TTL", "21600"))
 
 MCP_HYGIENE_ENABLED = _env_bool("MCP_HYGIENE_ENABLED", "true")
 
+# Tell the agent its own session id at SessionStart. The session-scoped
+# hooks-utils tools (call_agent, pool_list, pool_status, channel_acknowledge)
+# take it as an argument, which is the only identity mechanism that works when
+# hooks-utils runs as a network server shared by every session.
+MCP_SESSION_ID_BANNER_ENABLED = _env_bool("MCP_SESSION_ID_BANNER_ENABLED", "true")
+
 # =============================================================================
 # RETRY CIRCUIT BREAKER
 # =============================================================================
@@ -339,6 +345,29 @@ ENFORCEMENT_COUNTER_FILE: str = os.getenv(
     "ENFORCEMENT_COUNTER_FILE",
     str(AGENTIHOOKS_HOME / "enforcement_counters.json"),
 )
+
+# =============================================================================
+# AGENT POOL — directed agent-to-agent messaging (CallAgent)
+# =============================================================================
+# The pool IS the broadcast session registry (~/.agentihooks/active-sessions.json);
+# this adds per-session "what am I doing" summaries + the call_agent router.
+AGENT_POOL_ENABLED = _env_bool("AGENT_POOL_ENABLED", "true")
+# Refresh a session's pool summary every N tool calls (PostToolUse counter).
+AGENT_POOL_SUMMARY_INTERVAL: int = int(os.getenv("AGENT_POOL_SUMMARY_INTERVAL", "5"))
+AGENT_POOL_COUNTER_FILE: str = os.getenv(
+    "AGENT_POOL_COUNTER_FILE",
+    str(AGENTIHOOKS_HOME / "agent_pool_counters.json"),
+)
+# Idle threshold (seconds) below which a peer's transcript write means it is
+# still live → fork, not resume. Mirrors session_registry.SESSION_BUSY_WINDOW.
+AGENT_POOL_IDLE_THRESHOLD: int = int(os.getenv("AGENT_POOL_IDLE_THRESHOLD", "60"))
+# Model for the fork/resume claude subprocess call_agent spawns.
+AGENT_POOL_CALL_MODEL: str = os.getenv("AGENT_POOL_CALL_MODEL", "haiku")
+# Timeout (seconds) for the call_agent subprocess.
+AGENT_POOL_CALL_TIMEOUT: int = int(os.getenv("AGENT_POOL_CALL_TIMEOUT", "120"))
+# When true, derive pool summaries with a Haiku call instead of the free
+# transcript-tail read. Off by default (transcript tail is enough for a scan line).
+AGENT_POOL_SUMMARY_HAIKU = _env_bool("AGENT_POOL_SUMMARY_HAIKU", "false")
 
 # Brain payload shrinking — cap hot-arcs rows and per-entry body bytes.
 BRAIN_HOT_ARCS_TOP_N: int = int(os.getenv("BRAIN_HOT_ARCS_TOP_N", "5"))
