@@ -8,6 +8,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`agentihooks init` now owns the hooks-utils daemon, and `agentihooks mcp
+  start|stop|restart|status` drives it.** In network-transport mode init ends on a
+  running daemon serving the config it just wrote — no manual start step, on any
+  machine.
+
+  Two supervisors, chosen automatically: **systemd** where a user session exists,
+  and a **pidfile backend** everywhere else — WSL2 without `systemd=true`,
+  containers, macOS. The fallback runs a detached child recorded in
+  `~/.agentihooks/mcp-daemon.pid`, logging to `~/.agentihooks/logs/mcp-daemon.log`.
+  It has no supervisor behind it, so it does not survive a reboot; `agentihooks mcp
+  start` is then a once-per-boot step. `AGENTIHOOKS_MCP_SUPERVISOR` forces either
+  backend.
+
+  Liveness is not a bare `kill -0`: the pid's `/proc` cmdline must still name
+  `hooks.mcp`, so a recycled pid cannot read as a running daemon and get signalled.
+
+  **The restart on init is unconditional, and that costs something.** Every
+  `agentihooks init` drops each live session's hooks-utils connection for about a
+  second, including a re-run that changed nothing. The alternative — comparing every
+  input that could have changed — is more failure surface than the restart costs,
+  and its failure mode is silent.
+
+  `agentihooks mcp status` is the new diagnostic: configured transport and endpoint,
+  what `~/.claude.json` declares, supervisor, process state, port state, and every
+  mismatch between them named. Exit codes 0 running and matching, 1 stopped, 2
+  diverged.
+
+  *Note on doctrine:* `scripts/sync_daemon.py` was deleted in v1.11.3 and
+  `agentihooks init` declared the sole entry point. That deletion was aimed at an
+  auto-init **watcher** that re-ran the installer and mutated settings unprompted —
+  the chain-demotion bug class. A transport listener started by an explicit `init`
+  mutates nothing and re-runs nothing. The lesson stands; this is not a repeat of it.
+
 - **`hooks-utils` can run over `sse` / `streamable-http` instead of stdio.**
   Some Claude Code deployments filter every stdio-transport MCP server out at
   load time, taking the whole toolbelt with them. `MCP_TRANSPORT` selects the

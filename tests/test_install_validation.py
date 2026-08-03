@@ -7,6 +7,7 @@ MCP merging, settings generation, and profile structure conventions.
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -1036,7 +1037,21 @@ class TestEnvScanParity:
             os.environ.clear()
             os.environ.update(saved)
 
-        assert install._scan_env_file_value(env_file, "MCP_TRANSPORT") == canonical
+        # install.py no longer carries its own copy of this parser — it delegates
+        # to scripts/mcp_daemon.py, so there are two implementations to keep in
+        # step rather than three.
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from scripts import mcp_daemon
+
+        prev_home = os.environ.get("AGENTIHOOKS_HOME")
+        os.environ["AGENTIHOOKS_HOME"] = str(tmp_path)
+        try:
+            assert mcp_daemon._scan_env_file("MCP_TRANSPORT") == canonical
+        finally:
+            if prev_home is None:
+                os.environ.pop("AGENTIHOOKS_HOME", None)
+            else:
+                os.environ["AGENTIHOOKS_HOME"] = prev_home
 
     def test_export_prefix_resolves_to_the_network_transport(self, tmp_path, monkeypatch):
         """The exact regression: this used to silently resolve to stdio."""
@@ -1155,12 +1170,30 @@ class TestSystemdUnit:
         assert "Restart=on-failure" not in unit
         assert "StartLimitBurst" in unit
 
-    def test_daemon_reload_is_invoked_but_never_start(self):
+    def test_rendering_reloads_but_does_not_itself_start(self):
+        """Rendering and starting are separate concerns. `init` starts the daemon
+        via `_ensure_mcp_daemon`; this function only puts the unit on disk, so it
+        stays callable without side effects on the running process."""
         self._render()
         flat = [" ".join(c) for c in self.systemctl_calls]
 
         assert any("daemon-reload" in c for c in flat)
         assert not any("start" in c or "enable" in c for c in flat)
+
+    def test_no_stale_manual_start_instruction(self):
+        """`init` starts the daemon now. Printing `systemctl --user enable --now`
+        sent the operator to a command that cannot work on a box with no user bus
+        — which is the machine this whole feature exists for."""
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            install._install_systemd_user_unit("sse")
+        out = buf.getvalue()
+
+        assert "Not started" not in out
+        assert "enable --now" not in out
 
     def test_missing_systemctl_degrades_instead_of_raising(self, monkeypatch):
         def _boom(*a, **kw):
@@ -1362,3 +1395,77 @@ class TestInitDryRunRefuses:
             install.cmd_init_unified(args)
         assert exc.value.code == 2
         assert "not implemented" in capsys.readouterr().err
+
+
+class TestInitDaemonLifecycle:
+    """`agentihooks init` owns the daemon: it must converge the running process
+    onto the config it just wrote, not merely render a unit file.
+
+    The bug these cover is silent. `systemctl daemon-reload` re-reads unit files
+    without restarting running units, so before this the url in ~/.claude.json,
+    the unit on disk and the live process could all disagree with nothing said.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fake_daemon(self, monkeypatch):
+        class _FakeDaemon:
+            def __init__(self):
+                self.calls = []
+
+            def ensure_running(self, transport, python, cwd, *, restart=True):
+                self.calls.append(("ensure_running", transport, restart))
+                return SimpleNamespace(running=True, backend="pidfile", pid=4242, transport=transport, detail="ok")
+
+            def stop(self):
+                self.calls.append(("stop",))
+                return True
+
+            def read_pidfile(self):
+                return {}
+
+            def port_open(self, *a, **k):
+                return False
+
+        self.daemon = _FakeDaemon()
+        monkeypatch.setattr(install, "_mcp_daemon_module", lambda: self.daemon)
+        monkeypatch.setattr(install, "_resolve_hooks_python", lambda: Path("/venv/bin/python"))
+        monkeypatch.setattr(install, "_install_systemd_user_unit", lambda transport: None)
+        monkeypatch.setattr(install, "_remove_systemd_user_unit", lambda: None)
+
+    def test_network_transport_starts_the_daemon(self):
+        install._ensure_mcp_daemon("sse")
+
+        assert ("ensure_running", "sse", True) in self.daemon.calls
+
+    def test_restart_is_unconditional(self):
+        """No change-detection: after init the running process must serve the
+        config just written, and every input that could have changed is more
+        failure surface than a sub-second restart costs."""
+        install._ensure_mcp_daemon("streamable-http")
+
+        assert all(call[2] is True for call in self.daemon.calls if call[0] == "ensure_running")
+
+    def test_failure_to_start_warns_and_names_the_recovery_command(self, capsys):
+        self.daemon.ensure_running = lambda t, p, c, restart=True: SimpleNamespace(
+            running=False, backend="pidfile", pid=None, transport=t, detail="port busy"
+        )
+
+        install._ensure_mcp_daemon("sse")
+        out = capsys.readouterr().out
+
+        assert "port busy" in out
+        assert "agentihooks mcp start" in out
+
+    def test_clean_state_stops_the_daemon_before_sweeping_pidfiles(self, monkeypatch, tmp_path):
+        """`_clean_state_dir` globs "*.pid". Sweeping the pidfile of a running
+        daemon erases the only handle on it and leaves it orphaned on the port."""
+        state = tmp_path / "agentihooks"
+        state.mkdir()
+        (state / "mcp-daemon.pid").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(install, "AGENTIHOOKS_STATE_DIR", state)
+        monkeypatch.setattr(install, "_clean_claude_home", lambda: 0)
+
+        install._clean_state_dir()
+
+        assert ("stop",) in self.daemon.calls
+        assert not (state / "mcp-daemon.pid").exists()
