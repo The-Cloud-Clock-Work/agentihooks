@@ -870,7 +870,7 @@ class TestMcpTransportModes:
 
         entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
-        assert entry == {"type": "sse", "url": "http://127.0.0.1:8642/sse"}
+        assert entry == {"type": "sse", "url": "http://localhost:8642/sse"}
 
     def test_streamable_http_registers_as_type_http(self, monkeypatch):
         """Claude Code's config schema calls it "http" — the SDK's own
@@ -880,7 +880,7 @@ class TestMcpTransportModes:
 
         entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
-        assert entry == {"type": "http", "url": "http://127.0.0.1:8642/mcp"}
+        assert entry == {"type": "http", "url": "http://localhost:8642/mcp"}
 
     def test_url_mode_honours_host_and_port(self, monkeypatch):
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
@@ -893,14 +893,34 @@ class TestMcpTransportModes:
         assert entry["url"] == "http://10.0.0.5:9100/sse"
 
     def test_scheme_defaults_to_http_for_the_loopback_bind(self, monkeypatch):
-        """Plaintext is correct for 127.0.0.1 — the bind is the boundary and TLS
-        to loopback buys nothing."""
+        """Plaintext is correct for a loopback bind — the bind is the boundary and
+        TLS to loopback buys nothing."""
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
         monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
         entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
-        assert entry["url"].startswith("http://127.0.0.1:")
+        assert entry["url"].startswith("http://localhost:")
+
+    def test_default_host_is_localhost_not_the_dotted_quad(self, monkeypatch):
+        """Observed on a Claude Code Enterprise machine: an entry whose url named
+        `127.0.0.1` was dropped from the client's configured-server set outright —
+        absent from `claude mcp list`, and `claude mcp get` reported it as not
+        configured — while the byte-identical entry spelled `localhost` connected.
+
+        Both name the loopback interface, so the access boundary is unchanged.
+        Only the spelling decides whether the client sees the server at all, and
+        the failure mode is silent, so this default is pinned deliberately.
+        """
+        for transport, path in (("sse", "/sse"), ("streamable-http", "/mcp")):
+            monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", transport)
+            monkeypatch.delenv("MCP_HOST", raising=False)
+            monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
+
+            entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
+
+            assert entry["url"] == f"http://localhost:8642{path}"
+            assert "127.0.0.1" not in entry["url"]
 
     def test_scheme_can_be_https_for_a_tls_fronted_daemon(self, monkeypatch):
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "streamable-http")

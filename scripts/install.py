@@ -3143,7 +3143,14 @@ def _build_mcp_config(mcp_categories: str) -> dict:
         )
         sys.exit(1)
 
-    host = os.environ.get("MCP_HOST", "127.0.0.1")
+    # `localhost`, not the dotted quad. Both name the loopback interface, so the
+    # security boundary is identical — but a Claude Code Enterprise policy was
+    # observed dropping a `127.0.0.1` MCP entry from the client's configured-server
+    # set entirely, while accepting the byte-identical entry spelled `localhost`.
+    # The rejected entry does not appear in `claude mcp list` at all and `claude
+    # mcp get` reports it as not configured, so the failure looks like the server
+    # was never installed rather than like a policy denial.
+    host = os.environ.get("MCP_HOST", "localhost")
     try:
         port = int(os.environ.get("MCP_PORT", "8642"))
     except ValueError:

@@ -27,6 +27,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The network-transport url now names `localhost`, not `127.0.0.1`.** Verified
+  on a Claude Code Enterprise machine: the dotted-quad entry was dropped from the
+  client's configured-server set outright — absent from `claude mcp list`, and
+  `claude mcp get hooks-utils` reported it as not configured — while the
+  byte-identical entry spelled `localhost` connected against the same daemon, port
+  and transport. Both address the loopback interface, so the access boundary is
+  unchanged. `MCP_HOST` defaults to `localhost` for both the bind and the url so
+  the two cannot resolve differently.
 - **Session identity was resolved from a variable nothing sets.** The code read
   `CLAUDE_SESSION_ID`; Claude Code injects `CLAUDE_CODE_SESSION_ID`. Under stdio
   this silently degraded four tools: `pool_status` failed every call,

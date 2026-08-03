@@ -27,7 +27,10 @@ from hooks.mcp._session import set_env_fallback_allowed
 # only by the MCP entry point, alongside the MCP_CATEGORIES / ALLOWED_TOOLS
 # precedent already in this module.
 VALID_TRANSPORTS = ("stdio", "sse", "streamable-http")
-_DEFAULT_HOST = "127.0.0.1"
+# Kept identical to the installer's default so the daemon binds whatever the
+# client's url resolves to. Splitting the two invites a bind on 127.0.0.1 against
+# a url naming `localhost` — which fails wherever that name resolves to ::1 first.
+_DEFAULT_HOST = "localhost"
 _DEFAULT_PORT = 8642
 
 
