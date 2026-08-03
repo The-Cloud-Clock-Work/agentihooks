@@ -248,11 +248,26 @@ def unit_installed() -> bool:
     return (Path.home() / ".config" / "systemd" / "user" / UNIT_NAME).exists()
 
 
+VALID_SUPERVISORS = ("auto", "systemd", "pidfile")
+
+
 def resolve_backend() -> str:
-    """``systemd`` | ``pidfile``. ``AGENTIHOOKS_MCP_SUPERVISOR`` forces either."""
+    """``systemd`` | ``pidfile``. ``AGENTIHOOKS_MCP_SUPERVISOR`` forces either.
+
+    An unrecognised value warns and falls back to probing, matching how
+    ``MCP_TRANSPORT`` behaves. Silently ignoring a typo would mean an operator who
+    wrote ``pid-file`` to pin the fallback gets whatever probing decides, with no
+    hint that their setting did nothing.
+    """
     forced = os.environ.get("AGENTIHOOKS_MCP_SUPERVISOR", "auto").strip().lower()
     if forced in ("systemd", "pidfile"):
         return forced
+    if forced and forced != "auto":
+        print(
+            f"[hooks-utils] WARNING: unknown AGENTIHOOKS_MCP_SUPERVISOR={forced!r}; "
+            f"detecting instead. Valid values: {', '.join(VALID_SUPERVISORS)}.",
+            file=sys.stderr,
+        )
     return "systemd" if _systemctl_usable() else "pidfile"
 
 
@@ -367,8 +382,28 @@ def _child_env(transport: str) -> dict:
     return env
 
 
+_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _roll_log_if_large() -> None:
+    """Keep one previous generation, discard older.
+
+    Nothing else rotates this file — ``_clean_state_dir``'s delete whitelist does
+    not cover ``logs/`` — and the daemon appends for the life of the machine. A
+    restart is the natural rotation point.
+    """
+    path = logfile()
+    try:
+        if path.stat().st_size < _LOG_MAX_BYTES:
+            return
+        os.replace(str(path), str(path.with_suffix(".log.1")))
+    except OSError:
+        pass
+
+
 def _spawn_detached(python: str, transport: str, cwd: str) -> int:
     logfile().parent.mkdir(parents=True, exist_ok=True)
+    _roll_log_if_large()
     log = open(logfile(), "ab")  # noqa: SIM115 - handed to the child, closed below
     try:
         proc = subprocess.Popen(  # noqa: S603

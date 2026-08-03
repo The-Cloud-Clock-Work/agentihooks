@@ -49,11 +49,18 @@ That is the whole procedure. `agentihooks init` reads the same
 `~/.agentihooks/.env` the daemon does, so one edit drives the `~/.claude.json`
 entry, the systemd unit, and the running process together.
 
-**Init always ends on a freshly started daemon.** The restart is unconditional —
-it has just rewritten the unit, the url and possibly the port, and a running
-process carries none of that. The cost is real and worth knowing: every
-`agentihooks init` drops every live session's hooks-utils connection for about a
-second, including a re-run that changed nothing.
+**Init always attempts a restart**, and reports the outcome. It has just
+rewritten the unit, the url and possibly the port, and a running process carries
+none of that, so the restart is unconditional — but success is not guaranteed. A
+daemon that exits on startup is reported as `[WARN] Daemon did not start`, with
+the reason and `agentihooks mcp start` to retry.
+
+Two costs worth knowing:
+
+- Every `agentihooks init` drops each live hooks-utils connection for about a
+  second, including a re-run that changed nothing.
+- **This is machine-wide.** The install is global, so it interrupts every Claude
+  Code session on the box, not only the project you ran it from.
 
 Reverting is symmetric: remove the line (or set `MCP_TRANSPORT=stdio`) and
 re-run `agentihooks init`. The stdio entry is restored, the daemon is stopped and
@@ -157,7 +164,12 @@ hooks-utils daemon
   DIVERGED:
     - daemon on port 8642, config says 9111
     - localhost:9111 not answering despite a live process
+    - ~/.claude.json url 'http://localhost:8642/sse' does not name port 9111
 ```
+
+Three lines for one edit, because a port change desynchronises three things at
+once — the daemon, the probe, and the client entry. Each is separately
+actionable, so each is named.
 
 That is the failure this command exists for. Before it, the same state printed
 nothing at all: the client pointed at one port, the daemon served another, and
@@ -181,7 +193,12 @@ It runs the daemon as a detached child and records the pid in
 of the fallback.
 
 Set `AGENTIHOOKS_MCP_SUPERVISOR=systemd|pidfile` to force one, which is mainly
-useful for exercising both paths on a machine that has systemd.
+useful for exercising both paths on a machine that has systemd. An unrecognised
+value warns on stderr and falls back to detection.
+
+The log is appended to across restarts and rolled to `mcp-daemon.log.1` once it
+passes 5 MB, keeping one previous generation. Nothing else prunes it —
+`agentihooks init --force` clears state files but leaves `logs/` alone.
 
 ## The systemd unit
 

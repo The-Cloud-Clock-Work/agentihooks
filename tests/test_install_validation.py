@@ -867,7 +867,6 @@ class TestMcpTransportModes:
 
     def test_sse_mode_emits_url_entry(self, monkeypatch):
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
-        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
         entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
@@ -877,7 +876,6 @@ class TestMcpTransportModes:
         """Claude Code's config schema calls it "http" — the SDK's own
         "streamable-http" literal is rejected and silently never connects."""
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "streamable-http")
-        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
         entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
@@ -887,7 +885,6 @@ class TestMcpTransportModes:
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
         monkeypatch.setenv("MCP_HOST", "10.0.0.5")
         monkeypatch.setenv("MCP_PORT", "9100")
-        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
         entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
@@ -897,7 +894,6 @@ class TestMcpTransportModes:
         """Plaintext is correct for a loopback bind — the bind is the boundary and
         TLS to loopback buys nothing."""
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
-        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
         entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
@@ -916,7 +912,6 @@ class TestMcpTransportModes:
         for transport, path in (("sse", "/sse"), ("streamable-http", "/mcp")):
             monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", transport)
             monkeypatch.delenv("MCP_HOST", raising=False)
-            monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
             entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
@@ -927,7 +922,6 @@ class TestMcpTransportModes:
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "streamable-http")
         monkeypatch.setenv("MCP_SCHEME", "https")
         monkeypatch.setenv("MCP_HOST", "mcp.internal")
-        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
         entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
@@ -936,24 +930,26 @@ class TestMcpTransportModes:
     def test_bad_scheme_is_rejected(self, monkeypatch):
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
         monkeypatch.setenv("MCP_SCHEME", "ftp")
-        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
         with pytest.raises(SystemExit):
             install._build_mcp_config("all")
 
-    def test_unreachable_daemon_warns_but_does_not_fail(self, monkeypatch):
-        """A not-yet-started daemon is the expected state right after install."""
+    def test_config_build_never_probes_the_port(self, monkeypatch):
+        """_build_mcp_config runs before the daemon is started, so a closed port
+        is the normal state there. It used to print a "not answering yet" hint
+        naming a systemctl command — on every healthy install, and wrong outright
+        under the pidfile backend. Reporting startup belongs to _ensure_mcp_daemon,
+        which actually knows the outcome."""
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "streamable-http")
-        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: False)
 
         entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
         assert entry["type"] == "http"
+        assert not hasattr(install, "_probe_mcp_url_reachable")
 
     def test_url_mode_never_probes_a_local_python(self, monkeypatch):
         """There is no local interpreter to validate for a remote server."""
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
-        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
         def _explode():
             raise AssertionError("_resolve_hooks_python must not run in url mode")
@@ -1458,14 +1454,49 @@ class TestInitDaemonLifecycle:
 
     def test_clean_state_stops_the_daemon_before_sweeping_pidfiles(self, monkeypatch, tmp_path):
         """`_clean_state_dir` globs "*.pid". Sweeping the pidfile of a running
-        daemon erases the only handle on it and leaves it orphaned on the port."""
+        daemon erases the only handle on it and leaves it orphaned on the port.
+
+        The assertion has to encode ORDER, not just that both happened. Asserting
+        `("stop",) in calls` and `not pidfile.exists()` passes even with the stop
+        moved after the sweep — the glob deletes the file either way and the fake
+        never touches the filesystem. So the fake records what it observed.
+        """
         state = tmp_path / "agentihooks"
         state.mkdir()
-        (state / "mcp-daemon.pid").write_text("{}", encoding="utf-8")
+        pidfile = state / "mcp-daemon.pid"
+        pidfile.write_text("{}", encoding="utf-8")
         monkeypatch.setattr(install, "AGENTIHOOKS_STATE_DIR", state)
         monkeypatch.setattr(install, "_clean_claude_home", lambda: 0)
 
+        observed = {}
+
+        def _stop_recording_what_it_saw():
+            observed["pidfile_still_present"] = pidfile.exists()
+            return True
+
+        self.daemon.stop = _stop_recording_what_it_saw
+
         install._clean_state_dir()
 
-        assert ("stop",) in self.daemon.calls
-        assert not (state / "mcp-daemon.pid").exists()
+        assert observed.get("pidfile_still_present") is True, (
+            "the daemon was stopped after the sweep — by then the pidfile was gone and the process it named is orphaned"
+        )
+        assert not pidfile.exists()
+
+    def test_install_global_actually_calls_ensure_mcp_daemon(self):
+        """Pin the wiring: `_install_global_inner` is never executed by any test.
+
+        Without this, deleting the `_ensure_mcp_daemon` call from the
+        network-transport branch leaves the whole suite green while init silently
+        stops starting the daemon — the headline behaviour of this feature.
+        """
+        import inspect
+
+        src = inspect.getsource(install._install_global_inner)
+
+        assert "_ensure_mcp_daemon(_mcp_transport)" in src
+        # Ordered after the unit render: the systemd backend starts the unit that
+        # call writes, so starting first would enable a stale or absent one.
+        assert src.index("_install_systemd_user_unit(_mcp_transport)") < src.index("_ensure_mcp_daemon(_mcp_transport)")
+        # The stdio branch must stop a daemon left over from a network install.
+        assert "stop()" in src

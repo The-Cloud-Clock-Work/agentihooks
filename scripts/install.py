@@ -3026,15 +3026,6 @@ def _validate_mcp_transport_or_exit() -> str:
     return transport
 
 
-def _probe_mcp_url_reachable(host: str, port: int, timeout: float = 1.0) -> bool:
-    """Best-effort TCP probe. Never a gate — the daemon may not be started yet.
-
-    Delegates so the probe has one implementation; the daemon module needs the
-    same check to decide whether a spawn actually came up.
-    """
-    return _mcp_daemon_module().port_open(host, port, timeout)
-
-
 def _resolve_hooks_python() -> Path:
     """Return a python that can ``import hooks`` from a neutral cwd, or exit.
 
@@ -3153,10 +3144,11 @@ def _build_mcp_config(mcp_categories: str) -> dict:
         print(f"ERROR: MCP_SCHEME must be http or https, got {scheme!r}.", file=sys.stderr)
         sys.exit(1)
 
-    if not _probe_mcp_url_reachable(host, port):
-        _cprint(f"  [--] hooks-utils daemon not answering on {host}:{port} yet. Expected if you have not started it:")
-        _cprint("         systemctl --user enable --now agentihooks-mcp.service")
-
+    # No "not answering yet" hint here. This runs earlier in step 6 than
+    # _ensure_mcp_daemon, so the port is normally closed at this point and the
+    # message fired on every healthy network-mode install — and it named a
+    # systemctl command that cannot work under the pidfile backend. Whether the
+    # daemon came up is reported by _ensure_mcp_daemon, which actually knows.
     return {"mcpServers": {"hooks-utils": {"type": client_type, "url": f"{scheme}://{host}:{port}{path}"}}}
 
 
@@ -4379,8 +4371,17 @@ def uninstall_global(args: argparse.Namespace) -> None:
     # Stop before removing the unit: disabling a unit does not reach a process
     # started under the pidfile backend, and once the unit is gone there is
     # nothing left to stop it with.
-    if _mcp_daemon_module().stop():
+    _mcp_daemon = _mcp_daemon_module()
+    if _mcp_daemon.stop():
         _cprint("[OK] Stopped the hooks-utils daemon")
+    # Verify rather than assume. `stop()` is best-effort on both backends — a
+    # systemctl stop fails silently if the user bus went away — and an uninstall
+    # that reports success while a daemon keeps serving the port is the worst
+    # outcome here, because nothing is left to manage it with.
+    if _mcp_daemon.pid_alive(_mcp_daemon.read_pidfile().get("pid")):
+        _cprint(
+            f"  {_YELLOW}[WARN] A hooks-utils daemon is still running. Stop it by hand before removing the CLI.{_RESET}"
+        )
     _remove_systemd_user_unit()
 
     # --- 4. Remove symlinks in skills, agents, commands ---

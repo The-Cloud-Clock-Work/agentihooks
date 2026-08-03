@@ -65,6 +65,24 @@ class TestBackendSelection:
         )
         assert mcp_daemon.resolve_backend() == "systemd"
 
+    def test_typo_warns_and_falls_back_to_probing(self, monkeypatch, capsys):
+        """Silently ignoring a typo means an operator who wrote `pid-file` to pin
+        the fallback gets whatever probing decides, with no hint it did nothing.
+        MCP_TRANSPORT already warns-and-falls-back; this now matches."""
+        monkeypatch.setenv("AGENTIHOOKS_MCP_SUPERVISOR", "pid-file")
+        monkeypatch.setattr(mcp_daemon.shutil, "which", lambda _: None)
+
+        assert mcp_daemon.resolve_backend() == "pidfile"
+        assert "unknown AGENTIHOOKS_MCP_SUPERVISOR" in capsys.readouterr().err
+
+    def test_auto_does_not_warn(self, monkeypatch, capsys):
+        monkeypatch.setenv("AGENTIHOOKS_MCP_SUPERVISOR", "auto")
+        monkeypatch.setattr(mcp_daemon.shutil, "which", lambda _: None)
+
+        mcp_daemon.resolve_backend()
+
+        assert capsys.readouterr().err == ""
+
     @pytest.mark.parametrize("forced", ["systemd", "pidfile"])
     def test_env_override_wins_over_probing(self, monkeypatch, forced):
         def _explode(*_a, **_k):
@@ -456,6 +474,52 @@ class TestEnvParserParity:
             os.environ.update(saved)
 
         assert mcp_daemon._scan_env_file("MCP_TRANSPORT") == canonical
+
+
+class TestStatusFormatting:
+    """`format_status` is what the operator actually reads; its output is
+    documented in docs/hooks/mcp-transport.md and drifted from it once already."""
+
+    def _diverged_status(self, state_dir, monkeypatch):
+        monkeypatch.setenv("AGENTIHOOKS_MCP_SUPERVISOR", "pidfile")
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        monkeypatch.setenv("MCP_PORT", "9111")
+        (Path.home() / ".claude.json").write_text(
+            json.dumps({"mcpServers": {"hooks-utils": {"type": "sse", "url": "http://localhost:8642/sse"}}}),
+            encoding="utf-8",
+        )
+        mcp_daemon._write_pidfile({"pid": 4242, "transport": "sse", "host": "localhost", "port": 8642})
+        monkeypatch.setattr(mcp_daemon, "pid_alive", lambda pid: True)
+        monkeypatch.setattr(mcp_daemon, "port_open", lambda *a, **k: False)
+        return mcp_daemon.status()
+
+    def test_every_divergence_is_printed(self, state_dir, monkeypatch):
+        st = self._diverged_status(state_dir, monkeypatch)
+        out = mcp_daemon.format_status(st)
+
+        assert "DIVERGED:" in out
+        for d in st.divergences:
+            assert d in out, f"divergence dropped from the rendered output: {d}"
+
+    def test_the_stale_client_url_is_among_them(self, state_dir, monkeypatch):
+        """A url still naming the old port is its own divergence, distinct from
+        the daemon's port — the doc's sample output omitted it."""
+        st = self._diverged_status(state_dir, monkeypatch)
+
+        assert any("does not name port 9111" in d for d in st.divergences), st.divergences
+
+    def test_a_healthy_daemon_prints_no_diverged_block(self, state_dir, monkeypatch):
+        monkeypatch.setenv("AGENTIHOOKS_MCP_SUPERVISOR", "pidfile")
+        monkeypatch.setenv("MCP_TRANSPORT", "sse")
+        (Path.home() / ".claude.json").write_text(
+            json.dumps({"mcpServers": {"hooks-utils": {"type": "sse", "url": "http://localhost:8642/sse"}}}),
+            encoding="utf-8",
+        )
+        mcp_daemon._write_pidfile({"pid": 4242, "transport": "sse", "host": "localhost", "port": 8642})
+        monkeypatch.setattr(mcp_daemon, "pid_alive", lambda pid: True)
+        monkeypatch.setattr(mcp_daemon, "port_open", lambda *a, **k: True)
+
+        assert "DIVERGED" not in mcp_daemon.format_status(mcp_daemon.status())
 
 
 class TestCliMain:
