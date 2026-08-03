@@ -85,7 +85,10 @@ class TestServerNetworkSettings:
             monkeypatch.delenv(var, raising=False)
 
         settings = build_server().settings
-        assert settings.host == "127.0.0.1"
+        # Must match the installer's url default, not merely be loopback: a bind
+        # on 127.0.0.1 under a url naming `localhost` breaks wherever that name
+        # resolves to ::1 first.
+        assert settings.host == "localhost"
         assert settings.port == 8642
         assert settings.sse_path == "/sse"
         assert settings.streamable_http_path == "/mcp"

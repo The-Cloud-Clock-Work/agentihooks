@@ -66,8 +66,25 @@ installer emits the right one.
 
 | `MCP_TRANSPORT` | `~/.claude.json` entry |
 |---|---|
-| `sse` | `{"type": "sse", "url": "http://127.0.0.1:8642/sse"}` |
-| `streamable-http` | `{"type": "http", "url": "http://127.0.0.1:8642/mcp"}` |
+| `sse` | `{"type": "sse", "url": "http://localhost:8642/sse"}` |
+| `streamable-http` | `{"type": "http", "url": "http://localhost:8642/mcp"}` |
+
+### Spell the host `localhost`
+
+The default host is `localhost`, not `127.0.0.1`, and that is load-bearing under
+an enterprise policy.
+
+Observed on a policy-filtered machine: an entry whose url named `127.0.0.1` was
+dropped from the client's configured-server set outright — it did not appear in
+`claude mcp list`, and `claude mcp get hooks-utils` answered *no MCP server
+named "hooks-utils"*. Changing only the host spelling to `localhost`, with the
+same daemon on the same port serving the same transport, connected immediately.
+
+Both names address the loopback interface, so nothing about the access boundary
+changes. What changes is whether the client considers the server configured at
+all, and the failure is silent — it reads as "the server was never installed"
+rather than as a policy denial. `MCP_HOST` still overrides the default; setting
+it to the dotted quad on such a machine reintroduces the fault.
 
 ## Caller identity — the part that changes how you use the tools
 
@@ -106,7 +123,7 @@ Set `MCP_SESSION_ID_BANNER_ENABLED=false` to suppress the banner.
   call every tool and enumerate live session ids via `pool_list`. On a
   single-user workstation that is no worse than filesystem access to
   `~/.agentihooks`. On a shared-account host it is a real exposure — keep
-  `MCP_HOST` at `127.0.0.1`, and do not widen it without adding a gate.
+  `MCP_HOST` on loopback, and do not widen it without adding a gate.
 
 ## The systemd unit
 
@@ -140,17 +157,39 @@ MCP_TRANSPORT=streamable-http python -m hooks.mcp
 
 ## Verifying it works
 
+Two checks, in this order — they fail differently and that difference is the
+diagnosis.
+
 ```bash
-# is anything listening
+# 1. is the daemon up
 ss -ltn | grep 8642
 
-# real MCP handshake — expect 12 tools, each session-scoped one carrying session_id
-curl -s -X POST http://127.0.0.1:8642/mcp \
-  -H 'content-type: application/json' \
-  -H 'accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+# 2. does the client accept the entry
+claude mcp list
+```
 
-journalctl --user -u agentihooks-mcp.service -f
+`claude mcp list` is the one that matters. It reports each configured server and
+whether it connects, so it separates the three failures that otherwise look
+alike:
+
+| What you see | What it means |
+|---|---|
+| `hooks-utils: … - ✔ Connected` | done |
+| `hooks-utils: … - ✗ Failed to connect` | entry accepted, daemon down or on the wrong port |
+| no `hooks-utils` line at all | the client is not reading the entry — policy, or a host spelling it rejects |
+
+That third row is the quiet one. `claude mcp get hooks-utils` confirms it by
+answering *no MCP server named "hooks-utils"* even though the entry is sitting
+in `~/.claude.json`.
+
+Do not reach for a bare `curl … -d '{"…","method":"tools/list"}'` here. Stateful
+streamable-http requires an `initialize` handshake first and hands back an
+`mcp-session-id` header, so a lone `tools/list` returns *Bad Request: Missing
+session ID*. That error means the server is speaking MCP correctly — it is not
+evidence of a fault, and reading it as one sends you debugging the wrong layer.
+
+```bash
+journalctl --user -u agentihooks-mcp.service -f   # or: tail -f the nohup log
 ```
 
 In a live session, `pool_status("<what you are doing>", session_id="<your id>")`
@@ -162,7 +201,7 @@ should return success, and a call with the argument omitted should return
 | Variable | Default | Description |
 |---|---|---|
 | `MCP_TRANSPORT` | `stdio` | `stdio`, `sse`, or `streamable-http`. An unrecognised value warns and falls back to stdio. |
-| `MCP_HOST` | `127.0.0.1` | Bind address. Widening this removes the only access boundary. |
+| `MCP_HOST` | `localhost` | Bind address, and the host written into the url. Keep the two identical. Widening this off loopback removes the only access boundary. |
 | `MCP_SCHEME` | `http` | Scheme written into the `~/.claude.json` url. The daemon serves plaintext — correct for loopback, where TLS buys nothing. Set `https` only when a TLS reverse proxy fronts it. |
 | `MCP_PORT` | `8642` | Bind port. |
 | `MCP_SSE_PATH` | `/sse` | SSE event-stream path. |
