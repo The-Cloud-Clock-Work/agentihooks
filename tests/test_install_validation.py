@@ -7,6 +7,7 @@ MCP merging, settings generation, and profile structure conventions.
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -866,7 +867,6 @@ class TestMcpTransportModes:
 
     def test_sse_mode_emits_url_entry(self, monkeypatch):
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
-        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
         entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
@@ -876,7 +876,6 @@ class TestMcpTransportModes:
         """Claude Code's config schema calls it "http" — the SDK's own
         "streamable-http" literal is rejected and silently never connects."""
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "streamable-http")
-        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
         entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
@@ -886,7 +885,6 @@ class TestMcpTransportModes:
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
         monkeypatch.setenv("MCP_HOST", "10.0.0.5")
         monkeypatch.setenv("MCP_PORT", "9100")
-        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
         entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
@@ -896,7 +894,6 @@ class TestMcpTransportModes:
         """Plaintext is correct for a loopback bind — the bind is the boundary and
         TLS to loopback buys nothing."""
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
-        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
         entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
@@ -915,7 +912,6 @@ class TestMcpTransportModes:
         for transport, path in (("sse", "/sse"), ("streamable-http", "/mcp")):
             monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", transport)
             monkeypatch.delenv("MCP_HOST", raising=False)
-            monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
             entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
@@ -926,7 +922,6 @@ class TestMcpTransportModes:
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "streamable-http")
         monkeypatch.setenv("MCP_SCHEME", "https")
         monkeypatch.setenv("MCP_HOST", "mcp.internal")
-        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
         entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
@@ -935,24 +930,26 @@ class TestMcpTransportModes:
     def test_bad_scheme_is_rejected(self, monkeypatch):
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
         monkeypatch.setenv("MCP_SCHEME", "ftp")
-        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
         with pytest.raises(SystemExit):
             install._build_mcp_config("all")
 
-    def test_unreachable_daemon_warns_but_does_not_fail(self, monkeypatch):
-        """A not-yet-started daemon is the expected state right after install."""
+    def test_config_build_never_probes_the_port(self, monkeypatch):
+        """_build_mcp_config runs before the daemon is started, so a closed port
+        is the normal state there. It used to print a "not answering yet" hint
+        naming a systemctl command — on every healthy install, and wrong outright
+        under the pidfile backend. Reporting startup belongs to _ensure_mcp_daemon,
+        which actually knows the outcome."""
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "streamable-http")
-        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: False)
 
         entry = install._build_mcp_config("all")["mcpServers"]["hooks-utils"]
 
         assert entry["type"] == "http"
+        assert not hasattr(install, "_probe_mcp_url_reachable")
 
     def test_url_mode_never_probes_a_local_python(self, monkeypatch):
         """There is no local interpreter to validate for a remote server."""
         monkeypatch.setenv("AGENTIHOOKS_MCP_TRANSPORT", "sse")
-        monkeypatch.setattr(install, "_probe_mcp_url_reachable", lambda *a, **k: True)
 
         def _explode():
             raise AssertionError("_resolve_hooks_python must not run in url mode")
@@ -1036,7 +1033,21 @@ class TestEnvScanParity:
             os.environ.clear()
             os.environ.update(saved)
 
-        assert install._scan_env_file_value(env_file, "MCP_TRANSPORT") == canonical
+        # install.py no longer carries its own copy of this parser — it delegates
+        # to scripts/mcp_daemon.py, so there are two implementations to keep in
+        # step rather than three.
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        from scripts import mcp_daemon
+
+        prev_home = os.environ.get("AGENTIHOOKS_HOME")
+        os.environ["AGENTIHOOKS_HOME"] = str(tmp_path)
+        try:
+            assert mcp_daemon._scan_env_file("MCP_TRANSPORT") == canonical
+        finally:
+            if prev_home is None:
+                os.environ.pop("AGENTIHOOKS_HOME", None)
+            else:
+                os.environ["AGENTIHOOKS_HOME"] = prev_home
 
     def test_export_prefix_resolves_to_the_network_transport(self, tmp_path, monkeypatch):
         """The exact regression: this used to silently resolve to stdio."""
@@ -1155,12 +1166,30 @@ class TestSystemdUnit:
         assert "Restart=on-failure" not in unit
         assert "StartLimitBurst" in unit
 
-    def test_daemon_reload_is_invoked_but_never_start(self):
+    def test_rendering_reloads_but_does_not_itself_start(self):
+        """Rendering and starting are separate concerns. `init` starts the daemon
+        via `_ensure_mcp_daemon`; this function only puts the unit on disk, so it
+        stays callable without side effects on the running process."""
         self._render()
         flat = [" ".join(c) for c in self.systemctl_calls]
 
         assert any("daemon-reload" in c for c in flat)
         assert not any("start" in c or "enable" in c for c in flat)
+
+    def test_no_stale_manual_start_instruction(self):
+        """`init` starts the daemon now. Printing `systemctl --user enable --now`
+        sent the operator to a command that cannot work on a box with no user bus
+        — which is the machine this whole feature exists for."""
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            install._install_systemd_user_unit("sse")
+        out = buf.getvalue()
+
+        assert "Not started" not in out
+        assert "enable --now" not in out
 
     def test_missing_systemctl_degrades_instead_of_raising(self, monkeypatch):
         def _boom(*a, **kw):
@@ -1362,3 +1391,112 @@ class TestInitDryRunRefuses:
             install.cmd_init_unified(args)
         assert exc.value.code == 2
         assert "not implemented" in capsys.readouterr().err
+
+
+class TestInitDaemonLifecycle:
+    """`agentihooks init` owns the daemon: it must converge the running process
+    onto the config it just wrote, not merely render a unit file.
+
+    The bug these cover is silent. `systemctl daemon-reload` re-reads unit files
+    without restarting running units, so before this the url in ~/.claude.json,
+    the unit on disk and the live process could all disagree with nothing said.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fake_daemon(self, monkeypatch):
+        class _FakeDaemon:
+            def __init__(self):
+                self.calls = []
+
+            def ensure_running(self, transport, python, cwd, *, restart=True):
+                self.calls.append(("ensure_running", transport, restart))
+                return SimpleNamespace(running=True, backend="pidfile", pid=4242, transport=transport, detail="ok")
+
+            def stop(self):
+                self.calls.append(("stop",))
+                return True
+
+            def read_pidfile(self):
+                return {}
+
+            def port_open(self, *a, **k):
+                return False
+
+        self.daemon = _FakeDaemon()
+        monkeypatch.setattr(install, "_mcp_daemon_module", lambda: self.daemon)
+        monkeypatch.setattr(install, "_resolve_hooks_python", lambda: Path("/venv/bin/python"))
+        monkeypatch.setattr(install, "_install_systemd_user_unit", lambda transport: None)
+        monkeypatch.setattr(install, "_remove_systemd_user_unit", lambda: None)
+
+    def test_network_transport_starts_the_daemon(self):
+        install._ensure_mcp_daemon("sse")
+
+        assert ("ensure_running", "sse", True) in self.daemon.calls
+
+    def test_restart_is_unconditional(self):
+        """No change-detection: after init the running process must serve the
+        config just written, and every input that could have changed is more
+        failure surface than a sub-second restart costs."""
+        install._ensure_mcp_daemon("streamable-http")
+
+        assert all(call[2] is True for call in self.daemon.calls if call[0] == "ensure_running")
+
+    def test_failure_to_start_warns_and_names_the_recovery_command(self, capsys):
+        self.daemon.ensure_running = lambda t, p, c, restart=True: SimpleNamespace(
+            running=False, backend="pidfile", pid=None, transport=t, detail="port busy"
+        )
+
+        install._ensure_mcp_daemon("sse")
+        out = capsys.readouterr().out
+
+        assert "port busy" in out
+        assert "agentihooks mcp start" in out
+
+    def test_clean_state_stops_the_daemon_before_sweeping_pidfiles(self, monkeypatch, tmp_path):
+        """`_clean_state_dir` globs "*.pid". Sweeping the pidfile of a running
+        daemon erases the only handle on it and leaves it orphaned on the port.
+
+        The assertion has to encode ORDER, not just that both happened. Asserting
+        `("stop",) in calls` and `not pidfile.exists()` passes even with the stop
+        moved after the sweep — the glob deletes the file either way and the fake
+        never touches the filesystem. So the fake records what it observed.
+        """
+        state = tmp_path / "agentihooks"
+        state.mkdir()
+        pidfile = state / "mcp-daemon.pid"
+        pidfile.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(install, "AGENTIHOOKS_STATE_DIR", state)
+        monkeypatch.setattr(install, "_clean_claude_home", lambda: 0)
+
+        observed = {}
+
+        def _stop_recording_what_it_saw():
+            observed["pidfile_still_present"] = pidfile.exists()
+            return True
+
+        self.daemon.stop = _stop_recording_what_it_saw
+
+        install._clean_state_dir()
+
+        assert observed.get("pidfile_still_present") is True, (
+            "the daemon was stopped after the sweep — by then the pidfile was gone and the process it named is orphaned"
+        )
+        assert not pidfile.exists()
+
+    def test_install_global_actually_calls_ensure_mcp_daemon(self):
+        """Pin the wiring: `_install_global_inner` is never executed by any test.
+
+        Without this, deleting the `_ensure_mcp_daemon` call from the
+        network-transport branch leaves the whole suite green while init silently
+        stops starting the daemon — the headline behaviour of this feature.
+        """
+        import inspect
+
+        src = inspect.getsource(install._install_global_inner)
+
+        assert "_ensure_mcp_daemon(_mcp_transport)" in src
+        # Ordered after the unit render: the systemd backend starts the unit that
+        # call writes, so starting first would enable a stale or absent one.
+        assert src.index("_install_systemd_user_unit(_mcp_transport)") < src.index("_ensure_mcp_daemon(_mcp_transport)")
+        # The stdio branch must stop a daemon left over from a network install.
+        assert "stop()" in src

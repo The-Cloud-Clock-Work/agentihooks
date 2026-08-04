@@ -184,12 +184,17 @@ After linking, future runs of `agentihooks init` will use the linked bundle auto
 Run the MCP server directly (useful for testing):
 
 ```bash
-# All 26 tools
+# All 12 tools
 ~/.agentihooks/.venv/bin/python -m hooks.mcp
 
 # Specific categories only
 MCP_CATEGORIES=channels,enforcement ~/.agentihooks/.venv/bin/python -m hooks.mcp
 ```
+
+That runs it in the foreground on stdio, which is only useful for testing. To run
+it as a daemon for a network transport, use `agentihooks mcp start` — it resolves
+the interpreter, picks a supervisor, and records the pid. See
+[MCP Transport]({{ site.baseurl }}/hooks/mcp-transport/).
 
 ---
 

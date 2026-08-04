@@ -43,16 +43,29 @@ there is no "connect and it starts for you."
 ```bash
 echo 'MCP_TRANSPORT=streamable-http' >> ~/.agentihooks/.env
 agentihooks init
-systemctl --user enable --now agentihooks-mcp.service
 ```
 
-`agentihooks init` reads the same `~/.agentihooks/.env` the daemon does, so one
-edit drives both the `~/.claude.json` entry and the unit. It writes the unit but
-never starts it — starting is an operator action.
+That is the whole procedure. `agentihooks init` reads the same
+`~/.agentihooks/.env` the daemon does, so one edit drives the `~/.claude.json`
+entry, the systemd unit, and the running process together.
+
+**Init always attempts a restart**, and reports the outcome. It has just
+rewritten the unit, the url and possibly the port, and a running process carries
+none of that, so the restart is unconditional — but success is not guaranteed. A
+daemon that exits on startup is reported as `[WARN] Daemon did not start`, with
+the reason and `agentihooks mcp start` to retry.
+
+Two costs worth knowing:
+
+- Every `agentihooks init` drops each live hooks-utils connection for about a
+  second, including a re-run that changed nothing.
+- **This is machine-wide.** The install is global, so it interrupts every Claude
+  Code session on the box, not only the project you ran it from.
 
 Reverting is symmetric: remove the line (or set `MCP_TRANSPORT=stdio`) and
-re-run `agentihooks init`. The stdio entry is restored and the unit is removed,
-so a downgrade cannot leave a daemon running that nothing points at.
+re-run `agentihooks init`. The stdio entry is restored, the daemon is stopped and
+the unit removed, so a downgrade cannot leave a process serving a port nothing
+points at.
 
 ### Which transport
 
@@ -125,6 +138,68 @@ Set `MCP_SESSION_ID_BANNER_ENABLED=false` to suppress the banner.
   `~/.agentihooks`. On a shared-account host it is a real exposure — keep
   `MCP_HOST` on loopback, and do not widen it without adding a gate.
 
+## Driving the daemon by hand
+
+```bash
+agentihooks mcp status     # config vs. reality
+agentihooks mcp start
+agentihooks mcp restart
+agentihooks mcp stop
+```
+
+`status` is the one worth knowing. It prints the configured transport and
+endpoint, what `~/.claude.json` declares, which supervisor is in play, whether
+the process is up, whether the port answers — and names every mismatch between
+them. Exit codes make it scriptable: **0** running and matching, **1** stopped,
+**2** diverged.
+
+```
+hooks-utils daemon
+  configured transport : sse
+  configured endpoint  : localhost:9111
+  ~/.claude.json       : sse http://localhost:8642/sse
+  supervisor           : pidfile
+  process              : running (pid 3542456)
+  port                 : closed
+  DIVERGED:
+    - daemon on port 8642, config says 9111
+    - localhost:9111 not answering despite a live process
+    - ~/.claude.json url 'http://localhost:8642/sse' does not name port 9111
+```
+
+Three lines for one edit, because a port change desynchronises three things at
+once — the daemon, the probe, and the client entry. Each is separately
+actionable, so each is named.
+
+That is the failure this command exists for. Before it, the same state printed
+nothing at all: the client pointed at one port, the daemon served another, and
+the only symptom was tools that quietly did not appear.
+
+### Supervisors
+
+Two backends, chosen automatically.
+
+| | when | survives reboot |
+|---|---|---|
+| **systemd** | a user session exists | yes — the unit restarts it |
+| **pidfile** | everything else | no |
+
+The pidfile backend covers WSL2 without `systemd=true`, containers and macOS —
+anywhere `systemctl --user` answers *Failed to connect to bus: No medium found*.
+It runs the daemon as a detached child and records the pid in
+`~/.agentihooks/mcp-daemon.pid`, with output in
+`~/.agentihooks/logs/mcp-daemon.log`. There is no supervisor behind it, so
+**after a reboot you run `agentihooks mcp start` once.** That is the honest limit
+of the fallback.
+
+Set `AGENTIHOOKS_MCP_SUPERVISOR=systemd|pidfile` to force one, which is mainly
+useful for exercising both paths on a machine that has systemd. An unrecognised
+value warns on stderr and falls back to detection.
+
+The log is appended to across restarts and rolled to `mcp-daemon.log.1` once it
+passes 5 MB, keeping one previous generation. Nothing else prunes it —
+`agentihooks init --force` clears state files but leaves `logs/` alone.
+
 ## The systemd unit
 
 Written to `~/.config/systemd/user/agentihooks-mcp.service`, rendered from a
@@ -145,15 +220,12 @@ comments. It parses with `os.environ.setdefault`, so anything systemd injected
 would take precedence over the correctly-parsed value.
 
 Every other knob (`MCP_CATEGORIES`, `MCP_HOST`, `MCP_PORT`, …) is an edit to
-`~/.agentihooks/.env` plus `systemctl --user restart agentihooks-mcp.service`.
+`~/.agentihooks/.env` plus `agentihooks mcp restart` — which works under either
+supervisor, unlike `systemctl --user restart`.
 
-Where there is no systemd user session — WSL2 without `systemd=true`, a
-container, macOS — `init` writes the unit, says so, and tells you to run the
-daemon directly:
-
-```bash
-MCP_TRANSPORT=streamable-http python -m hooks.mcp
-```
+Where there is no systemd user session the unit is still written, and simply
+never used; `init` says so and starts the daemon under the pidfile backend
+instead.
 
 ## Verifying it works
 
@@ -161,8 +233,8 @@ Two checks, in this order — they fail differently and that difference is the
 diagnosis.
 
 ```bash
-# 1. is the daemon up
-ss -ltn | grep 8642
+# 1. is the daemon up, and does it match the config
+agentihooks mcp status
 
 # 2. does the client accept the entry
 claude mcp list
@@ -209,3 +281,4 @@ should return success, and a call with the argument omitted should return
 | `MCP_STATELESS_HTTP` | `false` | Stateless mode. Only relevant behind a non-sticky reverse proxy. |
 | `MCP_SESSION_ID_BANNER_ENABLED` | `true` | Tell the agent its own session id at SessionStart. |
 | `AGENTIHOOKS_MCP_TRANSPORT` | -- | Installer-only override of `MCP_TRANSPORT`, for a one-off `agentihooks init` without editing `.env`. |
+| `AGENTIHOOKS_MCP_SUPERVISOR` | `auto` | `systemd`, `pidfile`, or `auto`. Forces a backend instead of probing for a user bus. |

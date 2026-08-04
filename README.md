@@ -201,6 +201,12 @@ agentihooks status                           # full system health
 agentihooks lint-claude [path]               # CLAUDE.md token cost analysis
 agentihooks mcp report                       # MCP surface area
 
+# hooks-utils daemon (network transport only — see docs/hooks/mcp-transport.md)
+agentihooks mcp status                       # config vs. reality; 0 ok, 1 stopped, 2 diverged
+agentihooks mcp start                        # once per boot where there is no systemd
+agentihooks mcp restart
+agentihooks mcp stop
+
 # Utilities
 agentihooks ignore [path]                    # create .claudeignore
 agentihooks --list-profiles                  # available profiles
@@ -218,6 +224,13 @@ agentihooks uninstall [--yes]                # remove everything
 6. Reconciles MCP servers — removes ones agentihooks installed on a prior run but that are no longer in any profile/bundle source (servers you added by hand are preserved)
 7. Installs CLI globally via `uv tool`
 8. Writes bashrc block (`agentienv` shell function + `agenti` alias)
+
+Under a network `MCP_TRANSPORT`, step 5 also renders the systemd unit and
+**starts the hooks-utils daemon** — restarting it unconditionally, since init has
+just rewritten the url and possibly the port and a running process carries
+neither. That interrupts every Claude Code session on the machine for about a
+second, because the install is global. On a stdio install no daemon exists and
+none of this runs.
 
 > Per-repo init (`--repo` / `--local`) and `.agentihooks.json` were removed
 > 2026-05-07. `agentihooks init` is global-only.

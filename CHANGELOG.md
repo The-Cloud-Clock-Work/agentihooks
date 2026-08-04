@@ -8,6 +8,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`agentihooks init` now owns the hooks-utils daemon, and `agentihooks mcp
+  start|stop|restart|status` drives it.** In network-transport mode init ends on a
+  running daemon serving the config it just wrote — no manual start step, on any
+  machine.
+
+  Two supervisors, chosen automatically: **systemd** where a user session exists,
+  and a **pidfile backend** everywhere else — WSL2 without `systemd=true`,
+  containers, macOS. The fallback runs a detached child recorded in
+  `~/.agentihooks/mcp-daemon.pid`, logging to `~/.agentihooks/logs/mcp-daemon.log`.
+  It has no supervisor behind it, so it does not survive a reboot; `agentihooks mcp
+  start` is then a once-per-boot step. `AGENTIHOOKS_MCP_SUPERVISOR` forces either
+  backend.
+
+  Liveness is not a bare `kill -0`: the pid's `/proc` cmdline must still name
+  `hooks.mcp`, so a recycled pid cannot read as a running daemon and get signalled.
+
+  **The restart on init is unconditional, and that costs something.** Every
+  `agentihooks init` drops each live hooks-utils connection for about a second,
+  including a re-run that changed nothing — and because the install is global, that
+  is every Claude Code session on the machine, not only the project you ran it from.
+  The alternative, comparing every input that could have changed, is more failure
+  surface than the restart costs and its failure mode is silent.
+
+  `agentihooks mcp status` is the new diagnostic: configured transport and endpoint,
+  what `~/.claude.json` declares, supervisor, process state, port state, and every
+  mismatch between them named. Exit codes 0 running and matching, 1 stopped, 2
+  diverged.
+
+  *Note on doctrine, stated plainly rather than favourably:* `scripts/sync_daemon.py`
+  was deleted in v1.11.3 and `agentihooks init` declared the sole entry point. This
+  change does re-adopt two things from it — a background process with pid/lock/log
+  state under `~/.agentihooks/`, and "restart the daemon on init", which that
+  changelog entry lists by name as a sync_daemon feature. The kinship is real and
+  worth saying out loud.
+
+  What is not re-adopted is the part that caused the bug class: sync_daemon **watched
+  install-pipeline files and re-ran `_install_global_inner` on its own**, mutating
+  settings with no operator action, which is how a chained profile silently demoted
+  itself. This daemon runs only `python -m hooks.mcp`, serves MCP tool calls, and
+  writes no settings — and it starts only when an operator runs `init` or
+  `agentihooks mcp start`. The line that matters is *does it change your config
+  behind your back*, not *is it a background process*.
+
 - **`hooks-utils` can run over `sse` / `streamable-http` instead of stdio.**
   Some Claude Code deployments filter every stdio-transport MCP server out at
   load time, taking the whole toolbelt with them. `MCP_TRANSPORT` selects the

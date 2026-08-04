@@ -1658,6 +1658,15 @@ def _clean_state_dir() -> None:
             _cprint(f"  [OK] Clean install: reset {removed} item(s) from {CLAUDE_HOME}")
         return
 
+    # Before the sweep: _DELETE_GLOBS drops "*.pid", which would erase the only
+    # record of a running daemon and leave it orphaned on the port. Stop it first;
+    # a network-mode install restarts it at step 6.
+    try:
+        if _mcp_daemon_module().stop():
+            _cprint("  [OK] Stopped the hooks-utils daemon before clearing state")
+    except Exception as e:  # never let cleanup fail a --force install
+        _cprint(f"  {_YELLOW}[WARN] Could not stop the hooks-utils daemon: {e}{_RESET}")
+
     # Whitelist: only these are deleted. Everything else survives.
     _DELETE_FILES = {
         "state.json",
@@ -2664,7 +2673,13 @@ def _install_global_inner(args: argparse.Namespace) -> None:
     # downgrade cannot orphan a daemon the config no longer points at.
     if _mcp_transport != "stdio":
         _install_systemd_user_unit(_mcp_transport)
+        _ensure_mcp_daemon(_mcp_transport)
     else:
+        # A daemon started under a previous network-mode install keeps serving a
+        # port nothing points at once the client entry reverts to stdio. Removing
+        # the unit does not touch a process started outside systemd.
+        if _mcp_daemon_module().stop():
+            _cprint("  [OK] Stopped the hooks-utils daemon (transport reverted to stdio)")
         _remove_systemd_user_unit()
 
     # Layer 2: bundle .claude/.mcp.json — always installed; profile MCPs layer on top (override per-name)
@@ -2972,47 +2987,6 @@ def _remove_mcp_from_user_scope(servers: dict) -> None:
 VALID_MCP_TRANSPORTS = ("stdio", "sse", "streamable-http")
 
 
-def _scan_env_file_value(env_file: Path, key: str) -> str | None:
-    """Read *key* from a dotenv file, or None if absent.
-
-    This MIRRORS ``hooks/config.py::_parse_env_file`` — ``export`` prefixes,
-    quoted values, and inline ``#`` comments all handled the same way. It is a
-    copy rather than an import because install.py deliberately does not depend
-    on ``hooks.*``, and the two are pinned together by a parity test.
-
-    Getting this wrong is not a cosmetic bug: the daemon reads the same file
-    through the real parser, so a weaker scan here makes the installer and the
-    daemon silently disagree about which transport is in play.
-    """
-    try:
-        raw_text = env_file.read_text(encoding="utf-8")
-    except OSError:
-        return None
-
-    for raw in raw_text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[7:].lstrip()
-        if "=" not in line:
-            continue
-        name, _, val = line.partition("=")
-        if name.strip() != key:
-            continue
-        val = val.strip()
-        if val and val[0] in ('"', "'"):
-            quote = val[0]
-            end = val.find(quote, 1)
-            val = val[1:end] if end != -1 else val[1:]
-        elif "#" in val:
-            val = val[: val.index("#")].rstrip()
-        # First assignment wins: _parse_env_file uses os.environ.setdefault, so
-        # a later duplicate never overwrites an earlier one.
-        return val
-    return None
-
-
 def _resolve_installer_mcp_transport() -> str:
     """Transport for the ~/.claude.json hooks-utils entry. ``stdio`` by default.
 
@@ -3023,7 +2997,11 @@ def _resolve_installer_mcp_transport() -> str:
     val = os.environ.get("AGENTIHOOKS_MCP_TRANSPORT", "").strip().lower()
     if val:
         return val
-    from_file = _scan_env_file_value(Path.home() / ".agentihooks" / ".env", "MCP_TRANSPORT")
+    # Delegated so the installer and the daemon tooling read the env files the
+    # same way. Scanning only `.env` here missed a transport set in a companion
+    # `*.env`, which `hooks/config.py` does load — the installer then wrote a stdio
+    # entry for a daemon that comes up in network mode.
+    from_file = _mcp_daemon_module()._scan_env_file("MCP_TRANSPORT")
     if from_file:
         return from_file.strip().lower()
     return "stdio"
@@ -3046,17 +3024,6 @@ def _validate_mcp_transport_or_exit() -> str:
         )
         sys.exit(1)
     return transport
-
-
-def _probe_mcp_url_reachable(host: str, port: int, timeout: float = 1.0) -> bool:
-    """Best-effort TCP probe. Never a gate — the daemon may not be started yet."""
-    import socket
-
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
 
 
 def _resolve_hooks_python() -> Path:
@@ -3177,14 +3144,46 @@ def _build_mcp_config(mcp_categories: str) -> dict:
         print(f"ERROR: MCP_SCHEME must be http or https, got {scheme!r}.", file=sys.stderr)
         sys.exit(1)
 
-    if not _probe_mcp_url_reachable(host, port):
-        _cprint(f"  [--] hooks-utils daemon not answering on {host}:{port} yet. Expected if you have not started it:")
-        _cprint("         systemctl --user enable --now agentihooks-mcp.service")
-
+    # No "not answering yet" hint here. This runs earlier in step 6 than
+    # _ensure_mcp_daemon, so the port is normally closed at this point and the
+    # message fired on every healthy network-mode install — and it named a
+    # systemctl command that cannot work under the pidfile backend. Whether the
+    # daemon came up is reported by _ensure_mcp_daemon, which actually knows.
     return {"mcpServers": {"hooks-utils": {"type": client_type, "url": f"{scheme}://{host}:{port}{path}"}}}
 
 
 _SYSTEMD_UNIT_NAME = "agentihooks-mcp.service"
+
+
+def _mcp_daemon_module():
+    """Lazy import of the daemon lifecycle module.
+
+    Same shape as the ``scripts.mcp_reporter`` / ``scripts.status_checker`` imports
+    in the CLI dispatch: keeps install-time cost off the common path and avoids a
+    module-level dependency for the stdio case, which never touches a daemon.
+    """
+    sys.path.insert(0, str(AGENTIHOOKS_ROOT))
+    from scripts import mcp_daemon
+
+    return mcp_daemon
+
+
+def _ensure_mcp_daemon(transport: str) -> None:
+    """Bring the daemon onto the config this install just wrote.
+
+    The restart is unconditional. Init has just rewritten the unit, the url, and
+    possibly the port — and a running daemon carries none of that. Comparing every
+    input that could have changed is more failure surface than a sub-second restart
+    costs, and the failure it would guard against is silent.
+    """
+    mcp_daemon = _mcp_daemon_module()
+    state = mcp_daemon.ensure_running(transport, str(_resolve_hooks_python()), str(AGENTIHOOKS_ROOT), restart=True)
+    if state.running:
+        pid = f", pid {state.pid}" if state.pid else ""
+        _cprint(f"  [OK] Daemon running ({state.backend}, {transport}{pid}) — {state.detail}")
+        return
+    _cprint(f"  [WARN] Daemon did not start ({state.backend}): {state.detail}")
+    _cprint("         Retry with: agentihooks mcp start")
 
 
 def _systemd_user_unit_path() -> Path:
@@ -3195,8 +3194,10 @@ def _install_systemd_user_unit(transport: str) -> None:
     """Write the hooks-utils daemon unit into the user systemd directory.
 
     Only called when the MCP transport is network-mode, so stdio machines get no
-    systemd artifact at all. The unit is written and reloaded but never started
-    — ``agentihooks init`` does not own background processes; the operator does.
+    systemd artifact at all. Rendering and starting stay separate: this puts the
+    unit on disk and reloads systemd, and ``_ensure_mcp_daemon`` — called straight
+    after by the same step — is what brings the process up. Keeping them apart
+    means the unit can be re-rendered without touching a running daemon.
 
     *transport* is baked into the unit rather than left to an ``EnvironmentFile``.
     That is what keeps the daemon and ``~/.claude.json`` from disagreeing: both
@@ -3225,12 +3226,10 @@ def _install_systemd_user_unit(transport: str) -> None:
     try:
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=False, timeout=10)
     except (OSError, subprocess.SubprocessError):
-        _cprint("  [--] systemctl unavailable (no systemd user session). Run the daemon directly:")
-        _cprint(f"         MCP_TRANSPORT={transport} python -m hooks.mcp")
-        return
-
-    _cprint("  [--] Not started. Start it with:")
-    _cprint(f"         systemctl --user enable --now {_SYSTEMD_UNIT_NAME}")
+        # Not an error: WSL2 without systemd=true, containers and macOS all land
+        # here. The caller starts the daemon under the pidfile backend instead, so
+        # there is nothing for the operator to do and no command worth printing.
+        _cprint("  [--] No systemd user session — the daemon runs unsupervised instead.")
 
 
 def _remove_systemd_user_unit() -> None:
@@ -4290,6 +4289,10 @@ def uninstall_global(args: argparse.Namespace) -> None:
     # before the removal step, leaving an enabled daemon running past a green
     # uninstall.
     systemd_unit_present = _systemd_user_unit_path().exists()
+    # A daemon started under the pidfile backend leaves no unit behind, so without
+    # this a machine whose only artifact is a live daemon reports "nothing to
+    # uninstall" and walks away from a running process.
+    daemon_running = _mcp_daemon_module().read_pidfile().get("pid") is not None
     total_work = (
         int(remove_settings)
         + n_skills
@@ -4301,6 +4304,7 @@ def uninstall_global(args: argparse.Namespace) -> None:
         + int(bashrc_block_present)
         + int(_cli_tool_is_installed())
         + int(systemd_unit_present)
+        + int(daemon_running)
     )
     if total_work == 0:
         print("Nothing to uninstall — agentihooks is not installed.")
@@ -4363,7 +4367,21 @@ def uninstall_global(args: argparse.Namespace) -> None:
     else:
         print(f"[--] Skipped {settings_path} (not managed)")
 
-    # --- 3b. Remove the hooks-utils daemon unit (network-transport installs) ---
+    # --- 3b. Stop and remove the hooks-utils daemon (network-transport installs) ---
+    # Stop before removing the unit: disabling a unit does not reach a process
+    # started under the pidfile backend, and once the unit is gone there is
+    # nothing left to stop it with.
+    _mcp_daemon = _mcp_daemon_module()
+    if _mcp_daemon.stop():
+        _cprint("[OK] Stopped the hooks-utils daemon")
+    # Verify rather than assume. `stop()` is best-effort on both backends — a
+    # systemctl stop fails silently if the user bus went away — and an uninstall
+    # that reports success while a daemon keeps serving the port is the worst
+    # outcome here, because nothing is left to manage it with.
+    if _mcp_daemon.pid_alive(_mcp_daemon.read_pidfile().get("pid")):
+        _cprint(
+            f"  {_YELLOW}[WARN] A hooks-utils daemon is still running. Stop it by hand before removing the CLI.{_RESET}"
+        )
     _remove_systemd_user_unit()
 
     # --- 4. Remove symlinks in skills, agents, commands ---
@@ -4798,145 +4816,6 @@ def _prune_stale_mcp_servers(known_servers_file: Path, *, verbose: bool = False)
         _save_state(state)
 
     return summary
-
-
-def cmd_mcp_action(action: str, scan_dir: Path | None = None, *, mcp_path: Path | None = None) -> None:
-    """Handle ``agentihooks mcp list|install|uninstall|sync|add``.
-
-    *scan_dir* defaults to ``~/.agentihooks/``.
-    """
-    if scan_dir is None:
-        scan_dir = AGENTIHOOKS_STATE_DIR
-
-    tracked = set(_load_state().get("mcpFiles", []))
-
-    if action == "list":
-        mcp_files = _scan_mcp_dir(scan_dir)
-        if not mcp_files:
-            print(f"No MCP files found in {scan_dir}")
-            print(f"\nDrop .json files with a mcpServers key into {scan_dir}")
-            return
-        print(f"MCP files in {scan_dir}:\n")
-        _display_mcp_list(mcp_files, tracked)
-        if tracked:
-            print(f"\nCurrently installed: {len(tracked)} file(s)")
-        print("\nTo install:   agentihooks mcp install")
-        print("To uninstall: agentihooks mcp uninstall")
-
-    elif action == "install":
-        mcp_files = _scan_mcp_dir(scan_dir)
-        if not mcp_files:
-            print(f"No MCP files found in {scan_dir}")
-            print(f"\nDrop .json files with a mcpServers key into {scan_dir}")
-            return
-        # Stage 1 — pick a file
-        if len(mcp_files) == 1:
-            selected_file, all_servers = mcp_files[0]
-            print(f"{selected_file.name}\n")
-            for name in all_servers:
-                print(f"  \033[2m•\033[0m {name}")
-        else:
-            print(f"MCP files in {scan_dir}:\n")
-            _display_mcp_list(mcp_files, tracked)
-            print()
-            try:
-                raw = input(f"Enter file number (1-{len(mcp_files)}, or q to quit): ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print("\nAborted.")
-                sys.exit(0)
-            if raw.lower() == "q":
-                print("Aborted.")
-                return
-            try:
-                idx = int(raw) - 1
-                if not 0 <= idx < len(mcp_files):
-                    raise ValueError
-            except ValueError:
-                print("Invalid selection.")
-                sys.exit(1)
-            selected_file, all_servers = mcp_files[idx]
-        # Stage 2 — pick server(s) from the file
-        print(f"\nServers in {selected_file.name}:\n")
-        selected_servers = _prompt_server_selection(all_servers)
-        if selected_servers is None:
-            return
-        print()
-        _merge_mcp_to_user_scope(selected_servers)
-        _state_add_mcp(selected_file)
-        print("  Restart Claude Code for the changes to take effect.")
-
-    elif action == "uninstall":
-        if not tracked:
-            print("No MCP files currently installed — nothing to uninstall.")
-            return
-        # Build list of installed files with their server dicts
-        installed: list[tuple[Path, dict]] = []
-        for path_str in sorted(tracked):
-            p = Path(path_str)
-            if not p.exists():
-                installed.append((p, {}))
-                continue
-            try:
-                data = load_json(p)
-                installed.append((p, data.get("mcpServers", {})))
-            except (json.JSONDecodeError, OSError):
-                installed.append((p, {}))
-        # Stage 1 — pick a file
-        if len(installed) == 1:
-            selected_file, all_servers = installed[0]
-            print(f"{selected_file.name}\n")
-            for name in all_servers:
-                print(f"  \033[2m•\033[0m {name}")
-        else:
-            print("Installed MCP files:\n")
-            _display_mcp_list(installed, tracked)
-            print()
-            try:
-                raw = input(f"Enter file number (1-{len(installed)}, or q to quit): ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print("\nAborted.")
-                sys.exit(0)
-            if raw.lower() == "q":
-                print("Aborted.")
-                return
-            try:
-                idx = int(raw) - 1
-                if not 0 <= idx < len(installed):
-                    raise ValueError
-            except ValueError:
-                print("Invalid selection.")
-                sys.exit(1)
-            selected_file, all_servers = installed[idx]
-        if not all_servers:
-            _cprint(f"  [!!] Cannot read servers from {selected_file} — removing from tracking.")
-            _state_remove_mcp(selected_file)
-            return
-        # Stage 2 — pick server(s) to remove
-        print(f"\nServers in {selected_file.name}:\n")
-        selected_servers = _prompt_server_selection(all_servers, action="uninstall")
-        if selected_servers is None:
-            return
-        print()
-        _remove_mcp_from_user_scope(selected_servers)
-        # Remove file from state only if all its servers were uninstalled
-        if set(selected_servers.keys()) >= set(all_servers.keys()):
-            _state_remove_mcp(selected_file)
-        print("  Restart Claude Code for the changes to take effect.")
-
-    elif action == "sync":
-        sync_user_mcp()
-
-    elif action == "add":
-        if mcp_path is None:
-            print("Usage: agentihooks mcp add <path>")
-            sys.exit(1)
-        manage_user_mcp(mcp_path)
-        print("\nRestart Claude Code for the changes to take effect.")
-
-    else:
-        print(f"Unknown action: {action}")
-        print("Usage: agentihooks mcp [list|install|uninstall|sync|add]")
-        sys.exit(1)
 
 
 def cmd_ignore(target_dir: Path, *, force: bool = False) -> None:
@@ -5614,9 +5493,13 @@ def main() -> None:
     extract_p.add_argument("--source", default=None, help="Path to CLAUDE.md (default: ~/.claude/CLAUDE.md)")
     extract_p.add_argument("--output-dir", default=None, help="Output directory (default: source's .claude/commands/)")
 
-    mcp_p = sub.add_parser("mcp", help="MCP surface area analysis")
-    mcp_p.add_argument("mcp_action", choices=["report"], help="Action to perform")
-    mcp_p.add_argument("--project", default=None, help="Project path to include (default: CWD)")
+    mcp_p = sub.add_parser("mcp", help="MCP surface area analysis and hooks-utils daemon lifecycle")
+    mcp_p.add_argument(
+        "mcp_action",
+        choices=["report", "start", "stop", "restart", "status"],
+        help="report = surface-area analysis; start/stop/restart/status = hooks-utils daemon",
+    )
+    mcp_p.add_argument("--project", default=None, help="Project path to include (report only, default: CWD)")
 
     sub.add_parser("status", help="Show installation health, cost guardrails, and system state")
 
@@ -5921,10 +5804,15 @@ notes:
             sys.exit(1)
     elif args.command == "mcp":
         sys.path.insert(0, str(AGENTIHOOKS_ROOT))
-        from scripts.mcp_reporter import generate_report, load_all_mcp_configs
+        if args.mcp_action == "report":
+            from scripts.mcp_reporter import generate_report, load_all_mcp_configs
 
-        servers = load_all_mcp_configs(args.project)
-        print(generate_report(servers))
+            servers = load_all_mcp_configs(args.project)
+            print(generate_report(servers))
+        else:
+            from scripts import mcp_daemon
+
+            sys.exit(mcp_daemon.main(args.mcp_action, str(_resolve_hooks_python()), str(AGENTIHOOKS_ROOT)))
     elif args.command == "status":
         sys.path.insert(0, str(AGENTIHOOKS_ROOT))
         from scripts.status_checker import format_cli, run_all_checks

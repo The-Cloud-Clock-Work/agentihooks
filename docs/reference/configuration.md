@@ -52,6 +52,7 @@ load time. See [MCP Transport](../hooks/mcp-transport.md) for the full setup.
 | `MCP_TRANSPORT` | `stdio` | `stdio`, `sse`, or `streamable-http`. An unrecognised value warns on stderr and falls back to `stdio`. |
 | `MCP_HOST` | `localhost` | Bind address for network transports, and the host written into the `~/.claude.json` url. The loopback bind is the only access boundary -- neither transport carries authentication. Spelled `localhost` rather than `127.0.0.1` deliberately: an enterprise policy was observed dropping a dotted-quad entry from the client's configured-server set outright. See [MCP Transport]({{ site.baseurl }}/hooks/mcp-transport/). |
 | `MCP_SCHEME` | `http` | Scheme in the `~/.claude.json` url. The daemon serves plaintext, which is correct for a loopback bind; set `https` only when a TLS reverse proxy fronts it. |
+| `AGENTIHOOKS_MCP_SUPERVISOR` | `auto` | Daemon supervisor: `systemd` where a user bus exists, `pidfile` otherwise. Force either to exercise both paths on one machine; an unrecognised value warns on stderr and falls back to detection. Drive the daemon with `agentihooks mcp start\|stop\|restart\|status`. |
 | `MCP_PORT` | `8642` | Bind port for network transports. |
 | `MCP_SSE_PATH` | `/sse` | Event-stream path under `sse`. |
 | `MCP_STREAMABLE_HTTP_PATH` | `/mcp` | Endpoint path under `streamable-http`. |
