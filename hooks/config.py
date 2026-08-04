@@ -204,19 +204,17 @@ BASE_CHANNELS: tuple[str, ...] = _parse_channel_list(os.getenv("AGENTIHOOKS_BASE
 AMYGDALA_ENABLED = _env_bool("AMYGDALA_ENABLED", "false")
 AMYGDALA_SIGNAL_PATH = os.getenv("AMYGDALA_SIGNAL_PATH", "")
 
-# Brain Writer — write-back path from agent markers to vault + event bus
+# Brain Writer — write-back path from agent markers to brain-api. Markers POST
+# to {BRAIN_URL}/marker; the outbox is a local buffer that drains over HTTP
+# once brain-api is reachable again.
 BRAIN_WRITER_ENABLED = _env_bool("BRAIN_WRITER_ENABLED", "false")
 BRAIN_WRITER_OUTBOX = os.getenv("BRAIN_WRITER_OUTBOX", str(Path(AGENTIHOOKS_HOME) / "brain-outbox"))
-BRAIN_WRITER_VAULT_SSH = os.getenv("BRAIN_WRITER_VAULT_SSH", "")
-BRAIN_WRITER_VAULT_PATH = os.getenv("BRAIN_WRITER_VAULT_PATH", "/mnt/user/appdata/obsidian/vault")
-BRAIN_WRITER_SSH_KEY = os.getenv("BRAIN_WRITER_SSH_KEY", str(Path.home() / ".ssh" / "anton_id_ed25519"))
-BRAIN_WRITER_REDIS_URL = os.getenv("BRAIN_WRITER_REDIS_URL", "")
 BRAIN_WRITER_MAX_MARKERS = int(os.getenv("BRAIN_WRITER_MAX_MARKERS", "5"))
 
-# Brain HTTP — kernel kb-router client (Phase 7). When BRAIN_URL is set, the
-# brain hooks call the kernel instead of reading/writing the filesystem. With
-# BRAIN_URL unset, hooks fall back to the legacy filesystem + SSH paths above,
-# preserving local/offline operation.
+# Brain HTTP — brain-api client. When BRAIN_URL is set, the brain hooks call
+# the kernel over HTTP (e.g. http://127.0.0.1:8103 for a local agentibrain
+# compose stack). With BRAIN_URL unset, the writer buffers to the outbox and
+# the reader falls back to the local brain-feed files.
 BRAIN_URL = os.getenv("BRAIN_URL", "").rstrip("/")
 BRAIN_HTTP_TOKEN = os.getenv("BRAIN_HTTP_TOKEN", "") or os.getenv("KB_ROUTER_TOKEN", "")
 BRAIN_HTTP_TIMEOUT = float(os.getenv("BRAIN_HTTP_TIMEOUT", "3"))
