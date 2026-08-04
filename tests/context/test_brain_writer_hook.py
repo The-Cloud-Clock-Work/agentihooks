@@ -8,7 +8,6 @@ idempotency-key parity between a live POST and its outbox replay.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -30,9 +29,7 @@ def http_ok(monkeypatch):
     monkeypatch.setattr(
         brain_http,
         "post",
-        lambda path, body=None, idempotency_key=None: (
-            calls.append((body, idempotency_key)) or {"ok": True}
-        ),
+        lambda path, body=None, idempotency_key=None: calls.append((body, idempotency_key)) or {"ok": True},
     )
     return calls
 
