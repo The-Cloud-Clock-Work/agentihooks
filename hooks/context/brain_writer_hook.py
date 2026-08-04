@@ -1,9 +1,11 @@
 """Brain writer hook — scans session transcript for brain markers, routes them.
 
 Called from on_stop() in hook_manager.py. Reads the full session transcript,
-extracts assistant response text, parses HTML comment markers, then routes:
-  - lesson, decision  → local outbox (staged for vault write via rsync)
-  - milestone, signal → local outbox + Redis XADD to anton:events:brain
+extracts assistant response text, parses HTML comment markers, then POSTs
+each marker to brain-api (``{BRAIN_URL}/marker``). Markers that cannot be
+POSTed (brain-api down, BRAIN_URL unset) buffer in the local outbox and are
+retried over HTTP on the next run, so the buffer self-empties once brain-api
+is reachable again.
 
 Outbox format: ~/.agentihooks/brain-outbox/<timestamp>-<type>-<uuid>.json
 """
@@ -13,12 +15,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from hooks.common import log
 
@@ -116,70 +116,34 @@ def _write_to_outbox(markers: list[dict], session_id: str, outbox_dir: str) -> i
     return count
 
 
-# ── Redis publish ────────────────────────────────────────────────────
+# ── HTTP publish ─────────────────────────────────────────────────────
 
 
-def _publish_to_redis(markers: list[dict], redis_url: str, ssh_key: str) -> int:
-    """Publish milestone/signal markers to Redis event bus via SSH + redis-cli."""
-    if not redis_url:
-        return 0
+def _marker_request(marker: dict, session_id: str) -> tuple[dict, str]:
+    """Build the /marker POST body + idempotency key for one marker.
 
-    # Only milestone and signal go to Redis
-    publishable = [m for m in markers if m["type"] in ("milestone", "signal")]
-    if not publishable:
-        return 0
+    The key hashes session_id + type + content, so a marker replayed from the
+    outbox dedupes server-side against its original (possibly partial) POST.
+    """
+    attrs = dict(marker.get("attrs") or {})
+    attrs.setdefault("session_id", session_id)
+    attrs.setdefault("source", attrs.get("source") or os.getenv("AGENTICORE_AGENT_NAME", "agent"))
 
-    # Parse Redis URL
-    parsed = urlparse(redis_url)
-    host = parsed.hostname or "10.10.30.130"
-    password = parsed.password or ""
-    db = parsed.path.lstrip("/") or "11"
-
-    count = 0
-    for marker in publishable:
-        severity = marker["attrs"].get("severity", "info")
-        source = marker["attrs"].get("source", "brain-writer")
-        scope = marker["attrs"].get("scope", "")
-        priority = "urgent" if severity == "nuclear" else "high" if severity == "critical" else "default"
-
-        # Build XADD command
-        fields = (
-            f"event brain.{marker['type']} "
-            f"title '{marker['content'][:80].replace(chr(39), '')}' "
-            f"message '{marker['content'][:500].replace(chr(39), '')}' "
-            f"source {source} "
-            f"priority {priority} "
-            f"severity {severity} "
-            f"scope {scope} "
-            f"ts {int(datetime.now(timezone.utc).timestamp())}"
-        )
-        cmd = f"docker exec dataplane_redis redis-cli -a {password} -n {db} XADD anton:events:brain '*' {fields}"
-
-        try:
-            result = subprocess.run(
-                ["ssh", "-i", ssh_key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=3", f"root@{host}", cmd],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode == 0:
-                count += 1
-            else:
-                log("brain_writer: redis publish failed", {"error": result.stderr[:200]})
-        except Exception as e:
-            log("brain_writer: redis publish error", {"error": str(e)})
-
-    return count
-
-
-# ── HTTP publish (Phase 7) ───────────────────────────────────────────
+    body = {
+        "type": marker["type"],
+        "content": marker["content"][:4096],
+        "attrs": attrs,
+    }
+    key_src = f"{session_id}-{marker['type']}-{marker['content']}"
+    idem = uuid.uuid5(uuid.NAMESPACE_URL, key_src).hex[:32]
+    return body, idem
 
 
 def _publish_to_http(markers: list[dict], session_id: str) -> tuple[int, list[dict]]:
-    """POST each marker to kernel kb-router /marker.
+    """POST each marker to brain-api /marker.
 
-    Returns (success_count, failed_markers). Failed markers fall through to
-    the Redis + SSH outbox path so nothing is lost on transient HTTP failure.
+    Returns (success_count, failed_markers). Failed markers buffer in the
+    outbox so nothing is lost on transient HTTP failure.
     """
     from hooks._brain_http import brain_http_enabled, post
 
@@ -189,19 +153,7 @@ def _publish_to_http(markers: list[dict], session_id: str) -> tuple[int, list[di
     success = 0
     failed: list[dict] = []
     for marker in markers:
-        attrs = dict(marker.get("attrs") or {})
-        attrs.setdefault("session_id", session_id)
-        attrs.setdefault("source", attrs.get("source") or os.getenv("AGENTICORE_AGENT_NAME", "agent"))
-
-        body = {
-            "type": marker["type"],
-            "content": marker["content"][:4096],
-            "attrs": attrs,
-        }
-        # Per-marker idempotency: hash of session_id + content gives a stable key.
-        key_src = f"{session_id}-{marker['type']}-{marker['content']}"
-        idem = uuid.uuid5(uuid.NAMESPACE_URL, key_src).hex[:32]
-
+        body, idem = _marker_request(marker, session_id)
         response = post("/marker", body=body, idempotency_key=idem)
         if response and response.get("ok"):
             success += 1
@@ -210,11 +162,59 @@ def _publish_to_http(markers: list[dict], session_id: str) -> tuple[int, list[di
     return success, failed
 
 
+def _drain_outbox(outbox_dir: str) -> int:
+    """Re-POST buffered markers; delete each file once brain-api accepts it.
+
+    Stops at the first refused POST — brain-api is evidently still down, and
+    the remaining files get their retry on the next run. Unparseable files are
+    quarantined with a .bad suffix so they cannot wedge the queue.
+    """
+    from hooks._brain_http import brain_http_enabled, post
+
+    if not brain_http_enabled():
+        return 0
+    outbox = Path(outbox_dir)
+    if not outbox.is_dir():
+        return 0
+
+    drained = 0
+    for f in sorted(outbox.glob("*.json")):
+        try:
+            payload = json.loads(f.read_text())
+            marker = {
+                "type": payload["type"],
+                "content": payload["content"],
+                "attrs": payload.get("attrs") or {},
+            }
+        except (OSError, KeyError, TypeError, json.JSONDecodeError):
+            try:
+                f.rename(f.with_name(f.name + ".bad"))
+                log("brain_writer: quarantined unparseable outbox file", {"file": f.name})
+            except OSError:
+                pass  # vanished mid-quarantine — a concurrent drain got it
+            continue
+
+        body, idem = _marker_request(marker, payload.get("session_id", ""))
+        response = post("/marker", body=body, idempotency_key=idem)
+        if not (response and response.get("ok")):
+            break
+        # The outbox may be shared (Stop + SubagentStop, concurrent sessions,
+        # fleet AGENTIHOOKS_HOME on EFS). A concurrent drain that already
+        # unlinked this file made the same idempotent POST — same outcome, and
+        # a crash here would abort the caller before its own new markers ship.
+        try:
+            f.unlink()
+        except FileNotFoundError:
+            pass
+        drained += 1
+    return drained
+
+
 # ── Main entry point ─────────────────────────────────────────────────
 
 
 def write_markers(session_id: str, transcript_path: str, last_message: str = "") -> dict:
-    """Scan transcript for brain markers, write to outbox, publish to Redis.
+    """Scan transcript for brain markers, POST to brain-api, buffer failures.
 
     Args:
         last_message: The last assistant message from the Stop payload.
@@ -225,8 +225,6 @@ def write_markers(session_id: str, transcript_path: str, last_message: str = "")
         BRAIN_WRITER_ENABLED,
         BRAIN_WRITER_MAX_MARKERS,
         BRAIN_WRITER_OUTBOX,
-        BRAIN_WRITER_REDIS_URL,
-        BRAIN_WRITER_SSH_KEY,
     )
 
     if not BRAIN_WRITER_ENABLED:
@@ -242,28 +240,30 @@ def write_markers(session_id: str, transcript_path: str, last_message: str = "")
             "source": "transcript" if transcript_path else "last_message",
         },
     ) as span:
+        # Retry markers buffered by earlier runs before touching new ones —
+        # the outbox self-empties the moment brain-api is reachable again.
+        drained = _drain_outbox(BRAIN_WRITER_OUTBOX)
+
         markers = _parse_transcript_for_markers(transcript_path, BRAIN_WRITER_MAX_MARKERS)
 
         # Fallback: if transcript had no markers but last_message does, parse that
         if not markers and last_message:
             markers = _find_markers(last_message)[:BRAIN_WRITER_MAX_MARKERS]
         if not markers:
-            span.set_attrs({"markers_found": 0})
-            return {"markers": 0}
+            span.set_attrs({"markers_found": 0, "outbox_drained": drained})
+            return {"markers": 0, "drained": drained}
 
-        # HTTP path first — any marker we fail to POST falls through to the
-        # legacy outbox/Redis buffer so nothing is dropped.
+        # HTTP is the only transport — any marker we fail to POST buffers in
+        # the outbox for the retry-drain above.
         http_count, pending = _publish_to_http(markers, session_id)
-
         outbox_count = _write_to_outbox(pending, session_id, BRAIN_WRITER_OUTBOX) if pending else 0
-        redis_count = _publish_to_redis(pending, BRAIN_WRITER_REDIS_URL, BRAIN_WRITER_SSH_KEY) if pending else 0
 
         span.set_attrs(
             {
                 "markers_found": len(markers),
                 "http_count": http_count,
                 "outbox_count": outbox_count,
-                "redis_count": redis_count,
+                "outbox_drained": drained,
                 "marker_types": ",".join(m["type"] for m in markers),
             }
         )
@@ -271,6 +271,6 @@ def write_markers(session_id: str, transcript_path: str, last_message: str = "")
             "markers": len(markers),
             "http": http_count,
             "outbox": outbox_count,
-            "redis": redis_count,
+            "drained": drained,
             "types": [m["type"] for m in markers],
         }

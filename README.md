@@ -338,7 +338,7 @@ To wire a Claude Code session into a brain stack you already deployed
 following four lines into `~/.agentihooks/.env`:
 
 ```bash
-BRAIN_URL=http://<your-kb-router-host>:<port>
+BRAIN_URL=http://<your-brain-api-host>:<port>   # local compose: http://127.0.0.1:8103
 BRAIN_HTTP_TOKEN=<KB_ROUTER_TOKEN from your bootstrap>
 BRAIN_ENABLED=true
 AMYGDALA_ENABLED=true
