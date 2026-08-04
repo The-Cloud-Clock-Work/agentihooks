@@ -38,6 +38,13 @@ agentihooks init [--bundle <path>] [--profile <name>]
 9. Installs the `agentihooks` CLI globally via `uv tool install --editable .`
 10. Writes managed bashrc block (`agentienv` function + `agenti` alias)
 
+Step 8 has one extra behaviour when `MCP_TRANSPORT` names a network transport:
+it renders the systemd unit and **starts the hooks-utils daemon**, restarting it
+unconditionally. Reverting to `stdio` stops the daemon and removes the unit, so a
+downgrade cannot leave a process serving a port nothing points at. See
+[`agentihooks mcp`](#agentihooks-mcp) and
+[MCP Transport]({{ site.baseurl }}/hooks/mcp-transport/).
+
 > Per-repo init (`--repo` / `--local` / `.agentihooks.json`) was removed
 > 2026-05-07. `agentihooks init` is global-only.
 
@@ -59,6 +66,8 @@ agentihooks init [--bundle <path>] [--profile <name>]
 | `CLAUDE_CODE_HOME_DIR` | Home-directory root override -- `.claude` is appended automatically (default: `$HOME`) |
 | `AGENTIHOOKS_CLAUDE_HOME` | Legacy: direct path to the `.claude` directory (default: `~/.claude`) |
 | `AGENTIHOOKS_HOME` | Override the agentihooks state directory (default: `~/.agentihooks`). Used for per-pod isolation on shared filesystems — set to `/shared/.agentihooks-<pod-name>` so each pod gets its own state without racing on `state.json`. |
+| `AGENTIHOOKS_MCP_TRANSPORT` | One-off override of `MCP_TRANSPORT` for a single `init`, without editing `.env`. |
+| `AGENTIHOOKS_MCP_SUPERVISOR` | `auto` (default), `systemd`, or `pidfile`. Forces the daemon backend instead of probing for a systemd user bus. |
 
 ### Examples
 
@@ -310,6 +319,62 @@ Alive sessions appear first (longest-running on top), followed by closed, dead, 
 
 ---
 
+## `agentihooks mcp`
+
+Two unrelated jobs behind one word: a surface-area report, and the hooks-utils
+daemon's lifecycle.
+
+```bash
+agentihooks mcp report [--project PATH]   # tool/token surface across every configured server
+agentihooks mcp status                    # daemon: configured vs. actually running
+agentihooks mcp start
+agentihooks mcp restart
+agentihooks mcp stop
+```
+
+### The daemon subcommands
+
+These do nothing under stdio, which is the default — Claude Code spawns
+hooks-utils per session and there is no daemon. They exist for the network
+transports; see [MCP Transport]({{ site.baseurl }}/hooks/mcp-transport/).
+
+`agentihooks init` starts the daemon itself, so `start` is only needed after a
+reboot on a machine with no systemd user session, where the fallback backend has
+no supervisor behind it.
+
+### `status` and its exit codes
+
+`status` is the one worth knowing. It prints the configured transport and
+endpoint, what `~/.claude.json` declares, which supervisor is in play, whether
+the process is up, whether the port answers, and names every mismatch between
+them.
+
+| Exit | Meaning |
+|------|---------|
+| `0` | running, and matching config |
+| `1` | stopped |
+| `2` | running, but diverged from config |
+
+The divergence case is why this exists. A daemon started before a config change
+keeps serving the old transport or port while `~/.claude.json` names the new one,
+and nothing else reports it — the only symptom is tools that quietly fail to
+appear.
+
+### Supervisors
+
+| Backend | Chosen when | Survives reboot |
+|---------|-------------|-----------------|
+| `systemd` | `systemctl --user` reaches a user bus | yes |
+| `pidfile` | everything else — WSL2 without `systemd=true`, containers, macOS | no |
+
+`AGENTIHOOKS_MCP_SUPERVISOR=systemd\|pidfile` forces one. An unrecognised value
+warns on stderr and falls back to detection.
+
+The pidfile backend records `~/.agentihooks/mcp-daemon.pid` and logs to
+`~/.agentihooks/logs/mcp-daemon.log`, rolled to `.log.1` past 5 MB.
+
+---
+
 ## `agentihooks uninstall`
 
 Remove everything agentihooks installed from the system.
@@ -324,6 +389,7 @@ agentihooks uninstall [--yes]
 - Skills, agents, commands, and rules symlinks in `~/.claude/` -- if they target the agentihooks repo
 - `~/.claude/CLAUDE.md` -- if it points into `profiles/`
 - MCP servers in `~/.claude.json` -- from profile `.mcp.json` files and `state.json`
+- The hooks-utils daemon -- stopped under both backends, and its systemd unit removed. Uninstall verifies afterwards and warns if a process survived, since an orphaned daemon with the CLI gone has nothing left to manage it
 - Bashrc block -- the `agentienv` function and `agenti` alias are removed from `~/.bashrc`
 - `agentihooks` CLI -- via `uv tool uninstall agentihooks`
 
