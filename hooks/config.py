@@ -10,19 +10,39 @@ from pathlib import Path
 _FILE_OWNED_KEYS: set[str] = set()
 
 
-def _parse_env_file(env_file: Path, *, override_file_owned: bool = False) -> None:
+def _parse_env_file(
+    env_file: Path,
+    *,
+    override_file_owned: bool = False,
+    pass_keys: set[str] | None = None,
+) -> None:
     """Parse a single .env file and set variables in os.environ.
 
-    Process env takes precedence — only unset keys get populated from the
-    file. Otherwise a stale PVC-persisted .env silently masks Helm env
-    changes.
+    Precedence, highest first:
 
-    override_file_owned re-applies values for keys this loader itself set on a
-    previous pass, so a long-lived process (the hooks-utils MCP server) can
-    pick up an edited .env instead of reporting whatever was true at import.
+      1. the surrounding process env — a stale PVC-persisted .env must never
+         mask a Helm env change, which is the whole reason files do not simply
+         overwrite;
+      2. a later file in the same load pass;
+      3. an earlier file in the same load pass.
+
+    ``pass_keys`` carries rule 2: it is the set of keys the current pass has
+    already written, and a key in it may be rewritten by a later file. Without
+    it every file after the first to define a key was skipped, so the loader
+    was first-file-wins while its own docstring promised the opposite.
+
+    ``override_file_owned`` re-applies values for keys this loader set on a
+    previous pass, so a long-lived process (the hooks-utils MCP server) picks
+    up an edited .env instead of reporting whatever was true at import.
     """
     if not env_file.is_file():
         return
+    if pass_keys is None:
+        pass_keys = set()
+    # Keys written by THIS file. Within one file the first definition wins —
+    # scripts/mcp_daemon.py's scanner resolves duplicates the same way and the
+    # two are asserted to agree, so "later wins" applies between files only.
+    this_file: set[str] = set()
     for _raw in env_file.read_text(encoding="utf-8").splitlines():
         _line = _raw.strip()
         if not _line or _line.startswith("#"):
@@ -45,11 +65,21 @@ def _parse_env_file(env_file: Path, *, override_file_owned: bool = False) -> Non
             _val = _val[: _val.index("#")].rstrip()
         if not _key:
             continue
-        if _key not in os.environ:
+        if _key in this_file:
+            continue  # first definition within a file wins
+        if _key in pass_keys:
+            # An earlier file in this pass set it; a later file overrides.
+            os.environ[_key] = _val
+            this_file.add(_key)
+        elif _key not in os.environ:
             os.environ[_key] = _val
             _FILE_OWNED_KEYS.add(_key)
+            pass_keys.add(_key)
+            this_file.add(_key)
         elif override_file_owned and _key in _FILE_OWNED_KEYS:
             os.environ[_key] = _val
+            pass_keys.add(_key)
+            this_file.add(_key)
 
 
 def _load_user_env(*, override_file_owned: bool = False) -> None:
@@ -66,15 +96,19 @@ def _load_user_env(*, override_file_owned: bool = False) -> None:
     """
     _home = Path(os.environ.get("AGENTIHOOKS_HOME", str(Path.home() / ".agentihooks")))
 
+    # Shared across every file in this pass so a later file can override an
+    # earlier one without any file overriding the process env.
+    _pass_keys: set[str] = set()
+
     # 1. Main .env first
-    _parse_env_file(_home / ".env", override_file_owned=override_file_owned)
+    _parse_env_file(_home / ".env", override_file_owned=override_file_owned, pass_keys=_pass_keys)
 
     # 2. Additional *.env files (sorted, skip the main .env to avoid double-load)
     if _home.is_dir():
         for _extra in sorted(_home.glob("*.env")):
             if _extra.name == ".env":
                 continue
-            _parse_env_file(_extra, override_file_owned=override_file_owned)
+            _parse_env_file(_extra, override_file_owned=override_file_owned, pass_keys=_pass_keys)
 
 
 def _env_files_fingerprint() -> tuple:
