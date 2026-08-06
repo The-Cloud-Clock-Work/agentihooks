@@ -505,6 +505,15 @@ def force_refresh() -> bool:
     """Force re-read source and republish if changed. Returns True if published."""
     global _content_hash
 
+    # Same reason as get_status: a long-lived caller must not republish from a
+    # source the operator repointed away from.
+    try:
+        from hooks.config import reload_brain_env
+
+        reload_brain_env()
+    except Exception:  # noqa: BLE001 - a reload hiccup must not block a refresh
+        pass
+
     # Hook runs in fresh Python process every prompt — module-level
     # _content_hash starts empty. Hydrate it from persisted file so we can
     # dedup across process boundaries. Without this, every prompt re-publishes
@@ -560,7 +569,21 @@ def inject_on_session_start() -> bool:
 
 
 def get_status() -> dict:
-    """Return current brain adapter state."""
+    """Return current brain adapter state.
+
+    Re-reads the .env files first. In a hook this is a no-op — the process was
+    born moments ago. In the long-lived hooks-utils MCP server it is the
+    difference between reporting the live configuration and reporting whatever
+    was true when the server started, which is how a repointed brain goes
+    unnoticed.
+    """
+    try:
+        from hooks.config import reload_brain_env
+
+        reload_brain_env()
+    except Exception:  # noqa: BLE001 - status must never fail on a reload hiccup
+        pass
+
     try:
         from hooks.config import (
             BRAIN_CHANNEL,
@@ -568,6 +591,7 @@ def get_status() -> dict:
             BRAIN_REFRESH_INTERVAL,
             BRAIN_SOURCE_PATH,
             BRAIN_SOURCE_TYPE,
+            BRAIN_URL,
         )
     except ImportError:
         return {"enabled": False, "error": "config not loaded"}
@@ -580,8 +604,13 @@ def get_status() -> dict:
         except Exception:
             pass
 
+    # source_type/source_path describe the file fallback; when BRAIN_URL is set
+    # the adapter is on HTTP and those two are not what it reads. Report the
+    # class actually in use so the two can never silently disagree.
     return {
         "enabled": BRAIN_ENABLED,
+        "active_source": type(source).__name__ if source else None,
+        "brain_url": BRAIN_URL,
         "source_type": BRAIN_SOURCE_TYPE,
         "source_path": str(BRAIN_SOURCE_PATH),
         "channel": BRAIN_CHANNEL,

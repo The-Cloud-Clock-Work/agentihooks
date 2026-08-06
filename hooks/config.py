@@ -4,12 +4,23 @@ import os
 from pathlib import Path
 
 
-def _parse_env_file(env_file: Path) -> None:
+# Keys whose current os.environ value came from an .env file rather than the
+# surrounding process. Only these may be refreshed by reload_user_env() — a
+# value the shell or Helm set stays authoritative, which is the whole point of
+# the setdefault below.
+_FILE_OWNED_KEYS: set[str] = set()
+
+
+def _parse_env_file(env_file: Path, *, override_file_owned: bool = False) -> None:
     """Parse a single .env file and set variables in os.environ.
 
     Process env takes precedence — only unset keys get populated from the
     file. Otherwise a stale PVC-persisted .env silently masks Helm env
     changes.
+
+    override_file_owned re-applies values for keys this loader itself set on a
+    previous pass, so a long-lived process (the hooks-utils MCP server) can
+    pick up an edited .env instead of reporting whatever was true at import.
     """
     if not env_file.is_file():
         return
@@ -33,11 +44,16 @@ def _parse_env_file(env_file: Path) -> None:
         elif "#" in _val:
             # Strip inline comment: KEY=value # comment
             _val = _val[: _val.index("#")].rstrip()
-        if _key:
-            os.environ.setdefault(_key, _val)
+        if not _key:
+            continue
+        if _key not in os.environ:
+            os.environ[_key] = _val
+            _FILE_OWNED_KEYS.add(_key)
+        elif override_file_owned and _key in _FILE_OWNED_KEYS:
+            os.environ[_key] = _val
 
 
-def _load_user_env() -> None:
+def _load_user_env(*, override_file_owned: bool = False) -> None:
     """Load all .env files from ~/.agentihooks/ into os.environ.
 
     Called once at module import time. AGENTIHOOKS_HOME is resolved from
@@ -52,17 +68,58 @@ def _load_user_env() -> None:
     _home = Path(os.environ.get("AGENTIHOOKS_HOME", str(Path.home() / ".agentihooks")))
 
     # 1. Main .env first
-    _parse_env_file(_home / ".env")
+    _parse_env_file(_home / ".env", override_file_owned=override_file_owned)
 
     # 2. Additional *.env files (sorted, skip the main .env to avoid double-load)
     if _home.is_dir():
         for _extra in sorted(_home.glob("*.env")):
             if _extra.name == ".env":
                 continue
-            _parse_env_file(_extra)
+            _parse_env_file(_extra, override_file_owned=override_file_owned)
 
 
 _load_user_env()
+
+
+def reload_brain_env() -> dict:
+    """Re-read the .env files and re-bind the brain/amygdala module globals.
+
+    Hooks are short-lived processes and always see current config. The
+    hooks-utils MCP server is not — it imports this module once and then
+    answers brain_status/brain_refresh from constants frozen at startup, so an
+    edited .env leaves it confidently reporting a source it is no longer
+    supposed to use.
+
+    Only keys this loader owns are refreshed; anything the shell or Helm set
+    stays authoritative. Returns the re-resolved brain values.
+    """
+    global BRAIN_ENABLED, BRAIN_SOURCE_TYPE, BRAIN_SOURCE_PATH, BRAIN_CHANNEL
+    global BRAIN_REFRESH_INTERVAL, BRAIN_URL, BRAIN_HTTP_TOKEN, BRAIN_HTTP_TIMEOUT
+    global AMYGDALA_ENABLED, AMYGDALA_SIGNAL_PATH
+
+    _load_user_env(override_file_owned=True)
+
+    _feed_dir = Path(AGENTIHOOKS_HOME) / "brain-feed"
+    _default = "true" if (_feed_dir.is_dir() and any(_feed_dir.glob("*.md"))) else "false"
+    BRAIN_ENABLED = _env_bool("BRAIN_ENABLED", _default)
+    BRAIN_SOURCE_TYPE = os.getenv("BRAIN_SOURCE_TYPE", "file")
+    BRAIN_SOURCE_PATH = os.getenv("BRAIN_SOURCE_PATH", str(_feed_dir))
+    BRAIN_CHANNEL = os.getenv("BRAIN_CHANNEL", "brain")
+    BRAIN_REFRESH_INTERVAL = int(os.getenv("BRAIN_REFRESH_INTERVAL", "30"))
+    BRAIN_URL = os.getenv("BRAIN_URL", "").rstrip("/")
+    BRAIN_HTTP_TOKEN = os.getenv("BRAIN_HTTP_TOKEN", "") or os.getenv("KB_ROUTER_TOKEN", "")
+    BRAIN_HTTP_TIMEOUT = float(os.getenv("BRAIN_HTTP_TIMEOUT", "3"))
+    AMYGDALA_ENABLED = _env_bool("AMYGDALA_ENABLED", "false")
+    AMYGDALA_SIGNAL_PATH = os.getenv("AMYGDALA_SIGNAL_PATH", "")
+
+    return {
+        "brain_enabled": BRAIN_ENABLED,
+        "brain_url": BRAIN_URL,
+        "brain_source_type": BRAIN_SOURCE_TYPE,
+        "brain_source_path": BRAIN_SOURCE_PATH,
+        "amygdala_enabled": AMYGDALA_ENABLED,
+        "amygdala_signal_path": AMYGDALA_SIGNAL_PATH,
+    }
 
 # =============================================================================
 # RUNTIME DATA ROOT
