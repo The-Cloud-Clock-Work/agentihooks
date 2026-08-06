@@ -29,7 +29,7 @@ def http_ok(monkeypatch):
     monkeypatch.setattr(
         brain_http,
         "post",
-        lambda path, body=None, idempotency_key=None: calls.append((body, idempotency_key)) or {"ok": True},
+        lambda path, body=None, idempotency_key=None, **kw: calls.append((body, idempotency_key)) or {"ok": True},
     )
     return calls
 
@@ -51,7 +51,7 @@ def test_drain_survives_file_vanishing_after_post(tmp_path, monkeypatch):
     """A concurrent drain unlinking the file first must not raise."""
     _write_to_outbox([MARKER], "sess-1", str(tmp_path))
 
-    def post_and_steal(path, body=None, idempotency_key=None):
+    def post_and_steal(path, body=None, idempotency_key=None, **kw):
         for f in tmp_path.glob("*.json"):
             f.unlink()
         return {"ok": True}
@@ -141,3 +141,55 @@ def test_drain_backlog_only_no_outbox_dir(tmp_path, http_ok):
     (backlog / "one.json").write_text(json.dumps({"type": "lesson", "content": "orphan", "session_id": "s"}))
     assert _drain_outbox(str(outbox)) == 1
     assert not list(backlog.glob("*.json"))
+
+
+def test_drain_quarantines_poison_pill_and_continues(tmp_path, monkeypatch):
+    """One server-rejected (400) marker must not wedge files sorted after it."""
+    monkeypatch.setattr(brain_http, "brain_http_enabled", lambda: True)
+
+    def post(path, body=None, idempotency_key=None, **kw):
+        if "poison" in body["content"]:
+            return {"__http_status__": 400}
+        return {"ok": True}
+
+    monkeypatch.setattr(brain_http, "post", post)
+    _write_to_outbox([{"type": "lesson", "content": "AAA poison", "attrs": {}}], "s", str(tmp_path))
+    files = sorted(tmp_path.glob("*.json"))
+    files[0].rename(tmp_path / "00000000T000000-lesson-aaaaaaaa.json")  # sorts first
+    _write_to_outbox([{"type": "lesson", "content": "good marker", "attrs": {}}], "s", str(tmp_path))
+
+    assert _drain_outbox(str(tmp_path)) == 1
+    assert not list(tmp_path.glob("*.json"))
+    assert len(list(tmp_path.glob("*.bad"))) == 1
+
+
+def test_drain_stops_without_quarantine_on_credential_error(tmp_path, monkeypatch):
+    """401 (stale token) must leave every file intact for the next run."""
+    monkeypatch.setattr(brain_http, "brain_http_enabled", lambda: True)
+    monkeypatch.setattr(
+        brain_http, "post", lambda path, body=None, idempotency_key=None, **kw: {"__http_status__": 401}
+    )
+    _write_to_outbox([MARKER, MARKER], "s", str(tmp_path))
+    assert _drain_outbox(str(tmp_path)) == 0
+    assert len(list(tmp_path.glob("*.json"))) == 2
+    assert not list(tmp_path.glob("*.bad"))
+
+
+def test_idem_key_truncates_before_hashing():
+    """Key parity with kernel drains for >4096-char content: all three
+    implementations hash the TRUNCATED content."""
+    import uuid as _uuid
+
+    long_marker = {"type": "lesson", "content": "x" * 5000, "attrs": {}}
+    _, idem = _marker_request(long_marker, "s1")
+    expected = _uuid.uuid5(_uuid.NAMESPACE_URL, f"s1-lesson-{'x' * 4096}").hex[:32]
+    assert idem == expected
+
+
+def test_parse_attrs_drops_reserved_ts():
+    """Transcript-authored ts= must never reach brain-api's backdating path."""
+    from hooks.context.brain_writer_hook import _find_markers
+
+    text = '<!--@lesson ts="2020-01-01T00:00:00Z" scope=x-->backdate me<!--@/lesson-->'
+    markers = _find_markers(text)
+    assert markers[0]["attrs"] == {"scope": "x"}

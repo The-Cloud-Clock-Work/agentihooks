@@ -80,11 +80,16 @@ def _request(
     params: dict[str, Any] | None = None,
     body: dict[str, Any] | None = None,
     extra_headers: dict[str, str] | None = None,
+    surface_http_errors: bool = False,
 ) -> dict[str, Any] | None:
     """Perform a single HTTP request. Returns parsed JSON or None on failure.
 
     Failures (timeouts, 5xx) are logged and return None so the caller can
-    decide whether to fall back to the filesystem path.
+    decide whether to fall back to the filesystem path. With
+    ``surface_http_errors=True`` an HTTP error status returns
+    ``{"__http_status__": <code>}`` instead of None, so a caller that must
+    distinguish "server down" from "server rejected THIS payload" (the outbox
+    drain's quarantine decision) can tell them apart.
     """
     base = _base_url()
     if not base:
@@ -117,6 +122,8 @@ def _request(
             "brain_http: http error",
             {"method": method, "url": url, "status": exc.code, "body": err_body[:256]},
         )
+        if surface_http_errors:
+            return {"__http_status__": exc.code}
         return None
     except URLError as exc:
         log("brain_http: url error", {"method": method, "url": url, "error": str(exc.reason)})
@@ -139,6 +146,14 @@ def post(
     *,
     idempotency_key: str | None = None,
     params: dict[str, Any] | None = None,
+    surface_http_errors: bool = False,
 ) -> dict[str, Any] | None:
     headers = {"X-Idempotency-Key": idempotency_key} if idempotency_key else None
-    return _request("POST", path, body=body, params=params, extra_headers=headers)
+    return _request(
+        "POST",
+        path,
+        body=body,
+        params=params,
+        extra_headers=headers,
+        surface_http_errors=surface_http_errors,
+    )
