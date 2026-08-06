@@ -165,26 +165,35 @@ def _publish_to_http(markers: list[dict], session_id: str) -> tuple[int, list[di
 def _drain_outbox(outbox_dir: str) -> int:
     """Re-POST buffered markers; delete each file once brain-api accepts it.
 
+    Also sweeps the outbox's ``-backlog`` sibling — the dir where a stuck pile
+    was parked in the SSH-sync era — so orphaned markers self-deliver once
+    brain-api is reachable, with no cron and no manual replay.
+
     Stops at the first refused POST — brain-api is evidently still down, and
     the remaining files get their retry on the next run. Unparseable files are
-    quarantined with a .bad suffix so they cannot wedge the queue.
+    quarantined with a .bad suffix so they cannot wedge the queue. Each file's
+    original ``ts`` rides in attrs so brain-api backdates the marker instead
+    of stamping it with the replay time.
     """
     from hooks._brain_http import brain_http_enabled, post
 
     if not brain_http_enabled():
         return 0
     outbox = Path(outbox_dir)
-    if not outbox.is_dir():
-        return 0
+    backlog = outbox.with_name(outbox.name + "-backlog")
+    files = [f for d in (outbox, backlog) if d.is_dir() for f in sorted(d.glob("*.json"))]
 
     drained = 0
-    for f in sorted(outbox.glob("*.json")):
+    for f in files:
         try:
             payload = json.loads(f.read_text())
+            attrs = dict(payload.get("attrs") or {})
+            if payload.get("ts"):
+                attrs.setdefault("ts", payload["ts"])
             marker = {
                 "type": payload["type"],
                 "content": payload["content"],
-                "attrs": payload.get("attrs") or {},
+                "attrs": attrs,
             }
         except (OSError, KeyError, TypeError, json.JSONDecodeError):
             try:

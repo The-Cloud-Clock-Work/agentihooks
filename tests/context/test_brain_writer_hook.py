@@ -90,3 +90,54 @@ def test_outbox_payload_preserves_original_content(tmp_path, http_ok):
     assert payload["type"] == MARKER["type"]
     assert payload["content"] == MARKER["content"]
     assert payload["session_id"] == "sess-1"
+
+
+def test_drain_sweeps_backlog_sibling(tmp_path, http_ok):
+    """Markers parked in <outbox>-backlog (SSH-era orphans) self-deliver."""
+    outbox = tmp_path / "brain-outbox"
+    outbox.mkdir()
+    backlog = tmp_path / "brain-outbox-backlog"
+    backlog.mkdir()
+    (backlog / "old.json").write_text(
+        json.dumps(
+            {
+                "type": "milestone",
+                "content": "stranded since may",
+                "attrs": {},
+                "session_id": "sess-old",
+                "ts": "2026-05-12T19:27:10+00:00",
+            }
+        )
+    )
+    _write_to_outbox([MARKER], "sess-1", str(outbox))
+    assert _drain_outbox(str(outbox)) == 2
+    assert not list(backlog.glob("*.json"))
+    assert not list(outbox.glob("*.json"))
+
+
+def test_drain_forwards_original_ts_in_attrs(tmp_path, http_ok):
+    """Replay must carry the file's ts so brain-api backdates the marker."""
+    (tmp_path / "buf.json").write_text(
+        json.dumps(
+            {
+                "type": "lesson",
+                "content": "carry my timestamp",
+                "attrs": {},
+                "session_id": "s",
+                "ts": "2026-05-12T19:27:10+00:00",
+            }
+        )
+    )
+    assert _drain_outbox(str(tmp_path)) == 1
+    body, _ = http_ok[0]
+    assert body["attrs"]["ts"] == "2026-05-12T19:27:10+00:00"
+
+
+def test_drain_backlog_only_no_outbox_dir(tmp_path, http_ok):
+    """A machine with only the orphaned backlog (outbox never recreated)."""
+    outbox = tmp_path / "brain-outbox"  # deliberately not created
+    backlog = tmp_path / "brain-outbox-backlog"
+    backlog.mkdir()
+    (backlog / "one.json").write_text(json.dumps({"type": "lesson", "content": "orphan", "session_id": "s"}))
+    assert _drain_outbox(str(outbox)) == 1
+    assert not list(backlog.glob("*.json"))
