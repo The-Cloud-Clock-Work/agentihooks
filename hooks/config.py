@@ -3,7 +3,6 @@
 import os
 from pathlib import Path
 
-
 # Keys whose current os.environ value came from an .env file rather than the
 # surrounding process. Only these may be refreshed by reload_user_env() — a
 # value the shell or Helm set stays authoritative, which is the whole point of
@@ -78,10 +77,33 @@ def _load_user_env(*, override_file_owned: bool = False) -> None:
             _parse_env_file(_extra, override_file_owned=override_file_owned)
 
 
+def _env_files_fingerprint() -> tuple:
+    """Modification stamps of every .env file the loader reads, sorted.
+
+    Cheap enough to call on every status request and it is what makes the
+    reload safe: with no fingerprint change there is nothing new on disk to
+    learn, so the globals are left exactly as they are.
+    """
+    _home = Path(os.environ.get("AGENTIHOOKS_HOME", str(Path.home() / ".agentihooks")))
+    stamps = []
+    for f in sorted(_home.glob("*.env")) if _home.is_dir() else []:
+        try:
+            stamps.append((f.name, f.stat().st_mtime))
+        except OSError:
+            continue
+    main = _home / ".env"
+    try:
+        stamps.append((".env", main.stat().st_mtime))
+    except OSError:
+        pass
+    return tuple(sorted(stamps))
+
+
 _load_user_env()
+_ENV_FINGERPRINT = _env_files_fingerprint()
 
 
-def reload_brain_env() -> dict:
+def reload_brain_env(force: bool = False) -> dict:
     """Re-read the .env files and re-bind the brain/amygdala module globals.
 
     Hooks are short-lived processes and always see current config. The
@@ -90,12 +112,32 @@ def reload_brain_env() -> dict:
     edited .env leaves it confidently reporting a source it is no longer
     supposed to use.
 
+    **No-ops unless the .env files changed on disk.** A reload that fires
+    unconditionally would overwrite whatever a caller set programmatically —
+    including a test that patches these globals, and including a deployment
+    with no .env at all, where every value would collapse to its default. The
+    fingerprint gate means this only ever costs a few stat() calls and only
+    ever fires when there is genuinely something new to read.
+
     Only keys this loader owns are refreshed; anything the shell or Helm set
     stays authoritative. Returns the re-resolved brain values.
     """
     global BRAIN_ENABLED, BRAIN_SOURCE_TYPE, BRAIN_SOURCE_PATH, BRAIN_CHANNEL
     global BRAIN_REFRESH_INTERVAL, BRAIN_URL, BRAIN_HTTP_TOKEN, BRAIN_HTTP_TIMEOUT
-    global AMYGDALA_ENABLED, AMYGDALA_SIGNAL_PATH
+    global AMYGDALA_ENABLED, AMYGDALA_SIGNAL_PATH, _ENV_FINGERPRINT
+
+    current = _env_files_fingerprint()
+    if not force and current == _ENV_FINGERPRINT:
+        return {
+            "brain_enabled": BRAIN_ENABLED,
+            "brain_url": BRAIN_URL,
+            "brain_source_type": BRAIN_SOURCE_TYPE,
+            "brain_source_path": BRAIN_SOURCE_PATH,
+            "amygdala_enabled": AMYGDALA_ENABLED,
+            "amygdala_signal_path": AMYGDALA_SIGNAL_PATH,
+            "reloaded": False,
+        }
+    _ENV_FINGERPRINT = current
 
     _load_user_env(override_file_owned=True)
 
@@ -119,7 +161,9 @@ def reload_brain_env() -> dict:
         "brain_source_path": BRAIN_SOURCE_PATH,
         "amygdala_enabled": AMYGDALA_ENABLED,
         "amygdala_signal_path": AMYGDALA_SIGNAL_PATH,
+        "reloaded": True,
     }
+
 
 # =============================================================================
 # RUNTIME DATA ROOT
