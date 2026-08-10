@@ -552,14 +552,18 @@ class TestBundleClaudeMdPrepend:
         """
         import inspect
 
-        # install_global is a thin lock wrapper; the body lives in the inner fn.
-        src = inspect.getsource(install._install_global_inner)
+        # The persona steps live in _install_claude_persona (reached from
+        # install_global via the claude target adapter).
+        src = inspect.getsource(install._install_claude_persona)
         assert "_prepend_bundle_claude_md(bundle_dir)" in src
         # Must sit between the profile writer and the manifesto appender.
         assert src.index("_install_system_prompt") < src.index("_prepend_bundle_claude_md(bundle_dir)")
         assert src.index("_prepend_bundle_claude_md(bundle_dir)") < src.index("_append_ci_manifesto_to_claude_md()")
         # Exactly one call site — never inside the chain loop.
         assert src.count("_prepend_bundle_claude_md(") == 1
+        # And the install flow routes persona through the target adapter.
+        outer = inspect.getsource(install._install_global_inner)
+        assert "adapter.install_persona(" in outer
 
     def test_marker_does_not_claim_agentihooks_ownership(self):
         """A bundle block alone must not make a file look agentihooks-managed.
@@ -734,7 +738,7 @@ class TestBundleClaudeMdPrepend:
         """
         import inspect
 
-        src = inspect.getsource(install._install_global_inner)
+        src = inspect.getsource(install._install_claude_persona)
         chain = src.split("Chain mode", 1)[1].split("--- 5a.", 1)[0]
         assert "already up to date" in chain
         assert "\n                    return\n" not in chain

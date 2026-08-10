@@ -70,6 +70,8 @@ from pathlib import Path
 
 import yaml
 
+from scripts.targets import DEFAULT_TARGET, SUPPORTED_TARGETS, get_adapter, resolve_target
+
 
 def _get_version() -> str:
     """Read agentihooks version from importlib or pyproject.toml."""
@@ -325,12 +327,47 @@ def _deep_merge(base: dict, override: dict, _parent_key: str = "") -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _migrate_targets_shape(state: dict) -> bool:
+    """One-shot migration: rewrap the legacy flat ``targets.global`` record.
+
+    Pre-multi-target state stored a single install record directly under
+    ``targets.global`` (string values: path/profile/installed_at). The
+    multi-target shape keys that level by target name (dict values):
+    ``targets.global.claude`` / ``targets.global.codex``, so a codex install
+    can never clobber the claude record. Discriminator: legacy records hold
+    at least one non-dict value.
+    """
+    g = state.get("targets", {}).get("global")
+    if isinstance(g, dict) and g and any(not isinstance(v, dict) for v in g.values()):
+        state["targets"]["global"] = {DEFAULT_TARGET: g}
+        return True
+    return False
+
+
+def _global_record(state: dict, target: str = DEFAULT_TARGET, *, create: bool = False) -> dict:
+    """Return the per-target global install record from *state*.
+
+    With *create* the intermediate dicts are materialized (setdefault chain)
+    so mutations land back in *state*; otherwise missing levels yield ``{}``.
+    ``_load_state`` migrates the legacy flat shape on disk, but callers can
+    hold state dicts from other sources (tests, snapshots), so the migration
+    runs here too — it is idempotent and in-place.
+    """
+    _migrate_targets_shape(state)
+    if create:
+        return state.setdefault("targets", {}).setdefault("global", {}).setdefault(target, {})
+    return state.get("targets", {}).get("global", {}).get(target, {})
+
+
 def _load_state() -> dict:
     if STATE_JSON.exists():
         try:
-            return load_json(STATE_JSON)
+            state = load_json(STATE_JSON)
         except (json.JSONDecodeError, OSError):
             return {}
+        if _migrate_targets_shape(state):
+            _save_state(state)
+        return state
     return {}
 
 
@@ -352,11 +389,11 @@ def _migrate_profile_rename(state: dict, old_name: str, new_name: str) -> None:
     changed = False
     targets = state.get("targets", {})
 
-    # Global target
-    g = targets.get("global", {})
-    if g.get("profile") == old_name:
-        g["profile"] = new_name
-        changed = True
+    # Global target — every installed target's record gets the rename
+    for _tname, g in targets.get("global", {}).items():
+        if isinstance(g, dict) and g.get("profile") == old_name:
+            g["profile"] = new_name
+            changed = True
 
     # Per-project targets
     for _proj_key, proj in targets.get("projects", {}).items():
@@ -599,18 +636,20 @@ def _link_is_managed(link: Path, ledger: dict[str, dict] | None = None) -> bool:
 _SYNC_LOCK_FILE = AGENTIHOOKS_STATE_DIR / "sync.lock"
 
 
-def _register_target_global(profile: str, settings_profile: str = "") -> None:
-    """Record the global install in state.json."""
+def _register_target_global(profile: str, settings_profile: str = "", target: str = DEFAULT_TARGET) -> None:
+    """Record the global install for *target* in state.json (per-target record)."""
     state = _load_state()
-    targets = state.setdefault("targets", {})
+    adapter_home = CLAUDE_HOME if target == DEFAULT_TARGET else get_adapter(target).home()
     entry = {
-        "path": str(CLAUDE_HOME),
+        "path": str(adapter_home),
         "profile": profile,
         "installed_at": datetime.now(timezone.utc).isoformat(),
     }
     if settings_profile:
         entry["settings_profile"] = settings_profile
-    targets["global"] = entry
+    state.setdefault("targets", {}).setdefault("global", {})[target] = entry
+    # Recall key for a bare `agentihooks init` (flag > env > this > prompt).
+    state["install_target"] = target
     _save_state(state)
 
 
@@ -1028,7 +1067,7 @@ def _link_profile_link(
     state["linked_profiles"] = entries
 
     # Append to global chain (idempotent)
-    global_target = state.setdefault("targets", {}).setdefault("global", {})
+    global_target = _global_record(state, create=True)
     current_chain_str = global_target.get("profile", "")
     chain_after = [p.strip() for p in current_chain_str.split(",") if p.strip()]
     chain_changed = False
@@ -1136,7 +1175,7 @@ def _link_profile_unlink(name: str | None, *, run_init: bool = True) -> argparse
     state["linked_profiles"] = entries
 
     # Strip from chain
-    global_target = state.setdefault("targets", {}).setdefault("global", {})
+    global_target = _global_record(state, create=True)
     chain = [p.strip() for p in global_target.get("profile", "").split(",") if p.strip()]
     was_in_chain = name in chain
     chain = [p for p in chain if p != name]
@@ -1185,7 +1224,7 @@ def _link_profile_list() -> None:
         return
 
     state = _load_state()
-    chain = [p.strip() for p in state.get("targets", {}).get("global", {}).get("profile", "").split(",") if p.strip()]
+    chain = [p.strip() for p in _global_record(state).get("profile", "").split(",") if p.strip()]
 
     print(f"Linked profiles ({len(entries)}):")
     for e in entries:
@@ -1606,7 +1645,7 @@ def _connector_new(
 def _cmd_settings_profile(args: argparse.Namespace) -> None:
     """Quick-switch: re-apply only the settings layer without touching rules/CLAUDE.md."""
     state = _load_state()
-    global_target = state.get("targets", {}).get("global", {})
+    global_target = _global_record(state)
     current_profile = global_target.get("profile", "")
 
     if not current_profile:
@@ -1843,9 +1882,7 @@ def cmd_init_unified(args: argparse.Namespace) -> None:
         if not getattr(args, "no_discover", False):
             _hint_state = _load_state()
             _hint_profile = (
-                getattr(args, "init_profile", None)
-                or _hint_state.get("targets", {}).get("global", {}).get("profile")
-                or "default"
+                getattr(args, "init_profile", None) or _global_record(_hint_state).get("profile") or "default"
             )
             _print_bundle_discover_hint(profile_hint=_hint_profile)
 
@@ -1856,7 +1893,16 @@ def cmd_init_unified(args: argparse.Namespace) -> None:
         profile_name = os.environ.get("AGENTIHOOKS_PROFILE", "")
     _prev_state = _load_state()
     _migrate_profile_rename(_prev_state, "colt", "anton")
-    _prev_global = _prev_state.get("targets", {}).get("global", {})
+    # Resolve install target — flag > AGENTIHOOKS_TARGET > state.json > TTY > claude.
+    # Stored value comes from the DEFAULT (claude) record's sibling key so a
+    # codex-only machine still recalls its target on a bare `init`.
+    _stored_target = _prev_state.get("install_target", "")
+    install_target = resolve_target(
+        getattr(args, "install_target", None),
+        _stored_target,
+        interactive_ok=not _is_force,
+    )
+    _prev_global = _global_record(_prev_state, install_target)
     if not profile_name:
         if _is_force:
             # --force = fresh install, ignore stored profile
@@ -1928,7 +1974,11 @@ def cmd_init_unified(args: argparse.Namespace) -> None:
         settings_profile = _prev_global.get("settings_profile", "")
 
     # Build args for _install_global_inner
-    global_args = argparse.Namespace(profile=profile_name, settings_profile=settings_profile or "")
+    global_args = argparse.Namespace(
+        profile=profile_name,
+        settings_profile=settings_profile or "",
+        install_target=install_target,
+    )
     install_global(global_args)
 
     # --- Update bashrc block (agentienv + agenti alias + PATH) ---
@@ -2295,7 +2345,7 @@ def query_active_profile() -> None:
     """Print the active global profile."""
     source = "global"
     state = _load_state()
-    global_target = state.get("targets", {}).get("global", {})
+    global_target = _global_record(state)
     profile_name = global_target.get("profile")
     settings_profile = global_target.get("settings_profile", "")
 
@@ -2432,6 +2482,12 @@ def install_global(args: argparse.Namespace) -> None:
 
 
 def _install_global_inner(args: argparse.Namespace) -> None:
+    # Target adapter — every target-specific write (settings schema, feature
+    # dirs, persona file, MCP registration) goes through this seam. Unknown /
+    # not-yet-installable targets are rejected here, before anything is written.
+    install_target: str = getattr(args, "install_target", "") or DEFAULT_TARGET
+    adapter = get_adapter(install_target)
+
     profile_input: str = args.profile
 
     # --- Parse profile chain (comma-separated) ---
@@ -2558,18 +2614,8 @@ def _install_global_inner(args: argparse.Namespace) -> None:
     # That dependency was removed 2026-05-07. _build_otel_env helper is
     # retained for re-wiring through a different mechanism later.
 
-    # --- 2. Merge personal keys from existing settings ---
-    existing_settings_path = CLAUDE_HOME / "settings.json"
-    personal = _preserve_personal_keys(existing_settings_path)
-    merged: dict = deepcopy(personal)
-    merged.update(rendered)
-    merged[MANAGED_BY_KEY] = MANAGED_BY_VALUE
-
-    # --- 3. Backup + write ---
-    _backup_settings(existing_settings_path)
-    CLAUDE_HOME.mkdir(parents=True, exist_ok=True)
-    save_json(existing_settings_path, merged)
-    _cprint(f"[OK] Wrote {existing_settings_path}")
+    # --- 2 + 3. Personal-key merge, backup, and settings write (target-specific) ---
+    existing_settings_path = adapter.write_settings(rendered)
 
     # --- 4. Symlink skills/agents/commands/rules (layers: agentihooks → bundle → each profile in chain) ---
     bundle_dir = _get_bundle_path()
@@ -2580,7 +2626,10 @@ def _install_global_inner(args: argparse.Namespace) -> None:
         ("commands", "command", lambda p: p.suffix == ".md" and p.name != "README.md"),
         ("rules", "rule", lambda p: p.suffix == ".md" and p.name != "README.md"),
     ]:
-        dst = CLAUDE_HOME / subdir
+        dst = adapter.features_dest(subdir)
+        if dst is None:
+            _cprint(f"  [--] Target '{adapter.name}' has no destination for {label}s — skipped.")
+            continue
         # Layer 1: agentihooks built-in (packaged under profiles/package/, the
         # emulated .claude tree — shipped in the wheel, unlike the old repo-root .claude/)
         _symlink_dir_contents(PACKAGE_FEATURES_DIR / subdir, dst, label=label, filter_fn=filter_fn)
@@ -2595,6 +2644,131 @@ def _install_global_inner(args: argparse.Namespace) -> None:
                 chain_label = f"profile({pname}) {label}" if len(profile_chain) > 1 else f"profile {label}"
                 _symlink_dir_contents(pdir / _CLAUDE_SUBDIR / subdir, dst, label=chain_label, filter_fn=filter_fn)
 
+    # --- 5 + 5a + 5b. Persona install (target-specific writer) ---
+    adapter.install_persona(profile_dirs, profile_chain, bundle_dir)
+
+    # --- 6. Install MCP servers (target-specific registration) ---
+    # Layer 1: hooks-utils from agentihooks
+    adapter.register_hooks_utils(last_profile)
+
+    # Network transport needs a persistent server; stdio does not. Only in
+    # network mode does a systemd artifact appear on the machine at all — and
+    # reverting to stdio tears down a unit left over from a previous run, so a
+    # downgrade cannot orphan a daemon the config no longer points at.
+    if _mcp_transport != "stdio":
+        _install_systemd_user_unit(_mcp_transport)
+        _ensure_mcp_daemon(_mcp_transport)
+    else:
+        # A daemon started under a previous network-mode install keeps serving a
+        # port nothing points at once the client entry reverts to stdio. Removing
+        # the unit does not touch a process started outside systemd.
+        if _mcp_daemon_module().stop():
+            _cprint("  [OK] Stopped the hooks-utils daemon (transport reverted to stdio)")
+        _remove_systemd_user_unit()
+
+    # Layer 2: bundle .claude/.mcp.json — always installed; profile MCPs layer on top (override per-name)
+    if bundle_dir:
+        bundle_mcp = bundle_dir / _CLAUDE_SUBDIR / _MCP_JSON_NAME
+        if not bundle_mcp.exists():
+            bundle_mcp = bundle_dir / _MCP_JSON_NAME
+        if bundle_mcp.exists():
+            try:
+                mcp_data = load_json(bundle_mcp)
+                servers = mcp_data.get("mcpServers", {})
+                if servers:
+                    adapter.register_mcp(servers)
+                    _cprint(f"  [OK] Bundle MCP servers: {', '.join(servers.keys())}")
+            except (json.JSONDecodeError, OSError) as exc:
+                _cprint(f"  [WARN] Could not read bundle .mcp.json: {exc}")
+
+    # Layer 3+: each profile's .mcp.json (chained)
+    for pname, pdir in profile_dirs:
+        profile_mcp = pdir / _CLAUDE_SUBDIR / _MCP_JSON_NAME
+        if profile_mcp.exists():
+            try:
+                mcp_data = load_json(profile_mcp)
+                servers = mcp_data.get("mcpServers", {})
+                if servers:
+                    adapter.register_mcp(servers)
+                    chain_label = f"Profile({pname})" if len(profile_chain) > 1 else "Profile"
+                    _cprint(f"  [OK] {chain_label} MCP servers: {', '.join(servers.keys())}")
+            except (json.JSONDecodeError, OSError) as exc:
+                _cprint(f"  [WARN] Could not read profile .mcp.json: {exc}")
+
+    # --- 6b. Settings-profile MCP overlay ---
+    if settings_profile_dir is not None:
+        sp_mcp = settings_profile_dir / _CLAUDE_SUBDIR / _MCP_JSON_NAME
+        if sp_mcp.exists():
+            try:
+                mcp_data = load_json(sp_mcp)
+                servers = mcp_data.get("mcpServers", {})
+                if servers:
+                    adapter.register_mcp(servers)
+                    _cprint(f"  [OK] Settings-profile MCP servers: {', '.join(servers.keys())}")
+            except (json.JSONDecodeError, OSError) as exc:
+                _cprint(f"  [WARN] Could not read settings-profile .mcp.json: {exc}")
+
+    # --- 7. Re-apply any custom MCPs tracked in state.json ---
+    if STATE_JSON.exists():
+        print()
+        sync_user_mcp()
+
+    # --- 9b. Auto-install MCP file from AGENTIHOOKS_MCP_FILE env var ---
+    mcp_file_env = os.environ.get("AGENTIHOOKS_MCP_FILE", "")
+    if mcp_file_env:
+        mcp_path = Path(mcp_file_env).expanduser().resolve()
+        if mcp_path.exists():
+            print()
+            manage_user_mcp(mcp_path)
+        else:
+            _cprint(f"  [--] AGENTIHOOKS_MCP_FILE={mcp_file_env} not found — skipping.")
+
+    # --- 10. Install agentihooks CLI tool to ~/.local/bin ---
+    print()
+    _install_cli_tool()
+
+    # --- 11. Seed ~/.agentihooks/.env from .env.example (first run only) ---
+    print()
+    _seed_user_env_file()
+
+    # --- 12. Register install in state.json ---
+    # Persist the OPERATOR-INTENT chain (profile_input), not the shrunk
+    # runtime chain. See note above: dropping unresolvable entries from
+    # state lets a transient git operation in the bundle repo silently
+    # demote the chain to "default".
+    _register_target_global(persisted_profile, settings_profile=settings_profile_name, target=install_target)
+
+    # --- 12b. Target-specific ledger reconcile + snapshot ---
+    adapter.post_install_reconcile(profile_chain, persisted_profile)
+
+    # --- Track version in state.json ---
+    state = _load_state()
+    state["version"] = _get_version()
+    state["installed_at"] = datetime.now(timezone.utc).isoformat()
+    _save_state(state)
+
+    # --- Done ---
+    print()
+    print(f"{_GREEN}{_BOLD}Installation complete.{_RESET}")
+    print()
+    print(f"{_DIM}Verify:{_RESET}")
+    print(f"  {_DIM}ls -la {existing_settings_path}{_RESET}")
+    claude_md = CLAUDE_HOME / _CLAUDE_MD_NAME
+    if claude_md.is_symlink():
+        print(f"  {_DIM}ls -la {claude_md}{_RESET}")
+    print()
+    print(f"Launch:  {_CYAN}agentihooks claude{_RESET}   {_DIM}# or: agenti (after source ~/.bashrc){_RESET}")
+    print(f"Re-run:  {_DIM}agentihooks init{_RESET}")
+
+
+def _install_claude_persona(
+    profile_dirs: list[tuple[str, Path]],
+    profile_chain: list[str],
+    bundle_dir: Path | None,
+) -> None:
+    """Steps 5/5a/5b of the Claude install: CLAUDE.md (single or chained),
+    bundle shared prepend, CI-manifesto append. Bodies moved verbatim from
+    ``_install_global_inner`` behind the target seam."""
     # --- 5. Install CLAUDE.md (single profile = copy; chain = concatenated copy) ---
     _cleanup_stale_claude_md_symlink()
     # Remove any previous chain-injected CLAUDE.md rules
@@ -2662,143 +2836,6 @@ def _install_global_inner(args: argparse.Namespace) -> None:
 
     # --- 5b. Append CI manifesto to ~/.claude/CLAUDE.md (memory channel) ---
     _append_ci_manifesto_to_claude_md()
-
-    # --- 6. Install MCP servers to user scope (~/.claude.json) ---
-    # Layer 1: hooks-utils from agentihooks
-    _install_user_mcp(last_profile)
-
-    # Network transport needs a persistent server; stdio does not. Only in
-    # network mode does a systemd artifact appear on the machine at all — and
-    # reverting to stdio tears down a unit left over from a previous run, so a
-    # downgrade cannot orphan a daemon the config no longer points at.
-    if _mcp_transport != "stdio":
-        _install_systemd_user_unit(_mcp_transport)
-        _ensure_mcp_daemon(_mcp_transport)
-    else:
-        # A daemon started under a previous network-mode install keeps serving a
-        # port nothing points at once the client entry reverts to stdio. Removing
-        # the unit does not touch a process started outside systemd.
-        if _mcp_daemon_module().stop():
-            _cprint("  [OK] Stopped the hooks-utils daemon (transport reverted to stdio)")
-        _remove_systemd_user_unit()
-
-    # Layer 2: bundle .claude/.mcp.json — always installed; profile MCPs layer on top (override per-name)
-    if bundle_dir:
-        bundle_mcp = bundle_dir / _CLAUDE_SUBDIR / _MCP_JSON_NAME
-        if not bundle_mcp.exists():
-            bundle_mcp = bundle_dir / _MCP_JSON_NAME
-        if bundle_mcp.exists():
-            try:
-                mcp_data = load_json(bundle_mcp)
-                servers = mcp_data.get("mcpServers", {})
-                if servers:
-                    _merge_mcp_to_user_scope(servers)
-                    _cprint(f"  [OK] Bundle MCP servers: {', '.join(servers.keys())}")
-            except (json.JSONDecodeError, OSError) as exc:
-                _cprint(f"  [WARN] Could not read bundle .mcp.json: {exc}")
-
-    # Layer 3+: each profile's .mcp.json (chained)
-    for pname, pdir in profile_dirs:
-        profile_mcp = pdir / _CLAUDE_SUBDIR / _MCP_JSON_NAME
-        if profile_mcp.exists():
-            try:
-                mcp_data = load_json(profile_mcp)
-                servers = mcp_data.get("mcpServers", {})
-                if servers:
-                    _merge_mcp_to_user_scope(servers)
-                    chain_label = f"Profile({pname})" if len(profile_chain) > 1 else "Profile"
-                    _cprint(f"  [OK] {chain_label} MCP servers: {', '.join(servers.keys())}")
-            except (json.JSONDecodeError, OSError) as exc:
-                _cprint(f"  [WARN] Could not read profile .mcp.json: {exc}")
-
-    # --- 6b. Settings-profile MCP overlay ---
-    if settings_profile_dir is not None:
-        sp_mcp = settings_profile_dir / _CLAUDE_SUBDIR / _MCP_JSON_NAME
-        if sp_mcp.exists():
-            try:
-                mcp_data = load_json(sp_mcp)
-                servers = mcp_data.get("mcpServers", {})
-                if servers:
-                    _merge_mcp_to_user_scope(servers)
-                    _cprint(f"  [OK] Settings-profile MCP servers: {', '.join(servers.keys())}")
-            except (json.JSONDecodeError, OSError) as exc:
-                _cprint(f"  [WARN] Could not read settings-profile .mcp.json: {exc}")
-
-    # --- 7. Re-apply any custom MCPs tracked in state.json ---
-    if STATE_JSON.exists():
-        print()
-        sync_user_mcp()
-
-    # --- 9b. Auto-install MCP file from AGENTIHOOKS_MCP_FILE env var ---
-    mcp_file_env = os.environ.get("AGENTIHOOKS_MCP_FILE", "")
-    if mcp_file_env:
-        mcp_path = Path(mcp_file_env).expanduser().resolve()
-        if mcp_path.exists():
-            print()
-            manage_user_mcp(mcp_path)
-        else:
-            _cprint(f"  [--] AGENTIHOOKS_MCP_FILE={mcp_file_env} not found — skipping.")
-
-    # --- 10. Install agentihooks CLI tool to ~/.local/bin ---
-    print()
-    _install_cli_tool()
-
-    # --- 11. Seed ~/.agentihooks/.env from .env.example (first run only) ---
-    print()
-    _seed_user_env_file()
-
-    # --- 12. Register install in state.json ---
-    # Persist the OPERATOR-INTENT chain (profile_input), not the shrunk
-    # runtime chain. See note above: dropping unresolvable entries from
-    # state lets a transient git operation in the bundle repo silently
-    # demote the chain to "default".
-    _register_target_global(persisted_profile, settings_profile=settings_profile_name)
-
-    # --- 12b. Reconcile the managed-MCP ledger ---
-    # Remove servers agentihooks installed on a previous run but that have since
-    # been dropped from every profile/bundle source. Runs AFTER
-    # _register_target_global so the collector reads the freshly-written chain.
-    #
-    # Guard: only prune when the FULL intended profile chain resolved this run.
-    # A transiently-missing profile source (e.g. a git checkout in the bundle
-    # repo briefly removing files) would otherwise shrink current_managed and
-    # falsely delete that profile's servers — the same footgun the persisted-
-    # intent chain above defends against.
-    intended_chain = [p.strip() for p in persisted_profile.split(",") if p.strip()]
-    if len(profile_chain) == len(intended_chain):
-        current_managed = set(_collect_all_managed_mcp_servers().keys())
-        removed_mcp = _reconcile_managed_mcp_ledger(current_managed)
-        if removed_mcp:
-            _cprint(
-                f"  [OK] Removed {len(removed_mcp)} MCP server(s) no longer in any "
-                f"profile/bundle: {', '.join(removed_mcp)}"
-            )
-    else:
-        _cprint(
-            "  [--] Skipping MCP ledger reconcile — not every profile in the chain "
-            "resolved this run (transient source loss); ledger left unchanged."
-        )
-
-    _snapshot_claude_json()
-
-    # --- Track version in state.json ---
-    state = _load_state()
-    state["version"] = _get_version()
-    state["installed_at"] = datetime.now(timezone.utc).isoformat()
-    _save_state(state)
-
-    # --- Done ---
-    print()
-    print(f"{_GREEN}{_BOLD}Installation complete.{_RESET}")
-    print()
-    print(f"{_DIM}Verify:{_RESET}")
-    print(f"  {_DIM}ls -la {existing_settings_path}{_RESET}")
-    claude_md = CLAUDE_HOME / _CLAUDE_MD_NAME
-    if claude_md.is_symlink():
-        print(f"  {_DIM}ls -la {claude_md}{_RESET}")
-    print()
-    print(f"Launch:  {_CYAN}agentihooks claude{_RESET}   {_DIM}# or: agenti (after source ~/.bashrc){_RESET}")
-    print(f"Re-run:  {_DIM}agentihooks init{_RESET}")
 
 
 # ---------------------------------------------------------------------------
@@ -3306,7 +3343,7 @@ def _reseed_managed_mcp_sources() -> None:
     server) are always present in user scope.
     """
     state = _load_state()
-    profile_name = state.get("targets", {}).get("global", {}).get("profile")
+    profile_name = _global_record(state).get("profile")
 
     # Layer 1: hooks-utils (driven by profile mcp_categories)
     if profile_name:
@@ -3341,7 +3378,7 @@ def _reseed_managed_mcp_sources() -> None:
                     _cprint(f"  [WARN] Could not reseed profile .mcp.json: {exc}")
 
     # Layer 3b: settings-profile overlay .mcp.json
-    settings_profile = state.get("targets", {}).get("global", {}).get("settings_profile")
+    settings_profile = _global_record(state).get("settings_profile")
     if settings_profile:
         sp_dir = _resolve_profile_dir(settings_profile)
         if sp_dir:
@@ -4195,7 +4232,7 @@ def _collect_all_managed_mcp_servers() -> dict:
     # straight to _resolve_profile_dir returns None and silently drops every
     # profile's MCP servers, collapsing the managed set to just hooks-utils.
     state = _load_state()
-    global_target = state.get("targets", {}).get("global", {})
+    global_target = _global_record(state)
     profile_name = global_target.get("profile")
     if profile_name:
         for _pname, profile_dir in _resolve_profile_chain(profile_name):
@@ -5342,7 +5379,7 @@ def cmd_migrate(args) -> None:
         projects[new] = merged
 
     state = _load_state()
-    active_profile = state.get("targets", {}).get("global", {}).get("profile", "default")
+    active_profile = _global_record(state).get("profile", "default")
 
     # Save
     data["projects"] = projects
@@ -5406,6 +5443,16 @@ def main() -> None:
         "--bundle", default=None, help="Path to bundle directory (first-time setup: link bundle + global install)"
     )
     init_p.add_argument("--profile", dest="init_profile", default=None, help="Profile to use (headless mode)")
+    init_p.add_argument(
+        "--target",
+        dest="init_target",
+        choices=list(SUPPORTED_TARGETS),
+        default=None,
+        help=(
+            "Agent CLI to install for (claude | codex). Default: AGENTIHOOKS_TARGET env, "
+            "then the target stored in state.json, then an interactive prompt, then claude."
+        ),
+    )
     init_p.add_argument(
         "--force",
         action="store_true",
@@ -5762,6 +5809,8 @@ notes:
     elif args.command == "init":
         args.profile = getattr(args, "init_profile", None)
         args.settings_profile = getattr(args, "init_settings_profile", None) or ""
+        # NB: attribute name avoids link-profile's positional `args.target`.
+        args.install_target = getattr(args, "init_target", None)
         cmd_init_unified(args)
     elif args.command == "settings-profile":
         _cmd_settings_profile(args)

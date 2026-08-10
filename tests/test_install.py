@@ -816,11 +816,11 @@ class TestLinkProfile:
         ):
             install._link_profile_link(external, name=None, append=True, run_init=False)
         result = json.loads(state_json.read_text())
-        assert result["targets"]["global"]["profile"] == "anton,brain"
+        assert result["targets"]["global"]["claude"]["profile"] == "anton,brain"
         assert result["linked_profiles"][0]["name"] == "brain"
         assert result["linked_profiles"][0]["path"] == str(external)
         # --no-init should bump installed_at
-        assert "installed_at" in result["targets"]["global"]
+        assert "installed_at" in result["targets"]["global"]["claude"]
 
     def test_link_idempotent_re_link(self, tmp_path):
         state_json, _, profiles_dir = self._setup(tmp_path)
@@ -842,7 +842,7 @@ class TestLinkProfile:
             install._link_profile_link(external, name=None, append=True, run_init=False)
         result = json.loads(state_json.read_text())
         # No duplicate in chain
-        assert result["targets"]["global"]["profile"] == "anton,brain"
+        assert result["targets"]["global"]["claude"]["profile"] == "anton,brain"
         assert len(result["linked_profiles"]) == 1
 
     # --- unlink ---
@@ -866,7 +866,7 @@ class TestLinkProfile:
         ):
             install._link_profile_unlink("brain", run_init=False)
         result = json.loads(state_json.read_text())
-        assert result["targets"]["global"]["profile"] == "anton"
+        assert result["targets"]["global"]["claude"]["profile"] == "anton"
         assert result["linked_profiles"] == []
 
     def test_unlink_empty_chain_falls_back_to_default(self, tmp_path):
@@ -888,7 +888,7 @@ class TestLinkProfile:
         ):
             install._link_profile_unlink("brain", run_init=False)
         result = json.loads(state_json.read_text())
-        assert result["targets"]["global"]["profile"] == "default"
+        assert result["targets"]["global"]["claude"]["profile"] == "default"
 
     def test_unlink_unknown_name_exits(self, tmp_path):
         state_json, _, _ = self._setup(tmp_path)
@@ -1387,6 +1387,7 @@ class TestSaveStateBackup:
         bak = state_json.with_suffix(".json.bak")
         assert bak.exists()
         assert bak.read_text() == first_content
+        # _save_state persists verbatim (shape migration happens on load).
         assert json.loads(state_json.read_text())["targets"]["global"]["profile"] == "coding"
 
     def test_no_bak_on_first_save(self, tmp_path, monkeypatch):
