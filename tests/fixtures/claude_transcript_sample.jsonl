@@ -1,0 +1,4 @@
+{"type": "user", "message": {"content": [{"type": "text", "text": "fix the bug"}]}, "timestamp": "2026-08-10T12:00:00Z"}
+{"type": "assistant", "message": {"content": [{"type": "text", "text": "On it."}, {"type": "tool_use", "id": "tu1", "name": "Bash", "input": {"command": "ls"}}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "tu1", "is_error": true, "content": [{"type": "text", "text": "command not found"}]}]}, "timestamp": "2026-08-10T12:00:05Z"}
+{"type": "assistant", "message": {"content": [{"type": "text", "text": "Fixed.\n<!-- @lesson -->\nclaude transcripts nest blocks in message.content\n<!-- @/lesson -->"}]}}

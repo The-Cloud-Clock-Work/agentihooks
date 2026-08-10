@@ -102,6 +102,26 @@ def parse_transcript_metrics(transcript_path: str) -> dict:
         if not path.exists():
             return metrics
 
+        from hooks.memory.transcript_reader import detect_transcript_format
+
+        if detect_transcript_format(path) == "codex":
+            # Codex rollout: derive turn count / last response from the
+            # unified record stream (the claude-shaped scan below would
+            # return all-None on a rollout file).
+            from hooks.memory.transcript_reader import iter_transcript_records
+
+            user_turns = 0
+            last_text = None
+            for rec in iter_transcript_records(path):
+                kind = rec.get("kind")
+                if kind == "user_text":
+                    user_turns += 1
+                elif kind in ("assistant_text", "turn_complete") and rec.get("text"):
+                    last_text = rec["text"]
+            metrics["num_turns"] = user_turns
+            metrics["last_response"] = last_text
+            return metrics
+
         first_timestamp = None
         last_timestamp = None
         user_count = 0

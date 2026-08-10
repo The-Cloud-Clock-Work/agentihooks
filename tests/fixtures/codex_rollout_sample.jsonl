@@ -1,0 +1,9 @@
+{"type": "session_meta", "payload": {"id": "s1", "cwd": "/w", "cli_version": "0.147.0", "model_provider": "litellm"}}
+{"type": "event_msg", "payload": {"type": "task_started", "turn_id": "t1"}}
+{"type": "response_item", "payload": {"type": "message", "id": "m1", "role": "developer", "content": [{"type": "input_text", "text": "=== CONTEXT INJECTION ===\ninjected banner"}]}}
+{"type": "response_item", "payload": {"type": "message", "id": "m2", "role": "user", "content": [{"type": "input_text", "text": "fix the bug"}]}}
+{"type": "response_item", "payload": {"type": "function_call", "name": "shell", "arguments": "{\"command\":[\"ls\"]}", "call_id": "c1"}}
+{"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1", "output": "file.txt"}}
+{"type": "response_item", "payload": {"type": "message", "id": "m3", "role": "assistant", "content": [{"type": "output_text", "text": "Done.\n<!-- @lesson -->\ncodex rollouts use response_item records\n<!-- @/lesson -->"}]}}
+{"type": "event_msg", "payload": {"type": "token_count", "info": {}, "rate_limits": {}}}
+{"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "t1", "last_agent_message": "Done."}}

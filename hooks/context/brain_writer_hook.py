@@ -69,24 +69,14 @@ def _find_markers(text: str) -> list[dict[str, Any]]:
 
 
 def _parse_transcript_for_markers(transcript_path: str, max_markers: int) -> list[dict]:
-    """Read JSONL transcript, extract markers from assistant responses."""
-    path = Path(transcript_path)
-    if not path.exists():
-        return []
+    """Extract markers from assistant text in a transcript (claude or codex)."""
+    from hooks.memory.transcript_reader import iter_transcript_records
 
-    all_text: list[str] = []
-    for line in path.read_text().splitlines():
-        if not line.strip():
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if entry.get("type") != "assistant":
-            continue
-        for block in entry.get("message", {}).get("content", []):
-            if block.get("type") == "text":
-                all_text.append(block["text"])
+    all_text: list[str] = [
+        rec["text"]
+        for rec in iter_transcript_records(transcript_path)
+        if rec.get("kind") in ("assistant_text", "turn_complete") and rec.get("text")
+    ]
 
     if not all_text:
         return []

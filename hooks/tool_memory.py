@@ -233,113 +233,56 @@ def _extract_input_summary(tool_input):
 
 
 def _scan_transcript_for_errors(transcript_path, session_id=""):
-    """Scan transcript JSONL for tool errors. Returns list of memory entries."""
+    """Scan a transcript (claude or codex) for tool errors via the unified
+    record stream. Correlates tool_call → tool_result by tool_use_id.
+
+    Only the explicit is_error flag is trusted — string pattern matching
+    produces too many false positives on successful JSON responses that
+    contain words like "error". Codex rollout outputs carry no error flag,
+    so codex sessions rely on the live PostToolUse recording path instead.
+    """
     from datetime import datetime, timezone
 
+    from hooks.memory.transcript_reader import iter_transcript_records
+
     if not transcript_path:
-        return []
-    path = Path(transcript_path)
-    if not path.exists():
         return []
 
     new_entries = []
     try:
-        with open(path, "r") as f:
-            content = f.read()
-
-        # Transcript can be JSONL (one JSON per line) or a JSON array
-        entries = []
-        content_stripped = content.strip()
-        if content_stripped.startswith("["):
-            # JSON array format
-            try:
-                entries = json.loads(content_stripped)
-            except json.JSONDecodeError:
-                return []
-        else:
-            # JSONL format
-            for line in content_stripped.split("\n"):
-                line = line.strip()
-                if line:
-                    try:
-                        entries.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-
-        # Transcript format:
-        #   assistant entries have content[].type="tool_use" with id, name, input
-        #   user entries have content[].type="tool_result" with tool_use_id, is_error, content
-        # We correlate tool_use -> tool_result via tool_use_id
-
         tool_uses = {}  # tool_use_id -> {tool_name, tool_input}
-
-        for entry in entries:
-            entry_type = entry.get("type", "")
-
-            if entry_type == "assistant":
-                message = entry.get("message", {})
-                content_blocks = message.get("content", [])
-                for block in content_blocks:
-                    if isinstance(block, dict) and block.get("type") == "tool_use":
-                        use_id = block.get("id", "")
-                        if use_id:
-                            tool_uses[use_id] = {
-                                "tool_name": block.get("name", "unknown"),
-                                "tool_input": block.get("input", {}),
-                            }
-
-            elif entry_type == "user":
-                # tool_result blocks are nested inside user messages
-                message = entry.get("message", {})
-                content_blocks = message.get("content", []) if isinstance(message, dict) else []
-                if not isinstance(content_blocks, list):
+        for rec in iter_transcript_records(transcript_path):
+            kind = rec.get("kind")
+            if kind == "tool_call":
+                use_id = rec.get("tool_use_id", "")
+                if use_id:
+                    tool_uses[use_id] = {
+                        "tool_name": rec.get("tool_name", "unknown"),
+                        "tool_input": rec.get("tool_input", {}),
+                    }
+            elif kind == "tool_result" and rec.get("is_error"):
+                result_content = rec.get("tool_result", "")
+                if isinstance(result_content, list):
+                    texts = [sub["text"] for sub in result_content if isinstance(sub, dict) and sub.get("text")]
+                    result_text = " ".join(texts)
+                else:
+                    result_text = str(result_content)
+                error_text = result_text[:200]
+                if not error_text:
                     continue
 
-                for block in content_blocks:
-                    if not isinstance(block, dict) or block.get("type") != "tool_result":
-                        continue
-
-                    tool_use_id = block.get("tool_use_id", "")
-                    is_err = block.get("is_error", False)
-                    result_content = block.get("content", "")
-
-                    # Extract text from content
-                    if isinstance(result_content, list):
-                        texts = []
-                        for sub in result_content:
-                            if isinstance(sub, dict) and sub.get("text"):
-                                texts.append(sub["text"])
-                        result_text = " ".join(texts)
-                    else:
-                        result_text = str(result_content)
-
-                    # Check if this is an error
-                    # For transcript scanning, ONLY trust explicit is_error flag
-                    # String pattern matching produces too many false positives
-                    # on successful JSON responses that contain words like "error"
-                    detected = False
-                    error_text = ""
-
-                    if is_err:
-                        detected = True
-                        error_text = result_text[:200]
-
-                    if detected and error_text:
-                        tool_info = tool_uses.get(tool_use_id, {})
-                        tool_name = tool_info.get("tool_name", "unknown")
-                        tool_input = tool_info.get("tool_input", {})
-
-                        ts = entry.get("timestamp", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
-
-                        new_entries.append(
-                            {
-                                "ts": ts[:19] + "Z" if len(ts) > 19 else ts,
-                                "tool": tool_name,
-                                "error": error_text.strip()[:200],
-                                "input": _extract_input_summary(tool_input),
-                                "session": session_id,
-                            }
-                        )
+                tool_info = tool_uses.get(rec.get("tool_use_id", ""), {})
+                raw = rec.get("raw", {})
+                ts = raw.get("timestamp", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+                new_entries.append(
+                    {
+                        "ts": ts[:19] + "Z" if len(ts) > 19 else ts,
+                        "tool": tool_info.get("tool_name", "unknown"),
+                        "error": error_text.strip()[:200],
+                        "input": _extract_input_summary(tool_info.get("tool_input", {})),
+                        "session": session_id,
+                    }
+                )
 
     except Exception:  # NOSONAR — hooks must never crash the parent process
         pass
