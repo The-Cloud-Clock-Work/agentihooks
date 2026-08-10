@@ -345,3 +345,29 @@ class TestSessionIdBannerHost:
 
     def test_claude_banner_unchanged(self, monkeypatch):
         assert "Your Claude Code session_id" in self._banner(monkeypatch, "claude")
+
+
+class TestPreToolUseLogAttribution:
+    """The hook log is machine-global; a line with no session_id cannot be
+    attributed to the session that wrote it (PostToolUse already carries one)."""
+
+    def test_pre_tool_use_log_carries_session_id(self, claude, monkeypatch):
+        import hooks.hook_manager as hm
+
+        seen = []
+        monkeypatch.setattr(hm, "log", lambda msg, payload=None: seen.append((msg, payload or {})))
+        try:
+            hm.on_pre_tool_use(
+                {
+                    "hook_event_name": "PreToolUse",
+                    "session_id": "sid-attribution",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "echo hi"},
+                    "cwd": "/tmp",
+                }
+            )
+        except Exception:
+            pass
+        pre = [p for m, p in seen if m.startswith("Pre tool use")]
+        assert pre, "no Pre tool use line logged"
+        assert pre[0].get("session_id") == "sid-attribution"

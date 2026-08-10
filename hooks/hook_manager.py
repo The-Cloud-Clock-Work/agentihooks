@@ -852,7 +852,7 @@ def on_pre_tool_use(payload: dict) -> None:
     if SECRETS_MODE == "off":
         log(
             f"Pre tool use: {tool_name} (secrets scanning skipped, mode=off)",
-            {"tool": tool_name},
+            {"tool": tool_name, "session_id": payload.get("session_id", "")},
         )
     else:
         from hooks.secrets import redact, scan
@@ -872,7 +872,7 @@ def on_pre_tool_use(payload: dict) -> None:
             safe_command = redact(command, mode=SECRETS_MODE)[:500]
             log(
                 f"Pre tool use: {tool_name}",
-                {"tool": tool_name, "command": safe_command},
+                {"tool": tool_name, "command": safe_command, "session_id": payload.get("session_id", "")},
             )
             hits = scan(command, mode=SECRETS_MODE)
             if hits:
@@ -924,7 +924,7 @@ def on_pre_tool_use(payload: dict) -> None:
                 )
         elif tool_name in ("Write", "Edit"):
             content = tool_input.get("content", "") or tool_input.get("new_string", "")
-            log(f"Pre tool use: {tool_name}", {"tool": tool_name})
+            log(f"Pre tool use: {tool_name}", {"tool": tool_name, "session_id": payload.get("session_id", "")})
             hits = scan(content, mode=SECRETS_MODE)
             if hits:
                 names = ", ".join(hits)

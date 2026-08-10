@@ -166,6 +166,38 @@ class TestDetectVenv:
         with patch.dict("os.environ", env, clear=True):
             assert install._detect_venv() == pinned
 
+    def test_pin_is_read_from_agentihooks_env_files(self, tmp_path, monkeypatch):
+        """The installer never imports hooks.config, so a pin written to
+        ~/.agentihooks/*.env must be read explicitly or it silently does
+        nothing in a fresh shell."""
+        pinned = tmp_path / "pinned" / "python"
+        pinned.parent.mkdir()
+        pinned.touch()
+        monkeypatch.setattr(
+            install,
+            "_mcp_daemon_module",
+            lambda: type(
+                "M", (), {"_scan_env_file": staticmethod(lambda k: str(pinned) if k == "AGENTIHOOKS_PYTHON" else "")}
+            ),
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            assert install._detect_venv() == pinned
+
+    def test_env_pin_beats_repo_venv(self, tmp_path, monkeypatch):
+        pinned = tmp_path / "wanted" / "python"
+        pinned.parent.mkdir()
+        pinned.touch()
+        repo_venv = install.AGENTIHOOKS_ROOT / ".venv" / "bin" / "python"
+        repo_venv.parent.mkdir(parents=True, exist_ok=True)
+        repo_venv.touch()
+        monkeypatch.setattr(
+            install,
+            "_mcp_daemon_module",
+            lambda: type("M", (), {"_scan_env_file": staticmethod(lambda k: str(pinned))}),
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            assert install._detect_venv() == pinned
+
     def test_detects_repo_root_venv(self, tmp_path):
         root_venv = install.AGENTIHOOKS_ROOT / ".venv" / "bin" / "python"
         root_venv.parent.mkdir(parents=True, exist_ok=True)

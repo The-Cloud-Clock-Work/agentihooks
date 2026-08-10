@@ -2210,8 +2210,17 @@ def _detect_venv() -> Path | None:
     environment is the source of truth, and a shadow venv under the state
     dir drifts out of date and silently hijacks hook wiring.
     """
-    # 1. Explicit pin via AGENTIHOOKS_PYTHON
-    pinned = os.environ.get("AGENTIHOOKS_PYTHON")
+    # 1. Explicit pin via AGENTIHOOKS_PYTHON — from the environment, then from
+    #    ~/.agentihooks/*.env. The installer does not import hooks.config, so a
+    #    pin written to an env file would otherwise only bind inside already-
+    #    running hook processes and be silently ignored by `agentihooks init`
+    #    in a fresh shell (same gap _resolve_installer_mcp_transport patches).
+    pinned = os.environ.get("AGENTIHOOKS_PYTHON", "").strip()
+    if not pinned:
+        try:
+            pinned = (_mcp_daemon_module()._scan_env_file("AGENTIHOOKS_PYTHON") or "").strip()
+        except Exception:
+            pinned = ""
     if pinned:
         python = Path(pinned).expanduser()
         if python.exists():
