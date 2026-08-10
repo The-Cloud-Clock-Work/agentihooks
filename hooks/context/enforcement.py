@@ -104,7 +104,9 @@ def _get_bundle_path() -> Path | None:
 
 
 def _get_active_profile() -> str | None:
-    return _read_state().get("targets", {}).get("global", {}).get("profile") or None
+    from hooks.targets import global_record
+
+    return global_record(_read_state()).get("profile") or None
 
 
 def _load_json_enforcements(path: Path, source: str) -> list[dict]:

@@ -353,9 +353,10 @@ def on_session_start(payload: dict) -> None:
 
             from hooks.config import AGENTIHOOKS_HOME as _ah_home
             from hooks.config import BASE_CHANNELS as _channels
+            from hooks.targets import global_record as _global_record
 
             _state = _sjson.loads((_ah_home / "state.json").read_text())
-            _profile = _state.get("targets", {}).get("global", {}).get("codex", {}).get("profile", "?")
+            _profile = _global_record(_state).get("profile", "?")
             from hooks.common import inject_context as _inject_ah
 
             _inject_ah(

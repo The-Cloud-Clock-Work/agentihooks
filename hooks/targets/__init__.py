@@ -18,3 +18,21 @@ def current_target() -> str:
 
 def is_codex() -> bool:
     return current_target() == "codex"
+
+
+def global_record(state: dict) -> dict:
+    """The current target's record under ``targets.global`` in state.json.
+
+    Tolerates both the target-keyed shape ({"claude": {...}, "codex": {...}})
+    and the legacy flat shape (pre-migration state files, where the record's
+    fields sit directly under "global").
+    """
+    g = state.get("targets", {}).get("global", {})
+    if not isinstance(g, dict):
+        return {}
+    rec = g.get(current_target())
+    if isinstance(rec, dict):
+        return rec
+    if g and any(not isinstance(v, dict) for v in g.values()):
+        return g
+    return {}

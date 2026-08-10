@@ -170,3 +170,43 @@ class TestPermissionDecisionChokePoint:
         out = capsys.readouterr().out.strip()
         doc = json.loads(out)
         assert doc["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+class TestGlobalRecord:
+    """hooks.targets.global_record — statusline/enforcement read state.json
+    directly and must tolerate both the keyed and legacy flat shapes."""
+
+    KEYED = {
+        "targets": {
+            "global": {
+                "claude": {"profile": "anton,brain", "settings_profile": "sp1"},
+                "codex": {"profile": "anton"},
+            }
+        }
+    }
+    LEGACY = {"targets": {"global": {"path": "/x", "profile": "anton,brain"}}}
+
+    def test_keyed_shape_claude(self, claude):
+        from hooks.targets import global_record
+
+        assert global_record(self.KEYED)["profile"] == "anton,brain"
+
+    def test_keyed_shape_codex(self, codex):
+        from hooks.targets import global_record
+
+        assert global_record(self.KEYED)["profile"] == "anton"
+
+    def test_legacy_flat_shape(self, claude):
+        from hooks.targets import global_record
+
+        assert global_record(self.LEGACY)["profile"] == "anton,brain"
+
+    def test_missing_target_record_empty(self, codex):
+        from hooks.targets import global_record
+
+        assert global_record({"targets": {"global": {"claude": {"profile": "p"}}}}) == {}
+
+    def test_empty_state(self, claude):
+        from hooks.targets import global_record
+
+        assert global_record({}) == {}
