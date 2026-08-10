@@ -11,7 +11,7 @@ import pytest
 
 from hooks.targets import current_target, is_codex
 from hooks.targets.capabilities import allowed_permission_decisions, can_inject_context
-from hooks.targets.emitter import buffer_context, flush, has_buffered
+from hooks.targets.emitter import buffer_context, drain, flush, has_buffered
 from hooks.targets.normalizer import normalize_payload
 
 
@@ -112,3 +112,61 @@ class TestEmitter:
         assert "=== CONTEXT INJECTION ===" in out
         assert "hello claude" in out
         assert not has_buffered()
+
+    def test_drain_returns_joined_content_and_clears(self, codex, capsys):
+        buffer_context("first block")
+        buffer_context("second block")
+        content = drain()
+        assert "first block" in content and "second block" in content
+        assert not has_buffered()
+        # drain() never emits anything itself — unlike flush(), it's silent.
+        assert capsys.readouterr().out == ""
+
+    def test_drain_empty_is_safe(self, codex, capsys):
+        assert not has_buffered()
+        assert drain() == ""
+        assert capsys.readouterr().out == ""
+
+    def test_drain_after_block_prevents_leak_into_next_event(self, codex, capsys):
+        """The invariant fix_2/fix_3 exist to guarantee: content buffered for
+        one event must never survive into the next event's flush."""
+        buffer_context("event-one context")
+        drain()  # simulates main()'s BlockAction/finally path
+        flush("PostToolUse")  # a later event in the same (hypothetical) process
+        assert capsys.readouterr().out == "", "drained buffer leaked into a later flush"
+
+
+class TestPermissionDecisionChokePoint:
+    """hooks.hook_manager.emit_permission_decision is the sole legal call
+    site for a permissionDecision envelope. It must filter every decision
+    through allowed_permission_decisions() so a future non-deny decision
+    cannot leak through on codex, even though nothing emits one today."""
+
+    def test_codex_deny_is_emitted(self, codex, capsys):
+        from hooks.hook_manager import emit_permission_decision
+
+        emit_permission_decision("PreToolUse", "deny", reason="blocked")
+        out = capsys.readouterr().out.strip()
+        doc = json.loads(out)
+        assert doc["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert doc["hookSpecificOutput"]["permissionDecisionReason"] == "blocked"
+
+    def test_codex_allow_is_dropped_not_printed(self, codex, capsys):
+        from hooks.hook_manager import emit_permission_decision
+
+        emit_permission_decision("PreToolUse", "allow")
+        assert capsys.readouterr().out == ""
+
+    def test_codex_ask_is_dropped_not_printed(self, codex, capsys):
+        from hooks.hook_manager import emit_permission_decision
+
+        emit_permission_decision("PreToolUse", "ask")
+        assert capsys.readouterr().out == ""
+
+    def test_claude_allow_is_emitted(self, claude, capsys):
+        from hooks.hook_manager import emit_permission_decision
+
+        emit_permission_decision("PreToolUse", "allow")
+        out = capsys.readouterr().out.strip()
+        doc = json.loads(out)
+        assert doc["hookSpecificOutput"]["permissionDecision"] == "allow"

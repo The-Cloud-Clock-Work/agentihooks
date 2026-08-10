@@ -22,12 +22,40 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 _MANAGED_HEADER = "<!-- managed-by: agentihooks — regenerate with: agentihooks init --target codex -->"
+_MANAGED_FOOTER = "<!-- agentihooks:managed-end -->"
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """Write ``content`` to ``path`` via a same-directory temp file + ``os.replace``.
+
+    A crash mid-write leaves the temp file, never a truncated target.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    tmp.write_text(content)
+    os.replace(tmp, path)
+
+
+def _command_is_wrapper(command: str, wrapper: Path) -> bool:
+    """True only if ``command`` IS our wrapper invocation, not merely contains it.
+
+    A substring check misclassifies e.g. ``<wrapper>.disabled-by-operator`` as ours.
+    """
+    wrapper_s = str(wrapper)
+    if command == wrapper_s:
+        return True
+    if command.startswith(wrapper_s):
+        rest = command[len(wrapper_s) :]
+        return rest == "" or rest[0].isspace()
+    return False
+
 
 # Events supported by both codex hooks.json and our hook_manager dispatch.
 CODEX_HOOK_EVENTS = (
@@ -89,14 +117,28 @@ class CodexAdapter:
         features = doc.setdefault("features", {})
         features["hooks"] = True
 
-        # Permission translation (claude settings → codex posture).
+        # Permission translation (claude settings → codex posture). We record the
+        # values we last wrote under [agentihooks.managed] so a later downgrade
+        # (bypass → default) can restore them — but only while the operator hasn't
+        # hand-edited the key since our last write. A hand-edit differs from our
+        # own record and is left alone.
         default_mode = (rendered.get("permissions") or {}).get("defaultMode", "")
         if default_mode == "bypassPermissions":
-            doc["approval_policy"] = "never"
-            doc["sandbox_mode"] = "danger-full-access"
+            wanted = {"approval_policy": "never", "sandbox_mode": "danger-full-access"}
         else:
-            doc.setdefault("approval_policy", "on-request")
-            doc.setdefault("sandbox_mode", "workspace-write")
+            wanted = {"approval_policy": "on-request", "sandbox_mode": "workspace-write"}
+        managed = doc.setdefault("agentihooks", {}).setdefault("managed", {})
+        for key, value in wanted.items():
+            current = doc.get(key)
+            recorded = managed.get(key)
+            if current is None or current == recorded:
+                doc[key] = value
+                managed[key] = value
+            else:
+                _i._cprint(
+                    f"  [!!] config.toml '{key}' hand-set to {current!r} (managed value would be "
+                    f"{value!r}) — leaving operator value in place"
+                )
 
         # Statusline degrade: no command-backed statusline on codex (upstream
         # openai/codex #20140) — configure the closest built-in items. The
@@ -134,8 +176,8 @@ class CodexAdapter:
             "#!/usr/bin/env bash\n"
             "# managed-by: agentihooks — regenerate with: agentihooks init --target codex\n"
             "set -euo pipefail\n"
-            f"cd {_i.AGENTIHOOKS_ROOT}\n"
-            f"AGENTIHOOKS_TARGET=codex exec {python_bin} -m hooks\n"
+            f"cd {shlex.quote(str(_i.AGENTIHOOKS_ROOT))}\n"
+            f"AGENTIHOOKS_TARGET=codex exec {shlex.quote(python_bin)} -m hooks\n"
         )
         wrapper.chmod(0o755)
 
@@ -158,9 +200,13 @@ class CodexAdapter:
         merged = existing.get("hooks", {}) if isinstance(existing.get("hooks"), dict) else {}
         for event, groups in desired.items():
             prior = merged.get(event, [])
-            foreign = [g for g in prior if not any(str(wrapper) in h.get("command", "") for h in g.get("hooks", []))]
+            foreign = [
+                g
+                for g in prior
+                if not any(_command_is_wrapper(h.get("command", ""), wrapper) for h in g.get("hooks", []))
+            ]
             merged[event] = foreign + groups
-        json.dump({"hooks": merged}, hooks_path.open("w"), indent=2)
+        _atomic_write(hooks_path, json.dumps({"hooks": merged}, indent=2))
         _i._cprint(f"[OK] Wrote {hooks_path} ({len(CODEX_HOOK_EVENTS)} events)")
         _i._cprint(
             "  [!!] Codex trusts hooks by content hash: run /hooks inside codex once to "
@@ -228,6 +274,10 @@ class CodexAdapter:
 
         written: list[str] = []
         for name, src in sources.items():
+            dst_file = dst_dir / name
+            if dst_file.exists() and name not in previous:
+                _i._cprint(f"  [!!] {dst_file} exists and is not agentihooks-managed — skipping (operator file wins)")
+                continue
             try:
                 text = src.read_text()
             except OSError:
@@ -252,12 +302,12 @@ class CodexAdapter:
             if out_front:
                 out += "---\n" + yaml.safe_dump(out_front, sort_keys=False).strip() + "\n---\n\n"
             out += body
-            (dst_dir / name).write_text(out)
+            dst_file.write_text(out)
             written.append(name)
 
         for stale in set(previous) - set(written):
             (dst_dir / stale).unlink(missing_ok=True)
-        json.dump(sorted(written), manifest_path.open("w"))
+        _atomic_write(manifest_path, json.dumps(sorted(written)))
         _i._cprint(f"  [OK] {len(written)} command(s) translated → {dst_dir} (invoke with /prompts:<name>)")
 
     # ------------------------------------------------------------------
@@ -299,14 +349,29 @@ class CodexAdapter:
         if manifesto_text:
             parts.append(f"<!-- ci-manifesto -->\n{manifesto_text.strip()}")
 
-        text = "\n\n---\n\n".join(parts) + "\n"
+        managed_text = "\n\n---\n\n".join(parts) + f"\n\n{_MANAGED_FOOTER}\n"
         dst = self.home() / "AGENTS.md"
         dst.parent.mkdir(parents=True, exist_ok=True)
-        if dst.exists() and _MANAGED_HEADER not in dst.read_text():
-            backup = dst.with_suffix(f".md.bak.{datetime.now(timezone.utc):%Y%m%d%H%M%S}")
-            shutil.copy2(dst, backup)
-            _i._cprint(f"  [!!] Pre-existing AGENTS.md backed up → {backup}")
-        dst.write_text(text)
+
+        operator_tail = ""
+        if dst.exists():
+            existing = dst.read_text()
+            if _MANAGED_HEADER in existing:
+                if _MANAGED_FOOTER in existing:
+                    # Preserve whatever the operator appended after our managed region.
+                    operator_tail = existing.split(_MANAGED_FOOTER, 1)[1]
+                else:
+                    # Legacy managed file predating the footer marker — one-time backup.
+                    backup = dst.with_suffix(f".md.bak.{datetime.now(timezone.utc):%Y%m%d%H%M%S}")
+                    shutil.copy2(dst, backup)
+                    _i._cprint(f"  [!!] Legacy AGENTS.md (no managed-end marker) backed up → {backup}")
+            else:
+                backup = dst.with_suffix(f".md.bak.{datetime.now(timezone.utc):%Y%m%d%H%M%S}")
+                shutil.copy2(dst, backup)
+                _i._cprint(f"  [!!] Pre-existing AGENTS.md backed up → {backup}")
+
+        text = managed_text + operator_tail
+        _atomic_write(dst, text)
 
         # Codex caps the combined instruction doc (project_doc_max_bytes,
         # default 32 KiB). v0.147.0 loaded a 415 KB global AGENTS.md in full,
@@ -370,13 +435,32 @@ class CodexAdapter:
                     "Expose a streamable-HTTP endpoint and re-run init."
                 )
                 continue
+            from hooks.secrets import scan as _scan_secrets
+
             entry: dict = {}
             if spec.get("command"):
                 entry["command"] = spec["command"]
                 if spec.get("args"):
                     entry["args"] = list(spec["args"])
                 if spec.get("env"):
-                    entry["env"] = dict(spec["env"])
+                    clean_env: dict = {}
+                    for ek, ev in dict(spec["env"]).items():
+                        ev_s = str(ev)
+                        if "${" in ev_s:
+                            # Reference, not a literal value — nothing to scan.
+                            clean_env[ek] = ev
+                            continue
+                        hits = _scan_secrets(ev_s, mode="strict")
+                        if hits:
+                            _i._cprint(
+                                f"  [!!] MCP '{name}' env var '{ek}' looks like a credential "
+                                f"({', '.join(hits)}) — dropped from config.toml. Export it in "
+                                "the shell environment instead of writing it to disk."
+                            )
+                            continue
+                        clean_env[ek] = ev
+                    if clean_env:
+                        entry["env"] = clean_env
             elif spec.get("url"):
                 entry["url"] = spec["url"]
                 # Claude Code expands ${VAR} placeholders in header values at
@@ -399,7 +483,16 @@ class CodexAdapter:
                             "or an Authorization Bearer ${VAR} (mapped to bearer_token_env_var)."
                         )
                     else:
-                        clean_headers[hk] = hv
+                        hits = _scan_secrets(hv_s, mode="strict")
+                        if hits:
+                            _i._cprint(
+                                f"  [!!] MCP '{name}' header '{hk}' looks like a credential "
+                                f"({', '.join(hits)}) — dropped from config.toml. Reference it via "
+                                "Authorization Bearer ${VAR} (mapped to bearer_token_env_var) "
+                                "instead of a literal value."
+                            )
+                        else:
+                            clean_headers[hk] = hv
                 if clean_headers:
                     entry["http_headers"] = clean_headers
             else:
@@ -455,7 +548,7 @@ class CodexAdapter:
                     for groups in hooks_doc.get("hooks", {}).values()
                     for g in groups
                     for h in g.get("hooks", [])
-                    if str(wrapper) in h.get("command", "")
+                    if _command_is_wrapper(h.get("command", ""), wrapper)
                 )
                 checks.append(
                     (
@@ -516,5 +609,4 @@ class CodexAdapter:
     def _dump_toml(path: Path, doc) -> None:
         import tomlkit
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(tomlkit.dumps(doc))
+        _atomic_write(path, tomlkit.dumps(doc))

@@ -30,6 +30,11 @@ from hooks.config import AGENTIHOOKS_HOME
 
 class TranscriptRecord(TypedDict, total=False):
     kind: str  # user_text | assistant_text | system_text | tool_call | tool_result | token_usage | turn_complete | meta
+    # turn_complete is a fallback only: emitted for a codex turn when no
+    # assistant_text record was produced for it (e.g. a rollout truncated
+    # before the response_item message landed). A turn that already yielded
+    # assistant_text never also yields turn_complete, so consumers that
+    # treat the two kinds as equivalent digest text don't double-count.
     text: str
     tool_name: str
     tool_input: object
@@ -39,11 +44,20 @@ class TranscriptRecord(TypedDict, total=False):
     raw: dict
 
 
+_CODEX_TYPES = ("session_meta", "response_item", "event_msg", "turn_context", "world_state")
+
+
 def detect_transcript_format(path: str | Path) -> str:
-    """Return ``"codex"`` or ``"claude"`` by peeking at the first record."""
+    """Return ``"codex"`` or ``"claude"`` by peeking at the first parseable records.
+
+    A single corrupt line (e.g. a codex rollout read mid-write) must not
+    misdetect the whole file as claude — scan up to the first 5 lines that
+    actually parse as JSON before giving up.
+    """
     p = Path(path)
     try:
-        with open(p) as f:
+        with open(p, errors="replace") as f:
+            checked = 0
             for line in f:
                 line = line.strip()
                 if not line:
@@ -53,10 +67,12 @@ def detect_transcript_format(path: str | Path) -> str:
                 try:
                     first = json.loads(line)
                 except json.JSONDecodeError:
-                    return "claude"
-                if first.get("type") in ("session_meta", "response_item", "event_msg", "turn_context"):
+                    continue
+                checked += 1
+                if first.get("type") in _CODEX_TYPES:
                     return "codex"
-                return "claude"
+                if checked >= 5:
+                    break
     except OSError:
         pass
     return "claude"
@@ -65,7 +81,7 @@ def detect_transcript_format(path: str | Path) -> str:
 def _load_entries(path: Path) -> list[dict]:
     """Tolerant load: JSONL (skipping bad lines) or a bare JSON array."""
     try:
-        content = path.read_text().strip()
+        content = path.read_text(errors="replace").strip()
     except OSError:
         return []
     if not content:
@@ -93,9 +109,12 @@ def _iter_claude_records(entries: list[dict]) -> Iterator[TranscriptRecord]:
         if etype not in ("user", "assistant"):
             continue
         message = entry.get("message")
+        kind = "assistant_text" if etype == "assistant" else "user_text"
+        if isinstance(message, str):
+            yield {"kind": kind, "text": message, "raw": entry}
+            continue
         content = message.get("content", []) if isinstance(message, dict) else []
         if isinstance(content, str):
-            kind = "assistant_text" if etype == "assistant" else "user_text"
             yield {"kind": kind, "text": content, "raw": entry}
             continue
         if not isinstance(content, list):
@@ -105,7 +124,6 @@ def _iter_claude_records(entries: list[dict]) -> Iterator[TranscriptRecord]:
                 continue
             btype = block.get("type")
             if btype == "text":
-                kind = "assistant_text" if etype == "assistant" else "user_text"
                 yield {"kind": kind, "text": block.get("text", ""), "raw": entry}
             elif btype == "tool_use":
                 yield {
@@ -126,6 +144,14 @@ def _iter_claude_records(entries: list[dict]) -> Iterator[TranscriptRecord]:
 
 
 def _iter_codex_records(entries: list[dict]) -> Iterator[TranscriptRecord]:
+    # A codex turn yields its assistant text via a response_item message
+    # record; task_complete's last_agent_message repeats the same text as a
+    # turn-boundary marker. Emitting both double-counts every turn for
+    # consumers that treat assistant_text/turn_complete as equivalent (auto
+    # save, brain_writer). Track whether this turn already produced
+    # assistant_text and only fall back to the task_complete text when it
+    # didn't (e.g. a rollout truncated before the message record landed).
+    assistant_seen_this_turn = False
     for entry in entries:
         etype = entry.get("type")
         payload = entry.get("payload", {})
@@ -139,12 +165,16 @@ def _iter_codex_records(entries: list[dict]) -> Iterator[TranscriptRecord]:
                     "assistant": "assistant_text",
                     "user": "user_text",
                 }.get(role, "system_text")
+                if role == "user":
+                    assistant_seen_this_turn = False
                 texts = [
                     b.get("text", "")
                     for b in payload.get("content", [])
                     if isinstance(b, dict) and b.get("type") in ("input_text", "output_text", "text")
                 ]
                 if texts:
+                    if kind == "assistant_text":
+                        assistant_seen_this_turn = True
                     yield {"kind": kind, "text": "\n".join(texts), "raw": entry}
             elif ptype in ("function_call", "local_shell_call", "custom_tool_call"):
                 yield {
@@ -170,11 +200,15 @@ def _iter_codex_records(entries: list[dict]) -> Iterator[TranscriptRecord]:
             if ptype == "token_count":
                 yield {"kind": "token_usage", "raw": entry}
             elif ptype == "task_complete":
-                yield {
-                    "kind": "turn_complete",
-                    "text": payload.get("last_agent_message") or "",
-                    "raw": entry,
-                }
+                # Only a fallback: skip when the turn's assistant_text was
+                # already yielded above to avoid re-counting the same reply.
+                if not assistant_seen_this_turn:
+                    yield {
+                        "kind": "turn_complete",
+                        "text": payload.get("last_agent_message") or "",
+                        "raw": entry,
+                    }
+                assistant_seen_this_turn = False
         elif etype == "session_meta":
             yield {"kind": "meta", "raw": entry}
 

@@ -1,8 +1,10 @@
 """Tests for the Codex target adapter (scripts/targets/codex_target.py)."""
 
 import json
+import shlex
+import subprocess
 
-import install  # noqa: F401  — binds the installer identity conftest patches
+import install  # binds the installer identity conftest patches; also used directly below
 import pytest
 
 from scripts.targets.codex_target import CODEX_HOOK_EVENTS, CodexAdapter, codex_home
@@ -42,6 +44,33 @@ class TestConfigToml:
         adapter.write_settings({})
         assert 'approval_policy = "untrusted"' in (home / "config.toml").read_text()
 
+    def test_bypass_then_default_restores_managed_values(self, adapter):
+        """Bypass → default must downgrade sandboxing back, not stick forever."""
+        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+        text = (codex_home() / "config.toml").read_text()
+        assert 'approval_policy = "never"' in text
+        adapter.write_settings({"permissions": {"defaultMode": "default"}})
+        text = (codex_home() / "config.toml").read_text()
+        assert 'approval_policy = "on-request"' in text
+        assert 'sandbox_mode = "workspace-write"' in text
+
+    def test_operator_hand_set_approval_policy_survives_reinit(self, adapter, capsys):
+        adapter.write_settings({})
+        home = codex_home()
+        # Operator hand-edits the live key only — not our internal [agentihooks.managed]
+        # record, which they don't know exists. count=1 hits the first (top-level)
+        # occurrence; the managed-table copy is left as our own record.
+        text = (
+            (home / "config.toml")
+            .read_text()
+            .replace('approval_policy = "on-request"', 'approval_policy = "untrusted"', 1)
+        )
+        (home / "config.toml").write_text(text)
+        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+        text = (home / "config.toml").read_text()
+        assert 'approval_policy = "untrusted"' in text
+        assert "hand-set" in capsys.readouterr().out
+
 
 class TestHooksJson:
     def test_all_events_wired_to_wrapper(self, adapter):
@@ -73,6 +102,37 @@ class TestHooksJson:
             h for g in doc["hooks"]["SessionStart"] for h in g["hooks"] if h["command"].endswith("agentihooks-hook.sh")
         ]
         assert len(own) == 1
+
+    def test_disabled_foreign_hook_with_wrapper_suffix_preserved(self, adapter):
+        """A substring match would misclassify `<wrapper>.disabled-by-operator` as ours."""
+        home = codex_home()
+        home.mkdir(parents=True, exist_ok=True)
+        wrapper_path = home / "agentihooks-hook.sh"
+        disabled_cmd = str(wrapper_path) + ".disabled-by-operator"
+        foreign = {"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": disabled_cmd}]}]}}
+        (home / "hooks.json").write_text(json.dumps(foreign))
+        adapter.write_settings({})
+        doc = json.loads((home / "hooks.json").read_text())
+        pretool_cmds = [h["command"] for g in doc["hooks"]["PreToolUse"] for h in g["hooks"]]
+        assert disabled_cmd in pretool_cmds
+        assert str(wrapper_path) in pretool_cmds
+
+    def test_wrapper_script_quotes_paths_with_spaces(self, adapter, monkeypatch):
+        spaced_root = codex_home().parent / "agenti hooks root"
+        monkeypatch.setattr(install, "AGENTIHOOKS_ROOT", spaced_root)
+        adapter.write_settings({})
+        script = (codex_home() / "agentihooks-hook.sh").read_text()
+        assert f"cd {shlex.quote(str(spaced_root))}" in script
+        result = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True)
+        assert result.returncode == 0, result.stderr
+
+    def test_config_toml_and_hooks_json_writes_leave_no_temp_files(self, adapter):
+        adapter.write_settings({})
+        home = codex_home()
+        assert list(home.glob(".config.toml.tmp-*")) == []
+        assert list(home.glob(".hooks.json.tmp-*")) == []
+        assert (home / "config.toml").exists()
+        assert (home / "hooks.json").exists()
 
 
 class TestPersona:
@@ -113,6 +173,40 @@ class TestPersona:
         )
         assert backups, "pre-existing unmanaged AGENTS.md must be backed up"
 
+    def test_operator_content_after_footer_survives_rerun(self, adapter, tmp_path):
+        prof = tmp_path / "p"
+        prof.mkdir()
+        (prof / "CLAUDE.md").write_text("persona v1")
+        adapter.install_persona([("p", prof)], ["p"], None)
+        dst = codex_home() / "AGENTS.md"
+        text = dst.read_text()
+        assert "<!-- agentihooks:managed-end -->" in text
+
+        dst.write_text(text + "\n## Operator notes\nDo not touch below this line.\n")
+
+        (prof / "CLAUDE.md").write_text("persona v2")
+        adapter.install_persona([("p", prof)], ["p"], None)
+        text = dst.read_text()
+        assert "persona v2" in text
+        assert "persona v1" not in text
+        assert "## Operator notes" in text
+        assert "Do not touch below this line." in text
+
+    def test_legacy_managed_header_without_footer_backed_up_once(self, adapter, tmp_path):
+        from scripts.targets.codex_target import _MANAGED_HEADER
+
+        home = codex_home()
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "AGENTS.md").write_text(_MANAGED_HEADER + "\nold content, predates the footer marker\n")
+        prof = tmp_path / "p"
+        prof.mkdir()
+        (prof / "CLAUDE.md").write_text("persona")
+        adapter.install_persona([("p", prof)], ["p"], None)
+        backups = (
+            list(home.glob("AGENTS.md.bak.*")) + list(home.glob("AGENTS.md.*.bak*")) + list(home.glob("AGENTS*.bak.*"))
+        )
+        assert backups, "legacy managed AGENTS.md without a footer marker must be backed up once"
+
 
 class TestPrompts:
     def _layer(self, tmp_path, name, text):
@@ -142,6 +236,23 @@ class TestPrompts:
         adapter.install_features("commands", [("command", src)], lambda p: p.suffix == ".md")
         assert not (codex_home() / "prompts" / "old.md").exists()
         assert (codex_home() / "prompts" / "new.md").exists()
+
+    def test_operator_file_not_overwritten_on_first_init(self, adapter, tmp_path):
+        """A file the manifest has never claimed is an operator file — it wins."""
+        dst_dir = codex_home() / "prompts"
+        dst_dir.mkdir(parents=True)
+        (dst_dir / "deploy.md").write_text("# operator's own prompt\n")
+        src = self._layer(tmp_path, "deploy.md", "body from agentihooks")
+        adapter.install_features("commands", [("command", src)], lambda p: p.suffix == ".md")
+        assert (dst_dir / "deploy.md").read_text() == "# operator's own prompt\n"
+
+    def test_manifest_owned_prompt_still_overwritten_on_rerun(self, adapter, tmp_path):
+        src = self._layer(tmp_path, "deploy.md", "body v1")
+        adapter.install_features("commands", [("command", src)], lambda p: p.suffix == ".md")
+        assert "body v1" in (codex_home() / "prompts" / "deploy.md").read_text()
+        (src / "deploy.md").write_text("body v2")
+        adapter.install_features("commands", [("command", src)], lambda p: p.suffix == ".md")
+        assert "body v2" in (codex_home() / "prompts" / "deploy.md").read_text()
 
 
 class TestMcp:
@@ -174,6 +285,42 @@ class TestMcp:
         assert "${MCP_GATEWAY_KEY}" not in text, "placeholder must never land literally"
         assert "${OTHER}" not in text
         assert "placeholder" in capsys.readouterr().out
+
+    def test_credential_shaped_header_dropped(self, adapter, capsys):
+        # Built by concatenation so the literal secret-shaped string never appears
+        # whole anywhere else in this file.
+        dummy_key = "AKIA" + "TESTDUMMY0000000"
+        adapter.register_mcp(
+            {
+                "gateway": {
+                    "type": "http",
+                    "url": "https://g.example/mcp",
+                    "headers": {"X-Api-Key": dummy_key},
+                }
+            }
+        )
+        text = (codex_home() / "config.toml").read_text()
+        assert dummy_key not in text
+        out = capsys.readouterr().out
+        assert "X-Api-Key" in out
+        assert "gateway" in out
+
+    def test_credential_shaped_env_var_dropped(self, adapter, capsys):
+        dummy_key = "AKIA" + "TESTDUMMY0000000"
+        adapter.register_mcp(
+            {
+                "local": {
+                    "command": "/py",
+                    "args": ["-m", "server"],
+                    "env": {"UPSTREAM_KEY": dummy_key},
+                }
+            }
+        )
+        text = (codex_home() / "config.toml").read_text()
+        assert dummy_key not in text
+        out = capsys.readouterr().out
+        assert "UPSTREAM_KEY" in out
+        assert "local" in out
 
     def test_skills_symlinked_to_agents_dir(self, adapter, tmp_path):
         src = tmp_path / "skills"

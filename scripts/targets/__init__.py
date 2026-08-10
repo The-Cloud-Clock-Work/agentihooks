@@ -15,35 +15,61 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, Sequence
 
 SUPPORTED_TARGETS = ("claude", "codex")
 DEFAULT_TARGET = "claude"
 
 
-def resolve_target(cli_value: str | None, stored: str, *, interactive_ok: bool = True) -> str:
+def resolve_target(
+    cli_value: str | None,
+    stored: str,
+    installed: Sequence[str] = (),
+    *,
+    interactive_ok: bool = True,
+) -> str:
     """Resolve the install target.
 
-    Precedence: CLI flag > AGENTIHOOKS_TARGET env > state.json > TTY prompt >
-    ``claude``. Mirrors the profile-resolution precedence in
-    ``cmd_init_unified``. Non-TTY (or *interactive_ok* False) skips the prompt
-    so headless installs keep today's behavior unchanged.
+    Precedence: CLI flag > ``AGENTIHOOKS_TARGET`` env > exactly-one-installed-
+    target recall (a codex-only machine keeps recalling codex with no stored
+    hint needed) > interactive TTY prompt (defaulting to *stored* when it
+    names a valid target, else :data:`DEFAULT_TARGET`) > non-interactive
+    resolution with multiple installed targets (warns to stderr, naming the
+    ambiguity and the ``--target`` flag, then falls back to
+    :data:`DEFAULT_TARGET`) > :data:`DEFAULT_TARGET`.
+
+    *stored* only ever supplies the TTY prompt's default now — it never wins
+    a non-interactive resolution by itself. That is deliberate: a single
+    last-writer-wins ``install_target`` key can't be trusted to speak for
+    *which* target's record a bare, non-interactive ``init`` should reinstall
+    when more than one is on record. *installed* carries that instead.
+    Invalid *cli_value*/env values still hard-exit; an invalid *stored* value
+    just loses its prompt-default role.
     """
     candidate = (cli_value or "").strip()
     if not candidate:
         candidate = os.environ.get("AGENTIHOOKS_TARGET", "").strip()
     if not candidate:
-        candidate = (stored or "").strip()
-    if not candidate:
-        if interactive_ok and sys.stdin.isatty():
+        installed_targets = tuple(installed)
+        if len(installed_targets) == 1:
+            candidate = installed_targets[0]
+        elif interactive_ok and sys.stdin.isatty():
+            stored_norm = (stored or "").strip().lower()
+            prompt_default = stored_norm if stored_norm in SUPPORTED_TARGETS else DEFAULT_TARGET
             options = "/".join(SUPPORTED_TARGETS)
-            candidate = input(f"Target ({options}) [{DEFAULT_TARGET}]: ").strip() or DEFAULT_TARGET
+            candidate = input(f"Target ({options}) [{prompt_default}]: ").strip() or prompt_default
             if candidate.lower() not in SUPPORTED_TARGETS:
                 # Interactive typo: warn and fall back rather than killing the
                 # whole init. Flag/env values below still fail hard.
                 print(f"  [WARN] Unknown target '{candidate}' — using '{DEFAULT_TARGET}'.")
                 candidate = DEFAULT_TARGET
         else:
+            if len(installed_targets) > 1:
+                print(
+                    f"WARNING: multiple install targets found ({', '.join(sorted(installed_targets))}) — "
+                    f"ambiguous bare init, defaulting to '{DEFAULT_TARGET}'. Pass --target to disambiguate.",
+                    file=sys.stderr,
+                )
             candidate = DEFAULT_TARGET
     candidate = candidate.lower()
     if candidate not in SUPPORTED_TARGETS:

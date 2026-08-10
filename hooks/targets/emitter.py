@@ -7,6 +7,11 @@ buffered here across the whole hook process and flushed exactly once, as a
 single ``hookSpecificOutput.additionalContext`` envelope, by ``main()``
 right before exit. Events with no context channel on the target (codex
 PreToolUse) drop the buffer with a log line instead.
+
+Invariant: the module-global buffer never survives past the request it was
+built for. ``flush()`` clears it on the success path; ``drain()`` clears it
+on every other path (a ``BlockAction``, or any other exception) so content
+buffered for one event can never leak into the next event's envelope.
 """
 
 from __future__ import annotations
@@ -28,8 +33,28 @@ def has_buffered() -> bool:
     return bool(_buffer)
 
 
+def drain() -> str:
+    """Return the buffered content joined, and clear the buffer.
+
+    The exception-path counterpart to ``flush()``: where ``flush()`` emits
+    the buffer as the terminal stdout envelope on success, ``drain()`` pulls
+    the content out (for a caller to fold into a stderr message, a log line,
+    etc.) without emitting anything itself, and always leaves the buffer
+    empty. Safe to call when nothing is buffered — returns ``""``.
+    """
+    if not _buffer:
+        return ""
+    content = "\n".join(_buffer)
+    _buffer.clear()
+    return content
+
+
 def flush(event_name: str) -> None:
-    """Emit the buffered context as one JSON envelope. Codex only; no-op when empty."""
+    """Emit the buffered context as one JSON envelope. Codex only; no-op when empty.
+
+    Clears the buffer unconditionally once there is content to flush — see
+    the module invariant above.
+    """
     if not _buffer:
         return
     content = "\n".join(_buffer)

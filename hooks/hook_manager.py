@@ -1831,6 +1831,41 @@ def on_permission_request(payload: dict) -> None:
     log(f"Permission requested: {tool_name}", {"tool": tool_name})
 
 
+def emit_permission_decision(event_name: str, decision: str, reason: str = "") -> None:
+    """Print a ``hookSpecificOutput.permissionDecision`` envelope.
+
+    The single legal call site for emitting a permission decision — route any
+    future allow/deny/ask logic through here rather than printing directly.
+    *decision* is filtered through ``hooks.targets.capabilities.
+    allowed_permission_decisions()`` for the current target first: codex's
+    PreToolUse output supports ``"deny"`` only (no allow/ask), so a decision
+    outside the target's allowed set is dropped with a log line instead of
+    being printed. This is what structurally closes the codex path even
+    though nothing emits a non-deny decision today — a future "allow"
+    fast-path can't leak through it.
+    """
+    from hooks.targets import current_target
+    from hooks.targets.capabilities import allowed_permission_decisions
+
+    target = current_target()
+    if decision not in allowed_permission_decisions(target):
+        log(
+            "permission decision dropped — not allowed on this target",
+            {"target": target, "event": event_name, "decision": decision},
+        )
+        return
+
+    output: dict[str, Any] = {
+        "hookSpecificOutput": {
+            "hookEventName": event_name,
+            "permissionDecision": decision,
+        }
+    }
+    if reason:
+        output["hookSpecificOutput"]["permissionDecisionReason"] = reason
+    print(json.dumps(output))
+
+
 # =============================================================================
 # EVENT ROUTER
 # =============================================================================
@@ -1878,17 +1913,40 @@ def main() -> None:
 
         # Route to handler
         handler = EVENT_HANDLERS.get(event_name)
-        if handler:
-            handler(payload)
-        else:
-            log(f"Unknown event: {event_name}", payload)
 
-        # Codex parses hook stdout as ONE JSON object — everything the
-        # handlers injected was buffered and is flushed here as a single
-        # envelope. No-op on the claude target (nothing buffers there).
-        from hooks.targets import emitter
+        from hooks.targets import emitter, is_codex
 
-        emitter.flush(event_name)
+        try:
+            if handler:
+                handler(payload)
+            else:
+                log(f"Unknown event: {event_name}", payload)
+
+            # Codex parses hook stdout as ONE JSON object — everything the
+            # handlers injected was buffered and is flushed here as a single
+            # envelope. No-op on the claude target (nothing buffers there).
+            emitter.flush(event_name)
+
+        except BlockAction as e:
+            # A BlockAction skips the flush above, so on codex any context a
+            # handler buffered before the block (e.g. an inline-secret NOTE
+            # buffered ahead of branch_guard's raise) would otherwise be
+            # silently lost — stdout carries nothing on the block path.
+            # Fold it into the stderr message instead, which is freeform and
+            # still reaches the model with the deny. Claude never buffers
+            # (every call site there prints immediately), so this is a no-op
+            # on that target and the message is unchanged.
+            reason = str(e)
+            if is_codex():
+                drained = emitter.drain()
+                if drained:
+                    reason = f"{reason}\n\n{drained}"
+            raise BlockAction(reason) from e
+        finally:
+            # Belt-and-braces: no exception path — BlockAction or otherwise —
+            # may leave content buffered into the next event's envelope.
+            # flush() already clears on success; this covers every other exit.
+            emitter.drain()
 
     except BlockAction as e:
         print(str(e), file=sys.stderr, flush=True)  # Claude Code reads stderr for hook messages

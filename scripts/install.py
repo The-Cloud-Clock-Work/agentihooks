@@ -336,12 +336,25 @@ def _migrate_targets_shape(state: dict) -> bool:
     ``targets.global.claude`` / ``targets.global.codex``, so a codex install
     can never clobber the claude record. Discriminator: legacy records hold
     at least one non-dict value.
+
+    Also handles the MIXED shape a version-skewed pre-multi-target binary can
+    still write: flat claude fields (path/profile/installed_at/...) sitting
+    directly under ``targets.global`` *alongside* an already-keyed dict
+    record for another target (e.g. ``codex``). Every dict-valued record is
+    preserved as-is; the flat fields are nested under ``claude``, merged over
+    whatever claude record already exists there (the flat fields win, since
+    they're what the old binary just wrote).
     """
     g = state.get("targets", {}).get("global")
-    if isinstance(g, dict) and g and any(not isinstance(v, dict) for v in g.values()):
-        state["targets"]["global"] = {DEFAULT_TARGET: g}
-        return True
-    return False
+    if not isinstance(g, dict) or not g:
+        return False
+    flat_fields = {k: v for k, v in g.items() if not isinstance(v, dict)}
+    if not flat_fields:
+        return False
+    dict_records = {k: v for k, v in g.items() if isinstance(v, dict)}
+    claude_record = {**dict_records.get(DEFAULT_TARGET, {}), **flat_fields}
+    state["targets"]["global"] = {**dict_records, DEFAULT_TARGET: claude_record}
+    return True
 
 
 def _global_record(state: dict, target: str = DEFAULT_TARGET, *, create: bool = False) -> dict:
@@ -648,7 +661,11 @@ def _register_target_global(profile: str, settings_profile: str = "", target: st
     if settings_profile:
         entry["settings_profile"] = settings_profile
     state.setdefault("targets", {}).setdefault("global", {})[target] = entry
-    # Recall key for a bare `agentihooks init` (flag > env > this > prompt).
+    # Last-used target, consulted only as the interactive TTY prompt's
+    # default. It is NOT scoped to a target's own record and is never
+    # trusted to pick a target for a bare, non-interactive `init` — see
+    # resolve_target's installed-target precedence in scripts/targets, which
+    # reads the per-target records under targets.global instead.
     state["install_target"] = target
     _save_state(state)
 
@@ -1645,6 +1662,7 @@ def _connector_new(
 def _cmd_settings_profile(args: argparse.Namespace) -> None:
     """Quick-switch: re-apply only the settings layer without touching rules/CLAUDE.md."""
     state = _load_state()
+    # Claude-scoped on purpose: this manages ~/.claude settings, not codex's.
     global_target = _global_record(state)
     current_profile = global_target.get("profile", "")
 
@@ -1893,13 +1911,20 @@ def cmd_init_unified(args: argparse.Namespace) -> None:
         profile_name = os.environ.get("AGENTIHOOKS_PROFILE", "")
     _prev_state = _load_state()
     _migrate_profile_rename(_prev_state, "colt", "anton")
-    # Resolve install target — flag > AGENTIHOOKS_TARGET > state.json > TTY > claude.
-    # Stored value comes from the DEFAULT (claude) record's sibling key so a
-    # codex-only machine still recalls its target on a bare `init`.
+    # Resolve install target — flag > AGENTIHOOKS_TARGET env > exactly-one-
+    # installed-target recall > interactive TTY prompt > DEFAULT_TARGET (with
+    # a stderr warning when multiple targets are on record and the choice is
+    # non-interactive). `install_target` below is only the TTY prompt's
+    # default, not an authoritative per-target record — see resolve_target.
+    _migrate_targets_shape(_prev_state)
+    _installed_targets = tuple(
+        t for t, v in _prev_state.get("targets", {}).get("global", {}).items() if isinstance(v, dict)
+    )
     _stored_target = _prev_state.get("install_target", "")
     install_target = resolve_target(
         getattr(args, "install_target", None),
         _stored_target,
+        _installed_targets,
         interactive_ok=not _is_force,
     )
     # Profile recall: this target's record first; a fresh target borrows the
@@ -2345,24 +2370,44 @@ def _available_profiles() -> list[str]:
 
 
 def query_active_profile() -> None:
-    """Print the active global profile."""
+    """Print the active global profile for every installed target.
+
+    A codex-only machine must not read as "not installed" just because the
+    claude record is empty. The claude line keeps its original, unlabeled
+    format (nothing that parses it needs to change); any other installed
+    target gets its own extra, target-labeled line(s) appended.
+    """
     source = "global"
     state = _load_state()
-    global_target = _global_record(state)
-    profile_name = global_target.get("profile")
-    settings_profile = global_target.get("settings_profile", "")
+    _migrate_targets_shape(state)
+    installed = state.get("targets", {}).get("global", {})
+    if not isinstance(installed, dict):
+        installed = {}
 
-    if not profile_name:
+    def _print_record(label: str, rec: dict) -> bool:
+        profile_name = rec.get("profile") if isinstance(rec, dict) else None
+        if not profile_name:
+            return False
+        prefix = f"{label}: " if label else ""
+        chain = [p.strip() for p in profile_name.split(",") if p.strip()]
+        if len(chain) > 1:
+            print(f"{prefix}chain: [{', '.join(chain)}] ({source})")
+        else:
+            print(f"{prefix}{profile_name} ({source})")
+        settings_profile = rec.get("settings_profile", "")
+        if settings_profile:
+            print(f"{prefix}settings: {settings_profile}")
+        return True
+
+    printed = _print_record("", installed.get(DEFAULT_TARGET, {}))
+    for target_name in sorted(installed):
+        if target_name == DEFAULT_TARGET:
+            continue
+        if _print_record(target_name, installed[target_name]):
+            printed = True
+
+    if not printed:
         print("not installed")
-        return
-
-    chain = [p.strip() for p in profile_name.split(",") if p.strip()]
-    if len(chain) > 1:
-        print(f"chain: [{', '.join(chain)}] ({source})")
-    else:
-        print(f"{profile_name} ({source})")
-    if settings_profile:
-        print(f"settings: {settings_profile}")
 
 
 def list_profiles() -> None:
@@ -4233,6 +4278,7 @@ def _collect_all_managed_mcp_servers() -> dict:
     # straight to _resolve_profile_dir returns None and silently drops every
     # profile's MCP servers, collapsing the managed set to just hooks-utils.
     state = _load_state()
+    # Claude-scoped on purpose: this assembles ~/.claude's mcpServers, not codex's.
     global_target = _global_record(state)
     profile_name = global_target.get("profile")
     if profile_name:
