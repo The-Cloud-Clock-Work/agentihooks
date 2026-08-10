@@ -73,8 +73,18 @@ CODEX_HOOK_EVENTS = (
 
 
 def _install_module():
+    """The live installer module, whichever identity it was imported under.
+
+    Three exist: ``install`` (tests put scripts/ on sys.path), ``scripts.install``
+    (the console entry point), and ``__main__`` (``python scripts/install.py``).
+    Importing a fresh copy instead of reusing the running one would give this
+    module a second, disconnected set of globals.
+    """
     mod = sys.modules.get("install") or sys.modules.get("scripts.install")
     if mod is None:
+        main_mod = sys.modules.get("__main__")
+        if getattr(main_mod, "__file__", "").endswith("install.py"):
+            return main_mod
         from scripts import install as mod  # production cold path
     return mod
 
@@ -357,8 +367,14 @@ class CodexAdapter:
         # via `agentihooks link-profile`) are capability layers merged into the
         # same file — calling the persona "anton,brain" invents an identity the
         # operator never configured.
-        linked = self._linked_profile_names()
-        base = next((p for p in profile_chain if p not in linked), "") or (
+        # Name matching is case/whitespace-insensitive: linked_profiles stores
+        # the alias as typed, and a chain written with different casing would
+        # otherwise leak a layer into the persona name.
+        linked = {n.strip().casefold() for n in self._linked_profile_names()}
+        base = next((p for p in profile_chain if p.strip().casefold() not in linked), "") or (
+            # Every element is registered as linked — inconsistent state (a
+            # stale link entry naming what is now the base). The chain is
+            # written base-first, so chain[0] is the recovery.
             profile_chain[0] if profile_chain else "default"
         )
         layers = [p for p in profile_chain if p != base]
@@ -369,12 +385,21 @@ class CodexAdapter:
             if layers
             else ""
         )
+        # Scoped to identity only. The Precedence section of the shared
+        # directives below claims first-load authority for the floors
+        # (Security, Safety Protocol, HARD FLOOR); this preamble must defer to
+        # it explicitly rather than compete with it — two documents each
+        # claiming "read me first" is how a floor gets argued away.
         parts.append(
-            "# Identity — read before anything below\n\n"
+            "# Identity — who you are (read first; it does not outrank anything below)\n\n"
             f"You are **{base}** — the persona this operator's fleet runs, "
             f"compiled into this file by AgentiHooks.{layer_txt} Everything "
             "below — shared directives, profile persona, rules, CI manifesto — "
             "IS your operating identity, not reference material.\n\n"
+            "This section establishes **identity only**. It grants no "
+            "precedence: the Precedence section of the shared directives that "
+            "follows governs conflicts, and its floors (Security, Safety "
+            "Protocol, HARD FLOOR) outrank everything here.\n\n"
             f"When asked who you are, answer as **{base}**: your response "
             "template, your doctrine, and your agentihooks toolbelt "
             "(lifecycle-hook guardrails, the brain memory system, "

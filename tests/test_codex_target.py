@@ -186,7 +186,7 @@ class TestPersona:
         assert "# Anton persona" in text
         # Identity preamble pins the persona ahead of everything else, naming
         # the chain, so codex's own system-prompt identity doesn't win.
-        assert "# Identity — read before anything below" in text
+        assert "# Identity — who you are" in text
         assert "You are **anton**" in text
         assert text.index("# Identity") < text.index("<!-- profile: anton -->")
         assert "<!-- rule: 01-style.md" in text
@@ -392,3 +392,47 @@ class TestPersonaIdentityNaming:
         text = (codex_home() / "AGENTS.md").read_text()
         assert "You are **anton**" in text
         assert "Layered on top" not in text
+
+    def test_preamble_defers_to_the_precedence_floors(self, adapter, tmp_path, monkeypatch):
+        """Two sections each claiming 'read me first' is how a floor gets
+        argued away — the identity preamble must yield to Precedence."""
+        monkeypatch.setattr(install, "_load_state", lambda: {"linked_profiles": []})
+        adapter.install_persona([("anton", self._profile(tmp_path, "anton"))], ["anton"], None)
+        text = (codex_home() / "AGENTS.md").read_text()
+        assert "It grants no precedence" in text.replace("\n", " ")
+        assert "HARD FLOOR) outrank everything here" in text.replace("\n", " ")
+
+    def test_case_mismatch_does_not_leak_a_layer_into_the_name(self, adapter, tmp_path, monkeypatch):
+        """linked_profiles stores the alias as typed; a chain written with
+        different casing must still treat it as a layer."""
+        monkeypatch.setattr(install, "_load_state", lambda: {"linked_profiles": [{"name": "Brain"}]})
+        dirs = [("anton", self._profile(tmp_path, "anton")), ("brain", self._profile(tmp_path, "brain"))]
+        adapter.install_persona(dirs, ["anton", "brain"], None)
+        text = (codex_home() / "AGENTS.md").read_text()
+        assert "You are **anton**" in text
+        assert "Layered on top: **brain**" in text
+
+    def test_all_linked_chain_recovers_to_the_first_element(self, adapter, tmp_path, monkeypatch):
+        """Inconsistent state (every chain entry also registered as linked):
+        the chain is written base-first, so chain[0] is the recovery and the
+        rest are still described as layers."""
+        monkeypatch.setattr(install, "_load_state", lambda: {"linked_profiles": [{"name": "anton"}, {"name": "brain"}]})
+        dirs = [("anton", self._profile(tmp_path, "anton")), ("brain", self._profile(tmp_path, "brain"))]
+        adapter.install_persona(dirs, ["anton", "brain"], None)
+        text = (codex_home() / "AGENTS.md").read_text()
+        assert "You are **anton**" in text
+        assert "**anton,brain**" not in text
+
+    def test_install_module_accepts_the_main_identity(self, monkeypatch):
+        """`python scripts/install.py` registers the installer as __main__."""
+        import sys
+
+        from scripts.targets import codex_target
+
+        monkeypatch.delitem(sys.modules, "install", raising=False)
+        monkeypatch.delitem(sys.modules, "scripts.install", raising=False)
+        fake = type(sys)("__main__")
+        fake.__file__ = "/somewhere/scripts/install.py"
+        fake.MARKER = "from-main"
+        monkeypatch.setitem(sys.modules, "__main__", fake)
+        assert codex_target._install_module().MARKER == "from-main"

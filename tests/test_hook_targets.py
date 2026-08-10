@@ -321,3 +321,27 @@ class TestCodexRolloutResolverHardening:
         # A full-tree walk of ~2200 files costs milliseconds per call; the
         # newest-first scan is bounded by one day directory.
         assert elapsed < 0.005, f"{elapsed * 1000:.2f} ms/call — resolution is walking history"
+
+
+class TestSessionIdBannerHost:
+    """The banner names the host; saying 'Claude Code' inside codex is a lie."""
+
+    def _banner(self, monkeypatch, target):
+        monkeypatch.setenv("AGENTIHOOKS_TARGET", target)
+        captured = []
+        import hooks.common as common
+
+        monkeypatch.setattr(common, "inject_context", lambda msg, *a, **k: captured.append(msg))
+        from hooks.hook_manager import on_session_start
+
+        try:
+            on_session_start({"hook_event_name": "SessionStart", "session_id": "sid-1", "cwd": "/tmp"})
+        except Exception:
+            pass
+        return "\n".join(captured)
+
+    def test_codex_banner_names_codex(self, monkeypatch):
+        assert "Your Codex session_id" in self._banner(monkeypatch, "codex")
+
+    def test_claude_banner_unchanged(self, monkeypatch):
+        assert "Your Claude Code session_id" in self._banner(monkeypatch, "claude")
