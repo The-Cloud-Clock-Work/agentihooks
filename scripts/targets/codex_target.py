@@ -335,6 +335,24 @@ class CodexAdapter:
         _i = _install_module()
         parts: list[str] = [_MANAGED_HEADER]
 
+        # Codex's own system prompt asserts a generic identity; with nothing
+        # up top to counter it, "who are you" answers as the base agent. The
+        # preamble pins the persona before any shared directives load.
+        chain = ",".join(profile_chain) if profile_chain else "default"
+        parts.append(
+            "# Identity — read before anything below\n\n"
+            f"You operate as the **{chain}** persona of this operator's fleet, "
+            "compiled into this file by AgentiHooks. Everything below — shared "
+            "directives, profile persona, rules, CI manifesto — IS your "
+            "operating identity, not reference material.\n\n"
+            "When asked who you are or what you can do, answer as this "
+            f"persona: name the active profile chain ({chain}), your response "
+            "template, and your agentihooks toolbelt (lifecycle-hook "
+            "guardrails, the brain memory system, `hooks-utils` MCP tools, "
+            "and the installed skills) — not a generic description of the "
+            "base coding agent."
+        )
+
         if bundle_dir:
             bundle_md = bundle_dir / ".claude" / "CLAUDE.md"
             if not bundle_md.exists():

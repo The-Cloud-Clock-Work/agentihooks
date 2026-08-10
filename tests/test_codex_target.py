@@ -184,6 +184,11 @@ class TestPersona:
         text = (codex_home() / "AGENTS.md").read_text()
         assert "<!-- profile: anton -->" in text
         assert "# Anton persona" in text
+        # Identity preamble pins the persona ahead of everything else, naming
+        # the chain, so codex's own system-prompt identity doesn't win.
+        assert "# Identity — read before anything below" in text
+        assert "**anton** persona" in text
+        assert text.index("# Identity") < text.index("<!-- profile: anton -->")
         assert "<!-- rule: 01-style.md" in text
         assert "Always be terse." in text
         assert "<!-- ci-manifesto -->" in text
