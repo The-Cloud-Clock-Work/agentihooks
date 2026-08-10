@@ -357,8 +357,29 @@ class CodexAdapter:
                     entry["env"] = dict(spec["env"])
             elif spec.get("url"):
                 entry["url"] = spec["url"]
-                if spec.get("headers"):
-                    entry["http_headers"] = dict(spec["headers"])
+                # Claude Code expands ${VAR} placeholders in header values at
+                # connect time; codex sends them LITERALLY (verified: gateway
+                # 401 on the raw placeholder). Authorization Bearer ${VAR}
+                # maps to codex's native bearer_token_env_var; any other
+                # placeholder-bearing header is dropped with a warning.
+                import re as _re
+
+                clean_headers: dict = {}
+                for hk, hv in dict(spec.get("headers") or {}).items():
+                    hv_s = str(hv)
+                    bearer = _re.fullmatch(r"Bearer\s+\$\{(\w+)\}", hv_s)
+                    if hk.lower() == "authorization" and bearer:
+                        entry["bearer_token_env_var"] = bearer.group(1)
+                    elif "${" in hv_s:
+                        _i._cprint(
+                            f"  [!!] MCP '{name}' header '{hk}' uses a ${{VAR}} placeholder — "
+                            "codex does not expand these; header dropped. Use a literal value "
+                            "or an Authorization Bearer ${VAR} (mapped to bearer_token_env_var)."
+                        )
+                    else:
+                        clean_headers[hk] = hv
+                if clean_headers:
+                    entry["http_headers"] = clean_headers
             else:
                 continue
             table[name] = entry

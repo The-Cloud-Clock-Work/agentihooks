@@ -159,6 +159,22 @@ class TestMcp:
         assert "[mcp_servers.remote]" in text and "http_headers" in text
         assert "SSE" in capsys.readouterr().out
 
+    def test_bearer_placeholder_maps_to_env_var(self, adapter, capsys):
+        adapter.register_mcp(
+            {
+                "gateway": {
+                    "type": "http",
+                    "url": "https://g.example/mcp",
+                    "headers": {"Authorization": "Bearer ${MCP_GATEWAY_KEY}", "X-Env": "${OTHER}"},
+                }
+            }
+        )
+        text = (codex_home() / "config.toml").read_text()
+        assert 'bearer_token_env_var = "MCP_GATEWAY_KEY"' in text
+        assert "${MCP_GATEWAY_KEY}" not in text, "placeholder must never land literally"
+        assert "${OTHER}" not in text
+        assert "placeholder" in capsys.readouterr().out
+
     def test_skills_symlinked_to_agents_dir(self, adapter, tmp_path):
         src = tmp_path / "skills"
         (src / "my-skill").mkdir(parents=True)
