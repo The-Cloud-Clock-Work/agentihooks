@@ -139,7 +139,7 @@ class TestDetectVenv:
         fake_home = tmp_path / "home"
         fake_home.mkdir()
         with patch("pathlib.Path.home", return_value=fake_home):
-            with patch.dict("os.environ", {"VIRTUAL_ENV": str(tmp_path)}):
+            with patch.dict("os.environ", {"VIRTUAL_ENV": str(tmp_path)}, clear=True):
                 result = install._detect_venv()
         assert result == python
 
@@ -154,6 +154,39 @@ class TestDetectVenv:
                 with patch.dict("os.environ", {}, clear=True):
                     result = install._detect_venv()
         assert result == venv
+
+    def test_agentihooks_python_pin_wins(self, tmp_path):
+        pinned = tmp_path / "pinned" / "python"
+        pinned.parent.mkdir()
+        pinned.touch()
+        other = tmp_path / "activated"
+        (other / "bin").mkdir(parents=True)
+        (other / "bin" / "python").touch()
+        env = {"AGENTIHOOKS_PYTHON": str(pinned), "VIRTUAL_ENV": str(other)}
+        with patch.dict("os.environ", env, clear=True):
+            assert install._detect_venv() == pinned
+
+    def test_detects_repo_root_venv(self, tmp_path):
+        root_venv = install.AGENTIHOOKS_ROOT / ".venv" / "bin" / "python"
+        root_venv.parent.mkdir(parents=True, exist_ok=True)
+        root_venv.touch()
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        with patch("pathlib.Path.home", return_value=fake_home):
+            with patch("pathlib.Path.cwd", return_value=tmp_path):
+                with patch.dict("os.environ", {}, clear=True):
+                    assert install._detect_venv() == root_venv
+
+    def test_state_dir_venv_is_never_used(self, tmp_path):
+        """~/.agentihooks/.venv must NEVER be picked up (operator directive)."""
+        fake_home = tmp_path / "home"
+        state_venv = fake_home / ".agentihooks" / ".venv" / "bin" / "python"
+        state_venv.parent.mkdir(parents=True)
+        state_venv.touch()
+        with patch("pathlib.Path.home", return_value=fake_home):
+            with patch("pathlib.Path.cwd", return_value=tmp_path):
+                with patch.dict("os.environ", {}, clear=True):
+                    assert install._detect_venv() is None
 
     def test_returns_none_when_no_venv(self, tmp_path):
         fake_home = tmp_path / "home"

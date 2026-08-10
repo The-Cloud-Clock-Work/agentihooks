@@ -2198,26 +2198,39 @@ def _detect_venv() -> Path | None:
     by tools like ``uv run``) cannot silently shadow an explicitly
     activated environment.
 
-    1. ``$VIRTUAL_ENV`` — explicit operator activation. Highest authority.
-    2. Dedicated ``~/.agentihooks/.venv`` — canonical fallback if the
-       operator has set one up but isn't currently activated.
-    3. ``./.venv`` in cwd — last-resort for plain ``cd repo && python``
-       workflows. Anything created here by ``uv run`` or similar tools
-       loses to (1) and (2).
+    1. ``$AGENTIHOOKS_PYTHON`` — explicit pin (settable in
+       ``~/.agentihooks/.env``). Highest authority.
+    2. ``$VIRTUAL_ENV`` — explicit operator activation.
+    3. ``.venv`` next to the repo — ``AGENTIHOOKS_ROOT/.venv``, then the
+       workspace-level ``AGENTIHOOKS_ROOT/../.venv``.
+    4. ``./.venv`` in cwd — last-resort for plain ``cd repo && python``
+       workflows.
+
+    There is deliberately NO ``~/.agentihooks/.venv`` tier: the operator's
+    environment is the source of truth, and a shadow venv under the state
+    dir drifts out of date and silently hijacks hook wiring.
     """
-    # 1. Activated venv via VIRTUAL_ENV — explicit operator intent wins
+    # 1. Explicit pin via AGENTIHOOKS_PYTHON
+    pinned = os.environ.get("AGENTIHOOKS_PYTHON")
+    if pinned:
+        python = Path(pinned).expanduser()
+        if python.exists():
+            return python
+
+    # 2. Activated venv via VIRTUAL_ENV — explicit operator intent wins
     venv_env = os.environ.get("VIRTUAL_ENV")
     if venv_env:
         python = Path(venv_env) / "bin" / "python"
         if python.exists():
             return python
 
-    # 2. Dedicated ~/.agentihooks/.venv (canonical opt-in)
-    agentihooks_venv = Path.home() / ".agentihooks" / ".venv" / "bin" / "python"
-    if agentihooks_venv.exists():
-        return agentihooks_venv
+    # 3. Venv next to the repo (repo-level, then workspace-level)
+    for base in (AGENTIHOOKS_ROOT, AGENTIHOOKS_ROOT.parent):
+        candidate = Path(base) / ".venv" / "bin" / "python"
+        if candidate.exists():
+            return candidate
 
-    # 3. .venv directory in cwd — lowest priority
+    # 4. .venv directory in cwd — lowest priority
     local_venv = Path.cwd() / ".venv" / "bin" / "python"
     if local_venv.exists():
         return local_venv
@@ -3113,8 +3126,8 @@ def _resolve_hooks_python() -> Path:
     """Return a python that can ``import hooks`` from a neutral cwd, or exit.
 
     Resolution order:
-    1. ``_detect_venv()`` — VIRTUAL_ENV first, then ``~/.agentihooks/.venv``,
-       then ``./.venv`` (operator intent).
+    1. ``_detect_venv()`` — AGENTIHOOKS_PYTHON, then VIRTUAL_ENV, then the
+       repo/workspace ``.venv``, then ``./.venv`` (operator intent).
     2. ``sys.executable`` — the python currently running install.py.
 
     Each candidate is probed via ``_python_can_import_hooks`` from cwd ``/``;

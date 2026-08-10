@@ -110,9 +110,9 @@ agentihooks broadcast emit "clear all broadcasts"
 git clone https://github.com/The-Cloud-Clockwork/agentihooks
 cd agentihooks
 
-# 1. Create the dedicated venv and install everything
-uv venv ~/.agentihooks/.venv
-uv pip install --python ~/.agentihooks/.venv/bin/python -e ".[all]"
+# 1. Create a venv next to the repo (or its parent) and install everything
+uv venv .venv
+uv pip install --python .venv/bin/python -e ".[all]"
 
 # 2. Install hooks + settings + MCP into ~/.claude
 agentihooks init
@@ -355,8 +355,8 @@ profile install required — works alongside any profile (or none).
 Everything user-specific lives in `~/.agentihooks/`. To move to a new machine:
 
 ```bash
-uv venv ~/.agentihooks/.venv
-uv pip install --python ~/.agentihooks/.venv/bin/python -e ".[all]"
+uv venv .venv
+uv pip install --python .venv/bin/python -e ".[all]"
 agentihooks init
 ```
 

@@ -5,10 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# The canonical Python for this project lives at ~/.agentihooks/.venv
+# The canonical Python is the workspace venv at ~/dev/tcc-ecosystem/.venv
+# (~/.agentihooks/.venv must NEVER exist — the installer no longer looks there).
 # Always use `uv run` or the venv Python so hooks and tests run against the same packages.
 
-uv pip install --python ~/.agentihooks/.venv/bin/python -e ".[all]"   # install/update deps
+uv pip install --python ~/dev/tcc-ecosystem/.venv/bin/python -e ".[all]"  # install/update deps
 uv run python -m pytest                                                # run all tests
 uv run python -m pytest tests/test_hook_manager.py                     # single file
 uv run python -m pytest tests/test_config.py::TestSecretsMode -v       # single test

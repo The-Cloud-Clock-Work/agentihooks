@@ -203,8 +203,8 @@ git clone https://github.com/The-Cloud-Clockwork/agentihooks
 cd agentihooks
 
 # 3. Create the venv and install
-uv venv ~/.agentihooks/.venv
-uv pip install --python ~/.agentihooks/.venv/bin/python -e ".[all]"
+uv venv .venv
+uv pip install --python .venv/bin/python -e ".[all]"
 
 # 4. Copy your env file (from backup, 1Password, etc.)
 cp /path/to/backup/.env ~/.agentihooks/.env
