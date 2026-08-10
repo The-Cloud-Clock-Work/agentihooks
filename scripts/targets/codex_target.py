@@ -98,6 +98,28 @@ class CodexAdapter:
             doc.setdefault("approval_policy", "on-request")
             doc.setdefault("sandbox_mode", "workspace-write")
 
+        # Statusline degrade: no command-backed statusline on codex (upstream
+        # openai/codex #20140) — configure the closest built-in items. The
+        # `ah:` profile line is emitted as a SessionStart banner instead.
+        tui = doc.setdefault("tui", {})
+        tui.setdefault(
+            "status_line",
+            [
+                "model-with-reasoning",
+                "current-dir",
+                "context-usage",
+                "used-tokens",
+                "five-hour-limit",
+                "weekly-limit",
+            ],
+        )
+
+        # Notification degrade: codex has no Notification hook — the fixed
+        # `notify` mechanism (agent-turn-complete, JSON as argv[1]) is bridged
+        # into the normal Notification handler by the shim module.
+        python_bin = str(_i._detect_venv() or sys.executable)
+        doc.setdefault("notify", [python_bin, "-m", "hooks.targets.notify_shim"])
+
         self._dump_toml(config_path, doc)
         _i._cprint(f"[OK] Wrote managed keys into {config_path}")
 
@@ -394,6 +416,82 @@ class CodexAdapter:
             "  [--] Codex install complete. First run: open codex and run /hooks to trust "
             "the agentihooks hooks (they are silently skipped until trusted)."
         )
+
+    # ------------------------------------------------------------------
+    # doctor
+    # ------------------------------------------------------------------
+
+    def doctor(self) -> int:
+        """Print codex-install health; return count of failed checks."""
+        home = self.home()
+        checks: list[tuple[bool, str]] = []
+
+        config_path = home / "config.toml"
+        doc = None
+        if config_path.exists():
+            try:
+                import tomlkit
+
+                doc = tomlkit.parse(config_path.read_text())
+                checks.append((True, f"config.toml parses ({config_path})"))
+            except Exception as exc:
+                checks.append((False, f"config.toml unparseable: {exc}"))
+        else:
+            checks.append((False, "config.toml missing — run: agentihooks init --target codex"))
+
+        if doc is not None:
+            checks.append((bool((doc.get("features") or {}).get("hooks")), "[features] hooks = true"))
+            servers = list((doc.get("mcp_servers") or {}).keys())
+            checks.append((bool(servers), f"mcp_servers registered: {', '.join(servers) or 'NONE'}"))
+
+        hooks_path = home / "hooks.json"
+        wrapper = home / "agentihooks-hook.sh"
+        if hooks_path.exists():
+            try:
+                hooks_doc = json.loads(hooks_path.read_text())
+                events = list(hooks_doc.get("hooks", {}).keys())
+                ours = sum(
+                    1
+                    for groups in hooks_doc.get("hooks", {}).values()
+                    for g in groups
+                    for h in g.get("hooks", [])
+                    if str(wrapper) in h.get("command", "")
+                )
+                checks.append(
+                    (
+                        ours >= len(CODEX_HOOK_EVENTS),
+                        f"hooks.json wires {ours} agentihooks entries across {len(events)} events",
+                    )
+                )
+            except json.JSONDecodeError as exc:
+                checks.append((False, f"hooks.json unparseable: {exc}"))
+        else:
+            checks.append((False, "hooks.json missing"))
+        checks.append((wrapper.exists() and os.access(wrapper, os.X_OK), f"hook wrapper executable ({wrapper})"))
+
+        agents_md = home / "AGENTS.md"
+        if agents_md.exists():
+            size = len(agents_md.read_bytes())
+            ceiling = int((doc or {}).get("project_doc_max_bytes", 32768) or 32768)
+            checks.append((size < ceiling, f"AGENTS.md {size}B < project_doc_max_bytes {ceiling}"))
+            checks.append((_MANAGED_HEADER in agents_md.read_text(), "AGENTS.md is agentihooks-managed"))
+        else:
+            checks.append((False, "AGENTS.md missing"))
+
+        skills = agents_skills_home()
+        n_skills = len(list(skills.iterdir())) if skills.is_dir() else 0
+        checks.append((n_skills > 0, f"{n_skills} skill(s) in {skills}"))
+
+        failed = 0
+        for ok, msg in checks:
+            print(f"  [{'OK' if ok else '!!'}] {msg}")
+            if not ok:
+                failed += 1
+        print(
+            "  [--] Hook trust cannot be verified from outside codex — run /hooks in a "
+            "codex session to confirm; untrusted hooks are SILENTLY skipped."
+        )
+        return failed
 
     # ------------------------------------------------------------------
     # TOML round-trip (operator hand-edits outside managed keys survive)

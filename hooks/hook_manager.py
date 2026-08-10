@@ -343,6 +343,29 @@ def on_session_start(payload: dict) -> None:
             "identity — call_agent, pool_list, pool_status, channel_acknowledge."
         )
 
+    # Codex has no command-backed statusline — the `ah:` status line the
+    # claude statusline renders is surfaced once per session here instead.
+    from hooks.targets import is_codex as _is_codex
+
+    if _is_codex():
+        try:
+            import json as _sjson
+
+            from hooks.config import AGENTIHOOKS_HOME as _ah_home
+            from hooks.config import BASE_CHANNELS as _channels
+
+            _state = _sjson.loads((_ah_home / "state.json").read_text())
+            _profile = _state.get("targets", {}).get("global", {}).get("codex", {}).get("profile", "?")
+            from hooks.common import inject_context as _inject_ah
+
+            _inject_ah(
+                f"agentihooks active on codex — profile: {_profile} | "
+                f"channels: {','.join(_channels) if _channels else 'none'} | "
+                "guards: secrets, branch, prod-lockdown, kubectl-mutation, retry-breaker"
+            )
+        except Exception:
+            pass
+
     from hooks.config import MCP_HYGIENE_ENABLED
 
     if MCP_HYGIENE_ENABLED:

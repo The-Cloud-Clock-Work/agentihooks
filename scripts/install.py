@@ -5561,6 +5561,13 @@ def main() -> None:
         help="Run each hook event with synthetic payload and assert protocol invariants",
     )
     doctor_p.add_argument(
+        "--target",
+        dest="doctor_target",
+        choices=list(SUPPORTED_TARGETS),
+        default="claude",
+        help="Which install target to diagnose (default: claude)",
+    )
+    doctor_p.add_argument(
         "--json",
         action="store_true",
         help="Emit machine-readable JSON instead of CLI report",
@@ -5869,6 +5876,12 @@ notes:
 
         print(format_cli(run_all_checks()))
     elif args.command == "doctor":
+        if getattr(args, "doctor_target", "claude") == "codex":
+            from scripts.targets.codex_target import CodexAdapter
+
+            print("AgentiHooks doctor — codex target")
+            failed = CodexAdapter().doctor()
+            sys.exit(1 if failed else 0)
         sys.path.insert(0, str(AGENTIHOOKS_ROOT))
         from scripts.status_checker import (
             check_hook_injection,
