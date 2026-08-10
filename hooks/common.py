@@ -235,9 +235,22 @@ def inject_context(content: str, also_log: bool = True, skip_compression: bool =
         except Exception:
             pass
 
-    # Print to STDOUT - this gets injected into Claude's context
-    print("=== CONTEXT INJECTION ===")
-    print(content)
+    # Print to STDOUT - this gets injected into Claude's context. Codex parses
+    # hook stdout as a single JSON object instead of concatenating raw lines,
+    # so under that target the content is buffered and flushed once by main().
+    try:
+        from hooks.targets import is_codex
+
+        _codex = is_codex()
+    except Exception:
+        _codex = False
+    if _codex:
+        from hooks.targets import emitter
+
+        emitter.buffer_context(f"=== CONTEXT INJECTION ===\n{content}")
+    else:
+        print("=== CONTEXT INJECTION ===")
+        print(content)
 
     # Optionally also log the actual content for debugging (not just metadata)
     if also_log and LOG_ENABLED:

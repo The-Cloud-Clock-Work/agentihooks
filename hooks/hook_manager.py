@@ -1121,18 +1121,28 @@ def on_pre_tool_use(payload: dict) -> None:
             log("enforcement pretool failed", {"error": str(e)})
 
     if _pretool_blocks:
-        import json as _json
+        from hooks.targets.capabilities import can_inject_context
 
-        print(
-            _json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "additionalContext": "\n\n".join(_pretool_blocks),
+        if can_inject_context("PreToolUse"):
+            import json as _json
+
+            print(
+                _json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "additionalContext": "\n\n".join(_pretool_blocks),
+                        }
                     }
-                }
+                )
             )
-        )
+        else:
+            # Codex PreToolUse has no context channel (deny-only output).
+            # These blocks re-inject at UserPromptSubmit; drop with a trace.
+            log(
+                "pretool context dropped — no PreToolUse context channel on this target",
+                {"blocks": len(_pretool_blocks)},
+            )
 
 
 def _trace_mark(phase: str, tool_name: str, session_id: str = "") -> None:
@@ -1331,7 +1341,16 @@ def on_post_tool_use(payload: dict) -> None:
                                 filtered = preprocess(filtered, level)
                     except Exception:
                         pass
-                    print(_json.dumps({"additionalContext": filtered}))
+                    from hooks.targets import is_codex
+
+                    if is_codex():
+                        # One-JSON-object rule: joins the single end-of-process
+                        # flush instead of printing its own object.
+                        from hooks.targets import emitter
+
+                        emitter.buffer_context(filtered)
+                    else:
+                        print(_json.dumps({"additionalContext": filtered}))
         except Exception as e:
             log("bash_output_filter failed", {"error": str(e)})
 
@@ -1805,6 +1824,12 @@ def main() -> None:
         # Read payload from stdin
         payload: dict[str, Any] = json.load(sys.stdin)
 
+        # Codex payloads get alias-filled into the internal shape; claude
+        # payloads pass through untouched (hooks/targets/normalizer.py).
+        from hooks.targets.normalizer import normalize_payload
+
+        payload = normalize_payload(payload)
+
         # Get event name from payload
         event_name = payload.get("hook_event_name", "Unknown")
 
@@ -1814,6 +1839,13 @@ def main() -> None:
             handler(payload)
         else:
             log(f"Unknown event: {event_name}", payload)
+
+        # Codex parses hook stdout as ONE JSON object — everything the
+        # handlers injected was buffered and is flushed here as a single
+        # envelope. No-op on the claude target (nothing buffers there).
+        from hooks.targets import emitter
+
+        emitter.flush(event_name)
 
     except BlockAction as e:
         print(str(e), file=sys.stderr, flush=True)  # Claude Code reads stderr for hook messages
