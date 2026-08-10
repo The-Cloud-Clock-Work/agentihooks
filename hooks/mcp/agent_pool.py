@@ -44,7 +44,7 @@ def register(mcp):
             target_session_id: The peer's session id (from ``pool_list``).
             message: What to say/ask. Coordination and status questions.
             session_id: THIS session's own id, shown to you at session start as
-                "Your Claude Code session_id is ...". Always pass it — under a
+                "Your <host> session_id is ...". Always pass it — under a
                 network MCP transport one server process serves every session,
                 so there is no per-caller environment to fall back on.
 
