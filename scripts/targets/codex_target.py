@@ -206,6 +206,18 @@ class CodexAdapter:
                 if not any(_command_is_wrapper(h.get("command", ""), wrapper) for h in g.get("hooks", []))
             ]
             merged[event] = foreign + groups
+        # Reap our own entries under events we no longer wire (e.g. a stale
+        # PostCompact from an earlier install) — foreign groups there survive.
+        for event in [e for e in merged if e not in desired]:
+            foreign = [
+                g
+                for g in merged[event]
+                if not any(_command_is_wrapper(h.get("command", ""), wrapper) for h in g.get("hooks", []))
+            ]
+            if foreign:
+                merged[event] = foreign
+            else:
+                del merged[event]
         _atomic_write(hooks_path, json.dumps({"hooks": merged}, indent=2))
         _i._cprint(f"[OK] Wrote {hooks_path} ({len(CODEX_HOOK_EVENTS)} events)")
         _i._cprint(

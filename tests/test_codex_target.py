@@ -117,6 +117,37 @@ class TestHooksJson:
         assert disabled_cmd in pretool_cmds
         assert str(wrapper_path) in pretool_cmds
 
+    def test_stale_own_entry_under_unwired_event_reaped(self, adapter):
+        """Our wrapper under an event we no longer wire (e.g. PostCompact from an
+        earlier install) is reaped; a foreign group under that event survives."""
+        home = codex_home()
+        home.mkdir(parents=True, exist_ok=True)
+        wrapper_cmd = str(home / "agentihooks-hook.sh")
+        stale = {
+            "hooks": {
+                "PostCompact": [
+                    {"hooks": [{"type": "command", "command": wrapper_cmd}]},
+                    {"hooks": [{"type": "command", "command": "/usr/local/bin/operator-hook"}]},
+                ]
+            }
+        }
+        (home / "hooks.json").write_text(json.dumps(stale))
+        adapter.write_settings({})
+        doc = json.loads((home / "hooks.json").read_text())
+        postcompact_cmds = [h["command"] for g in doc["hooks"].get("PostCompact", []) for h in g["hooks"]]
+        assert wrapper_cmd not in postcompact_cmds
+        assert "/usr/local/bin/operator-hook" in postcompact_cmds
+
+    def test_stale_own_only_event_removed_entirely(self, adapter):
+        home = codex_home()
+        home.mkdir(parents=True, exist_ok=True)
+        wrapper_cmd = str(home / "agentihooks-hook.sh")
+        stale = {"hooks": {"PostCompact": [{"hooks": [{"type": "command", "command": wrapper_cmd}]}]}}
+        (home / "hooks.json").write_text(json.dumps(stale))
+        adapter.write_settings({})
+        doc = json.loads((home / "hooks.json").read_text())
+        assert "PostCompact" not in doc["hooks"]
+
     def test_wrapper_script_quotes_paths_with_spaces(self, adapter, monkeypatch):
         spaced_root = codex_home().parent / "agenti hooks root"
         monkeypatch.setattr(install, "AGENTIHOOKS_ROOT", spaced_root)
