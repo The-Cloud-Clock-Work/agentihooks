@@ -210,3 +210,49 @@ class TestGlobalRecord:
         from hooks.targets import global_record
 
         assert global_record({}) == {}
+
+
+class TestCodexTranscriptResolution:
+    """Codex omits transcript_path; the normalizer resolves the rollout by
+    session id so brain markers / auto-save / tool-memory keep working."""
+
+    def _rollout(self, home, sid, day="2026/08/10"):
+        d = home / "sessions" / day
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / f"rollout-2026-08-10T21-30-30-{sid}.jsonl"
+        f.write_text('{"type":"session_meta","payload":{}}\n')
+        return f
+
+    def test_resolves_rollout_from_session_id(self, codex, tmp_path, monkeypatch):
+        from hooks.targets.normalizer import normalize_payload
+
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        sid = "019fed27-b61d-7a92-bcec-4ffcccf53b71"
+        expected = self._rollout(tmp_path, sid)
+        out = normalize_payload({"hook_event_name": "SessionEnd", "session_id": sid})
+        assert out["transcript_path"] == str(expected)
+
+    def test_existing_transcript_path_wins(self, codex, tmp_path, monkeypatch):
+        from hooks.targets.normalizer import normalize_payload
+
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        sid = "abc-123"
+        self._rollout(tmp_path, sid)
+        out = normalize_payload({"session_id": sid, "transcript_path": "/given/path.jsonl"})
+        assert out["transcript_path"] == "/given/path.jsonl"
+
+    def test_no_match_leaves_key_absent(self, codex, tmp_path, monkeypatch):
+        from hooks.targets.normalizer import normalize_payload
+
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        out = normalize_payload({"session_id": "nothing-here"})
+        assert not out.get("transcript_path")
+
+    def test_claude_payload_untouched(self, claude, tmp_path, monkeypatch):
+        from hooks.targets.normalizer import normalize_payload
+
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        sid = "xyz-789"
+        self._rollout(tmp_path, sid)
+        out = normalize_payload({"session_id": sid})
+        assert "transcript_path" not in out
