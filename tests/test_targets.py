@@ -120,7 +120,7 @@ class TestGetAdapter:
         assert adapter.name == "claude"
         assert adapter.home() == install.CLAUDE_HOME
 
-    def test_codex_rejected_not_yet_installable(self):
-        with pytest.raises(SystemExit) as exc:
-            get_adapter("codex")
-        assert exc.value.code == 2
+    def test_codex_adapter_resolves(self):
+        adapter = get_adapter("codex")
+        assert adapter.name == "codex"
+        assert adapter.home().name == ".codex"

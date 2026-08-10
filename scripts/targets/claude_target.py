@@ -48,8 +48,11 @@ class ClaudeAdapter:
         _i._cprint(f"[OK] Wrote {existing_settings_path}")
         return existing_settings_path
 
-    def features_dest(self, subdir: str) -> Path | None:
-        return _install_module().CLAUDE_HOME / subdir
+    def install_features(self, subdir: str, layers: list[tuple[str, Path]], filter_fn) -> None:
+        _i = _install_module()
+        dst = _i.CLAUDE_HOME / subdir
+        for label, src in layers:
+            _i._symlink_dir_contents(src, dst, label=label, filter_fn=filter_fn)
 
     def install_persona(
         self,

@@ -68,12 +68,11 @@ class TargetAdapter(Protocol):
         """Persist the merged settings for this target; returns the file written."""
         ...
 
-    def features_dest(self, subdir: str) -> Path | None:
-        """Destination dir for a feature layer (skills/agents/commands/rules).
-
-        ``None`` means the target has no home for this feature kind and the
-        layer is skipped (logged by the caller).
-        """
+    def install_features(self, subdir: str, layers: list[tuple[str, Path]], filter_fn) -> None:
+        """Install one feature kind (skills/agents/commands/rules) from its
+        resolved source layers. Claude symlinks all four into ``~/.claude``;
+        codex symlinks skills to ``~/.agents/skills``, translates commands to
+        ``~/.codex/prompts``, compiles rules into AGENTS.md, and skips agents."""
         ...
 
     def install_persona(
@@ -101,11 +100,7 @@ def get_adapter(target: str) -> TargetAdapter:
 
         return ClaudeAdapter()
     if target == "codex":
-        print(
-            "ERROR: --target codex is not installable yet — the Codex adapter lands in\n"
-            "the next milestones (see CODEX-COMPAT.md §8, M2-M6). The claude target is\n"
-            "unaffected: agentihooks init --target claude",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+        from scripts.targets.codex_target import CodexAdapter
+
+        return CodexAdapter()
     raise ValueError(f"Unknown target: {target}")

@@ -1902,7 +1902,10 @@ def cmd_init_unified(args: argparse.Namespace) -> None:
         _stored_target,
         interactive_ok=not _is_force,
     )
-    _prev_global = _global_record(_prev_state, install_target)
+    # Profile recall: this target's record first; a fresh target borrows the
+    # default target's chain so `init --target codex` on a claude machine
+    # installs the same persona instead of falling to 'default'.
+    _prev_global = _global_record(_prev_state, install_target) or _global_record(_prev_state)
     if not profile_name:
         if _is_force:
             # --force = fresh install, ignore stored profile
@@ -2626,23 +2629,21 @@ def _install_global_inner(args: argparse.Namespace) -> None:
         ("commands", "command", lambda p: p.suffix == ".md" and p.name != "README.md"),
         ("rules", "rule", lambda p: p.suffix == ".md" and p.name != "README.md"),
     ]:
-        dst = adapter.features_dest(subdir)
-        if dst is None:
-            _cprint(f"  [--] Target '{adapter.name}' has no destination for {label}s — skipped.")
-            continue
+        # Layer resolution is target-agnostic; what happens to each layer
+        # (symlink, translate, compile into persona, skip) is the adapter's call.
+        layers: list[tuple[str, Path]] = []
         # Layer 1: agentihooks built-in (packaged under profiles/package/, the
         # emulated .claude tree — shipped in the wheel, unlike the old repo-root .claude/)
-        _symlink_dir_contents(PACKAGE_FEATURES_DIR / subdir, dst, label=label, filter_fn=filter_fn)
+        layers.append((label, PACKAGE_FEATURES_DIR / subdir))
         # Layer 2: bundle top-level .claude/ (inherits to all profiles)
         if bundle_dir and (bundle_dir / _CLAUDE_SUBDIR / subdir).is_dir():
-            _symlink_dir_contents(
-                bundle_dir / _CLAUDE_SUBDIR / subdir, dst, label=f"bundle {label}", filter_fn=filter_fn
-            )
+            layers.append((f"bundle {label}", bundle_dir / _CLAUDE_SUBDIR / subdir))
         # Layer 3+: each profile in chain (later profiles override earlier for same-name files)
         for pname, pdir in profile_dirs:
             if (pdir / _CLAUDE_SUBDIR / subdir).is_dir():
                 chain_label = f"profile({pname}) {label}" if len(profile_chain) > 1 else f"profile {label}"
-                _symlink_dir_contents(pdir / _CLAUDE_SUBDIR / subdir, dst, label=chain_label, filter_fn=filter_fn)
+                layers.append((chain_label, pdir / _CLAUDE_SUBDIR / subdir))
+        adapter.install_features(subdir, layers, filter_fn)
 
     # --- 5 + 5a + 5b. Persona install (target-specific writer) ---
     adapter.install_persona(profile_dirs, profile_chain, bundle_dir)
