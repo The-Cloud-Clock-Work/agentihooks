@@ -336,9 +336,11 @@ def on_session_start(payload: dict) -> None:
 
     if session_id and MCP_SESSION_ID_BANNER_ENABLED:
         from hooks.common import inject_context as _inject_sid
+        from hooks.targets import current_target as _sid_target
 
+        _host = "Codex" if _sid_target() == "codex" else "Claude Code"
         _inject_sid(
-            f"Your Claude Code session_id is `{session_id}`. Pass it as the "
+            f"Your {_host} session_id is `{session_id}`. Pass it as the "
             "`session_id` argument to the hooks-utils tools that need caller "
             "identity — call_agent, pool_list, pool_status, channel_acknowledge."
         )

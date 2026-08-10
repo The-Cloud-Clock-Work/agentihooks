@@ -326,6 +326,20 @@ class CodexAdapter:
     # persona: AGENTS.md
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _linked_profile_names() -> set[str]:
+        """Names registered via ``agentihooks link-profile``.
+
+        These ride along in the profile chain but are capability layers, not
+        the persona — the base profile is the identity.
+        """
+        _i = _install_module()
+        try:
+            entries = _i._load_state().get("linked_profiles", []) or []
+        except Exception:
+            return set()
+        return {e.get("name", "") for e in entries if isinstance(e, dict)}
+
     def install_persona(
         self,
         profile_dirs: list[tuple[str, Path]],
@@ -338,19 +352,35 @@ class CodexAdapter:
         # Codex's own system prompt asserts a generic identity; with nothing
         # up top to counter it, "who are you" answers as the base agent. The
         # preamble pins the persona before any shared directives load.
-        chain = ",".join(profile_chain) if profile_chain else "default"
+        #
+        # Only the BASE profile names the persona. Linked profiles (registered
+        # via `agentihooks link-profile`) are capability layers merged into the
+        # same file — calling the persona "anton,brain" invents an identity the
+        # operator never configured.
+        linked = self._linked_profile_names()
+        base = next((p for p in profile_chain if p not in linked), "") or (
+            profile_chain[0] if profile_chain else "default"
+        )
+        layers = [p for p in profile_chain if p != base]
+        layer_txt = (
+            f" Layered on top: {', '.join(f'**{n}**' for n in layers)} "
+            f"({'capability layers' if len(layers) > 1 else 'a capability layer'} "
+            "linked into this persona, not part of its name)."
+            if layers
+            else ""
+        )
         parts.append(
             "# Identity — read before anything below\n\n"
-            f"You operate as the **{chain}** persona of this operator's fleet, "
-            "compiled into this file by AgentiHooks. Everything below — shared "
-            "directives, profile persona, rules, CI manifesto — IS your "
-            "operating identity, not reference material.\n\n"
-            "When asked who you are or what you can do, answer as this "
-            f"persona: name the active profile chain ({chain}), your response "
-            "template, and your agentihooks toolbelt (lifecycle-hook "
-            "guardrails, the brain memory system, `hooks-utils` MCP tools, "
-            "and the installed skills) — not a generic description of the "
-            "base coding agent."
+            f"You are **{base}** — the persona this operator's fleet runs, "
+            f"compiled into this file by AgentiHooks.{layer_txt} Everything "
+            "below — shared directives, profile persona, rules, CI manifesto — "
+            "IS your operating identity, not reference material.\n\n"
+            f"When asked who you are, answer as **{base}**: your response "
+            "template, your doctrine, and your agentihooks toolbelt "
+            "(lifecycle-hook guardrails, the brain memory system, "
+            "`hooks-utils` MCP tools, the installed skills) — not a generic "
+            "description of the underlying coding agent, and never by reciting "
+            "the raw profile chain as if it were a name."
         )
 
         if bundle_dir:

@@ -187,7 +187,7 @@ class TestPersona:
         # Identity preamble pins the persona ahead of everything else, naming
         # the chain, so codex's own system-prompt identity doesn't win.
         assert "# Identity — read before anything below" in text
-        assert "**anton** persona" in text
+        assert "You are **anton**" in text
         assert text.index("# Identity") < text.index("<!-- profile: anton -->")
         assert "<!-- rule: 01-style.md" in text
         assert "Always be terse." in text
@@ -366,3 +366,29 @@ class TestMcp:
         from scripts.targets.codex_target import agents_skills_home
 
         assert (agents_skills_home() / "my-skill").exists()
+
+
+class TestPersonaIdentityNaming:
+    """A linked profile is a capability layer, not part of the persona name."""
+
+    def _profile(self, tmp_path, name):
+        d = tmp_path / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "CLAUDE.md").write_text(f"# {name} persona")
+        return d
+
+    def test_linked_profile_is_a_layer_not_the_name(self, adapter, tmp_path, monkeypatch):
+        monkeypatch.setattr(install, "_load_state", lambda: {"linked_profiles": [{"name": "brain"}]})
+        dirs = [("anton", self._profile(tmp_path, "anton")), ("brain", self._profile(tmp_path, "brain"))]
+        adapter.install_persona(dirs, ["anton", "brain"], None)
+        text = (codex_home() / "AGENTS.md").read_text()
+        assert "You are **anton**" in text
+        assert "**anton,brain**" not in text
+        assert "Layered on top: **brain**" in text
+
+    def test_no_linked_profiles_names_the_base(self, adapter, tmp_path, monkeypatch):
+        monkeypatch.setattr(install, "_load_state", lambda: {"linked_profiles": []})
+        adapter.install_persona([("anton", self._profile(tmp_path, "anton"))], ["anton"], None)
+        text = (codex_home() / "AGENTS.md").read_text()
+        assert "You are **anton**" in text
+        assert "Layered on top" not in text
