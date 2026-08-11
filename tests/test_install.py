@@ -1,5 +1,6 @@
 """Tests for scripts/install.py — loadenv, mcp-lib, interactive uninstall."""
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -1728,3 +1729,66 @@ class TestChainTargets:
         with patch.object(install, "STATE_JSON", state_json), pytest.raises(SystemExit) as exc:
             install._cmd_settings_profile(args)
         assert exc.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# install_global honours install_target (end-to-end, the one seam nothing ran)
+# ---------------------------------------------------------------------------
+
+
+class TestInstallGlobalHonoursTarget:
+    """`install_global` is the function the whole --for-target feature rests on,
+    and no test in this suite has ever executed it (see the two
+    `inspect.getsource` pins in test_install_validation.py, whose docstrings say
+    so). Everything else proves the right Namespace is *built*; nothing proved
+    it is *honoured*. It reads `getattr(args, "install_target", "") or
+    DEFAULT_TARGET`, so a dropped field silently reinstalls claude — exactly the
+    bug this whole line of work fixed.
+
+    Isolation is the autouse conftest fixture: HOME, Path.home, CODEX_HOME and
+    both codex resolvers are sandboxed and the fixture refuses to run otherwise.
+    """
+
+    def _tiny_profile(self, tmp_path):
+        profiles = tmp_path / "profiles"
+        tiny = profiles / "tiny" / ".claude"
+        tiny.mkdir(parents=True)
+        (tiny / "CLAUDE.md").write_text("# tiny persona\n")
+        (tiny / "settings.overrides.json").write_text("{}")
+        base = profiles / "_base"
+        base.mkdir()
+        (base / "settings.base.json").write_text(json.dumps({"hooks": {}}))
+        return profiles
+
+    def _run(self, tmp_path, monkeypatch, target):
+        profiles = self._tiny_profile(tmp_path)
+        monkeypatch.setattr(install, "PROFILES_DIR", profiles, raising=False)
+        monkeypatch.setattr(install, "_get_bundle_path", lambda: None)
+        # Heavy, network/tool-touching steps — not what this test is about.
+        monkeypatch.setattr(install, "_install_cli_tool", lambda *a, **k: None, raising=False)
+        monkeypatch.setattr(install, "_ensure_mcp_daemon", lambda *a, **k: None, raising=False)
+        # Claude's MCP registration hard-exits unless it can find an interpreter
+        # that imports hooks from a neutral cwd — an environment probe, and
+        # conftest deliberately points AGENTIHOOKS_ROOT at a scratch dir.
+        monkeypatch.setattr(install, "_resolve_hooks_python", lambda *a, **k: Path(sys.executable), raising=False)
+        install.install_global(argparse.Namespace(profile="tiny", settings_profile="", install_target=target))
+        return Path.home()
+
+    def test_codex_target_writes_codex_and_not_claude(self, tmp_path, monkeypatch):
+        home = self._run(tmp_path, monkeypatch, "codex")
+        assert (home / ".codex" / "config.toml").exists(), "codex config.toml not written"
+        assert (home / ".codex" / "AGENTS.md").exists(), "codex persona not written"
+        assert not (home / ".claude" / "settings.json").exists(), (
+            "installing codex wrote claude's settings.json — install_target was dropped"
+        )
+
+    def test_claude_target_writes_claude_and_not_codex(self, tmp_path, monkeypatch):
+        home = self._run(tmp_path, monkeypatch, "claude")
+        assert (home / ".claude" / "settings.json").exists(), "claude settings.json not written"
+        assert not (home / ".codex" / "config.toml").exists(), "installing claude wrote codex's config.toml"
+
+    def test_target_is_recorded_under_its_own_key(self, tmp_path, monkeypatch):
+        self._run(tmp_path, monkeypatch, "codex")
+        state = json.loads(install.STATE_JSON.read_text())
+        assert state["targets"]["global"]["codex"]["profile"] == "tiny"
+        assert "claude" not in state["targets"]["global"]
