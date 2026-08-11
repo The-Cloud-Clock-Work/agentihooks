@@ -1595,6 +1595,28 @@ class TestChainTargets:
         assert exc.value.code == 1
         assert "target 'codex'" in capsys.readouterr().err
 
+    def test_list_names_which_targets_carry_each_linked_profile(self, tmp_path, capsys):
+        """A name in one target's chain and absent from another's is a
+        divergence worth seeing, not something to collapse to '[in chain]'."""
+        state = {
+            "targets": {"global": {"claude": {"profile": "anton,brain"}, "codex": {"profile": "anton"}}},
+            "linked_profiles": [{"name": "brain", "path": str(tmp_path)}],
+        }
+        state_json, _, _ = self._setup(tmp_path, state)
+        with patch.object(install, "STATE_JSON", state_json):
+            install._link_profile_list()
+        assert "[in chain: claude]" in capsys.readouterr().out
+
+    def test_list_marks_a_profile_in_no_chain(self, tmp_path, capsys):
+        state = {
+            "targets": {"global": {"claude": {"profile": "anton"}, "codex": {"profile": "anton"}}},
+            "linked_profiles": [{"name": "brain", "path": str(tmp_path)}],
+        }
+        state_json, _, _ = self._setup(tmp_path, state)
+        with patch.object(install, "STATE_JSON", state_json):
+            install._link_profile_list()
+        assert "in chain" not in capsys.readouterr().out
+
     def test_unknown_for_target_exits(self, tmp_path):
         state_json, _, _ = self._setup(tmp_path, self.BOTH)
         with patch.object(install, "STATE_JSON", state_json), pytest.raises(SystemExit) as exc:
