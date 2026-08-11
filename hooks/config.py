@@ -3,16 +3,46 @@
 import os
 from pathlib import Path
 
+# Keys whose current os.environ value came from an .env file rather than the
+# surrounding process. Only these may be refreshed by reload_user_env() — a
+# value the shell or Helm set stays authoritative, which is the whole point of
+# the setdefault below.
+_FILE_OWNED_KEYS: set[str] = set()
 
-def _parse_env_file(env_file: Path) -> None:
+
+def _parse_env_file(
+    env_file: Path,
+    *,
+    override_file_owned: bool = False,
+    pass_keys: set[str] | None = None,
+) -> None:
     """Parse a single .env file and set variables in os.environ.
 
-    Process env takes precedence — only unset keys get populated from the
-    file. Otherwise a stale PVC-persisted .env silently masks Helm env
-    changes.
+    Precedence, highest first:
+
+      1. the surrounding process env — a stale PVC-persisted .env must never
+         mask a Helm env change, which is the whole reason files do not simply
+         overwrite;
+      2. a later file in the same load pass;
+      3. an earlier file in the same load pass.
+
+    ``pass_keys`` carries rule 2: it is the set of keys the current pass has
+    already written, and a key in it may be rewritten by a later file. Without
+    it every file after the first to define a key was skipped, so the loader
+    was first-file-wins while its own docstring promised the opposite.
+
+    ``override_file_owned`` re-applies values for keys this loader set on a
+    previous pass, so a long-lived process (the hooks-utils MCP server) picks
+    up an edited .env instead of reporting whatever was true at import.
     """
     if not env_file.is_file():
         return
+    if pass_keys is None:
+        pass_keys = set()
+    # Keys written by THIS file. Within one file the first definition wins —
+    # scripts/mcp_daemon.py's scanner resolves duplicates the same way and the
+    # two are asserted to agree, so "later wins" applies between files only.
+    this_file: set[str] = set()
     for _raw in env_file.read_text(encoding="utf-8").splitlines():
         _line = _raw.strip()
         if not _line or _line.startswith("#"):
@@ -33,11 +63,26 @@ def _parse_env_file(env_file: Path) -> None:
         elif "#" in _val:
             # Strip inline comment: KEY=value # comment
             _val = _val[: _val.index("#")].rstrip()
-        if _key:
-            os.environ.setdefault(_key, _val)
+        if not _key:
+            continue
+        if _key in this_file:
+            continue  # first definition within a file wins
+        if _key in pass_keys:
+            # An earlier file in this pass set it; a later file overrides.
+            os.environ[_key] = _val
+            this_file.add(_key)
+        elif _key not in os.environ:
+            os.environ[_key] = _val
+            _FILE_OWNED_KEYS.add(_key)
+            pass_keys.add(_key)
+            this_file.add(_key)
+        elif override_file_owned and _key in _FILE_OWNED_KEYS:
+            os.environ[_key] = _val
+            pass_keys.add(_key)
+            this_file.add(_key)
 
 
-def _load_user_env() -> None:
+def _load_user_env(*, override_file_owned: bool = False) -> None:
     """Load all .env files from ~/.agentihooks/ into os.environ.
 
     Called once at module import time. AGENTIHOOKS_HOME is resolved from
@@ -51,18 +96,108 @@ def _load_user_env() -> None:
     """
     _home = Path(os.environ.get("AGENTIHOOKS_HOME", str(Path.home() / ".agentihooks")))
 
+    # Shared across every file in this pass so a later file can override an
+    # earlier one without any file overriding the process env.
+    _pass_keys: set[str] = set()
+
     # 1. Main .env first
-    _parse_env_file(_home / ".env")
+    _parse_env_file(_home / ".env", override_file_owned=override_file_owned, pass_keys=_pass_keys)
 
     # 2. Additional *.env files (sorted, skip the main .env to avoid double-load)
     if _home.is_dir():
         for _extra in sorted(_home.glob("*.env")):
             if _extra.name == ".env":
                 continue
-            _parse_env_file(_extra)
+            _parse_env_file(_extra, override_file_owned=override_file_owned, pass_keys=_pass_keys)
+
+
+def _env_files_fingerprint() -> tuple:
+    """Modification stamps of every .env file the loader reads, sorted.
+
+    Cheap enough to call on every status request and it is what makes the
+    reload safe: with no fingerprint change there is nothing new on disk to
+    learn, so the globals are left exactly as they are.
+    """
+    _home = Path(os.environ.get("AGENTIHOOKS_HOME", str(Path.home() / ".agentihooks")))
+    stamps = []
+    for f in sorted(_home.glob("*.env")) if _home.is_dir() else []:
+        try:
+            stamps.append((f.name, f.stat().st_mtime))
+        except OSError:
+            continue
+    main = _home / ".env"
+    try:
+        stamps.append((".env", main.stat().st_mtime))
+    except OSError:
+        pass
+    return tuple(sorted(stamps))
 
 
 _load_user_env()
+_ENV_FINGERPRINT = _env_files_fingerprint()
+
+
+def reload_brain_env(force: bool = False) -> dict:
+    """Re-read the .env files and re-bind the brain/amygdala module globals.
+
+    Hooks are short-lived processes and always see current config. The
+    hooks-utils MCP server is not — it imports this module once and then
+    answers brain_status/brain_refresh from constants frozen at startup, so an
+    edited .env leaves it confidently reporting a source it is no longer
+    supposed to use.
+
+    **No-ops unless the .env files changed on disk.** A reload that fires
+    unconditionally would overwrite whatever a caller set programmatically —
+    including a test that patches these globals, and including a deployment
+    with no .env at all, where every value would collapse to its default. The
+    fingerprint gate means this only ever costs a few stat() calls and only
+    ever fires when there is genuinely something new to read.
+
+    Only keys this loader owns are refreshed; anything the shell or Helm set
+    stays authoritative. Returns the re-resolved brain values.
+    """
+    global BRAIN_ENABLED, BRAIN_SOURCE_TYPE, BRAIN_SOURCE_PATH, BRAIN_CHANNEL
+    global BRAIN_REFRESH_INTERVAL, BRAIN_URL, BRAIN_HTTP_TOKEN, BRAIN_HTTP_TIMEOUT
+    global AMYGDALA_ENABLED, AMYGDALA_SIGNAL_PATH, _ENV_FINGERPRINT
+
+    current = _env_files_fingerprint()
+    if not force and current == _ENV_FINGERPRINT:
+        return {
+            "brain_enabled": BRAIN_ENABLED,
+            "brain_url": BRAIN_URL,
+            "brain_source_type": BRAIN_SOURCE_TYPE,
+            "brain_source_path": BRAIN_SOURCE_PATH,
+            "amygdala_enabled": AMYGDALA_ENABLED,
+            "amygdala_signal_path": AMYGDALA_SIGNAL_PATH,
+            "reloaded": False,
+        }
+    _ENV_FINGERPRINT = current
+
+    _load_user_env(override_file_owned=True)
+
+    _feed_dir = Path(AGENTIHOOKS_HOME) / "brain-feed"
+    _default = "true" if (_feed_dir.is_dir() and any(_feed_dir.glob("*.md"))) else "false"
+    BRAIN_ENABLED = _env_bool("BRAIN_ENABLED", _default)
+    BRAIN_SOURCE_TYPE = os.getenv("BRAIN_SOURCE_TYPE", "file")
+    BRAIN_SOURCE_PATH = os.getenv("BRAIN_SOURCE_PATH", str(_feed_dir))
+    BRAIN_CHANNEL = os.getenv("BRAIN_CHANNEL", "brain")
+    BRAIN_REFRESH_INTERVAL = int(os.getenv("BRAIN_REFRESH_INTERVAL", "30"))
+    BRAIN_URL = os.getenv("BRAIN_URL", "").rstrip("/")
+    BRAIN_HTTP_TOKEN = os.getenv("BRAIN_HTTP_TOKEN", "") or os.getenv("KB_ROUTER_TOKEN", "")
+    BRAIN_HTTP_TIMEOUT = float(os.getenv("BRAIN_HTTP_TIMEOUT", "3"))
+    AMYGDALA_ENABLED = _env_bool("AMYGDALA_ENABLED", "false")
+    AMYGDALA_SIGNAL_PATH = os.getenv("AMYGDALA_SIGNAL_PATH", "")
+
+    return {
+        "brain_enabled": BRAIN_ENABLED,
+        "brain_url": BRAIN_URL,
+        "brain_source_type": BRAIN_SOURCE_TYPE,
+        "brain_source_path": BRAIN_SOURCE_PATH,
+        "amygdala_enabled": AMYGDALA_ENABLED,
+        "amygdala_signal_path": AMYGDALA_SIGNAL_PATH,
+        "reloaded": True,
+    }
+
 
 # =============================================================================
 # RUNTIME DATA ROOT

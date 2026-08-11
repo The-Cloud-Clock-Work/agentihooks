@@ -100,12 +100,24 @@ def inject_on_session_start(cwd: str) -> None:
         msg = ensure_on_dev(cwd)
         if not msg:
             return
+        content = f"[auto-dev-switch] {msg}"
+
+        from hooks.targets import is_codex
+
+        if is_codex():
+            # Codex parses hook stdout as ONE JSON object — queue for the
+            # single end-of-process flush instead of printing our own.
+            from hooks.targets import emitter
+
+            emitter.buffer_context(content)
+            return
+
         print(
             json.dumps(
                 {
                     "hookSpecificOutput": {
                         "hookEventName": "SessionStart",
-                        "additionalContext": f"[auto-dev-switch] {msg}",
+                        "additionalContext": content,
                     }
                 }
             )

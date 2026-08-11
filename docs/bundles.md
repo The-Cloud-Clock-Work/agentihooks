@@ -134,8 +134,8 @@ Evaluation order: **deny > ask > allow** (first match wins).
 # 1. Install agentihooks
 git clone https://github.com/The-Cloud-Clockwork/agentihooks
 cd agentihooks
-uv venv ~/.agentihooks/.venv
-uv pip install --python ~/.agentihooks/.venv/bin/python -e ".[all]"
+uv venv .venv
+uv pip install --python .venv/bin/python -e ".[all]"
 
 # 2. Clone your tools repo and install with bundle
 git clone https://github.com/you/my-tools ~/dev/my-tools

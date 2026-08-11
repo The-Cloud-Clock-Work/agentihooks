@@ -257,9 +257,12 @@ def main() -> None:
             _g_sp = "none"
             _state_path = Path(AGENTIHOOKS_HOME) / "state.json"
             if _state_path.exists():
+                from hooks.targets import global_record as _ah_global_record
+
                 _ah_state = _json_ah.loads(_state_path.read_text())
-                _g_profile = _ah_state.get("targets", {}).get("global", {}).get("profile", "") or "none"
-                _g_sp = _ah_state.get("targets", {}).get("global", {}).get("settings_profile", "") or "none"
+                _ah_rec = _ah_global_record(_ah_state)
+                _g_profile = _ah_rec.get("profile", "") or "none"
+                _g_sp = _ah_rec.get("settings_profile", "") or "none"
 
             # Channels — env-driven via AGENTIHOOKS_BASE_CHANNELS (single source
             # of truth in hooks.config; broadcast.py re-exports the same value).

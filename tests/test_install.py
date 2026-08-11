@@ -1,5 +1,6 @@
 """Tests for scripts/install.py — loadenv, mcp-lib, interactive uninstall."""
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -139,11 +140,25 @@ class TestDetectVenv:
         fake_home = tmp_path / "home"
         fake_home.mkdir()
         with patch("pathlib.Path.home", return_value=fake_home):
-            with patch.dict("os.environ", {"VIRTUAL_ENV": str(tmp_path)}):
+            with patch.dict("os.environ", {"VIRTUAL_ENV": str(tmp_path)}, clear=True):
                 result = install._detect_venv()
         assert result == python
 
-    def test_detects_local_venv(self, tmp_path):
+    @staticmethod
+    def _sandbox_root(monkeypatch, tmp_path):
+        """Point AGENTIHOOKS_ROOT at a scratch tree.
+
+        Tier 3 reads AGENTIHOOKS_ROOT and its parent. Left unsandboxed these
+        tests reach the operator's real workspace ``.venv``, which exists and
+        passes the import probe, so they would assert against live state.
+        """
+        root = tmp_path / "workspace" / "repo"
+        root.mkdir(parents=True)
+        monkeypatch.setattr(install, "AGENTIHOOKS_ROOT", root)
+        return root
+
+    def test_detects_local_venv(self, tmp_path, monkeypatch):
+        self._sandbox_root(monkeypatch, tmp_path)
         venv = tmp_path / ".venv" / "bin" / "python"
         venv.parent.mkdir(parents=True)
         venv.touch()
@@ -155,7 +170,112 @@ class TestDetectVenv:
                     result = install._detect_venv()
         assert result == venv
 
-    def test_returns_none_when_no_venv(self, tmp_path):
+    def test_agentihooks_python_pin_wins(self, tmp_path):
+        pinned = tmp_path / "pinned" / "python"
+        pinned.parent.mkdir()
+        pinned.touch()
+        other = tmp_path / "activated"
+        (other / "bin").mkdir(parents=True)
+        (other / "bin" / "python").touch()
+        env = {"AGENTIHOOKS_PYTHON": str(pinned), "VIRTUAL_ENV": str(other)}
+        with patch.dict("os.environ", env, clear=True):
+            assert install._detect_venv() == pinned
+
+    def test_pin_is_read_from_agentihooks_env_files(self, tmp_path, monkeypatch):
+        """The installer never imports hooks.config, so a pin written to
+        ~/.agentihooks/*.env must be read explicitly or it silently does
+        nothing in a fresh shell."""
+        pinned = tmp_path / "pinned" / "python"
+        pinned.parent.mkdir()
+        pinned.touch()
+        monkeypatch.setattr(
+            install,
+            "_mcp_daemon_module",
+            lambda: type(
+                "M", (), {"_scan_env_file": staticmethod(lambda k: str(pinned) if k == "AGENTIHOOKS_PYTHON" else "")}
+            ),
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            assert install._detect_venv() == pinned
+
+    def test_env_pin_beats_repo_venv(self, tmp_path, monkeypatch):
+        pinned = tmp_path / "wanted" / "python"
+        pinned.parent.mkdir()
+        pinned.touch()
+        root = self._sandbox_root(monkeypatch, tmp_path)
+        repo_venv = root / ".venv" / "bin" / "python"
+        repo_venv.parent.mkdir(parents=True, exist_ok=True)
+        repo_venv.touch()
+        monkeypatch.setattr(
+            install,
+            "_mcp_daemon_module",
+            lambda: type("M", (), {"_scan_env_file": staticmethod(lambda k: str(pinned))}),
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            assert install._detect_venv() == pinned
+
+    def test_detects_repo_root_venv(self, tmp_path, monkeypatch):
+        root = self._sandbox_root(monkeypatch, tmp_path)
+        root_venv = root / ".venv" / "bin" / "python"
+        root_venv.parent.mkdir(parents=True, exist_ok=True)
+        root_venv.touch()
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        with patch("pathlib.Path.home", return_value=fake_home):
+            with patch("pathlib.Path.cwd", return_value=tmp_path):
+                with patch.dict("os.environ", {}, clear=True):
+                    assert install._detect_venv() == root_venv
+
+    def test_workspace_venv_beats_repo_local_venv(self, tmp_path, monkeypatch):
+        """The workspace venv is the one hooks run under; a repo-local .venv
+        (`uv run` leaves one behind) must not outrank it — both can import
+        hooks, so the probe cannot separate them and the order decides."""
+        root = self._sandbox_root(monkeypatch, tmp_path)
+        repo_venv = root / ".venv" / "bin" / "python"
+        repo_venv.parent.mkdir(parents=True)
+        repo_venv.touch()
+        workspace_venv = root.parent / ".venv" / "bin" / "python"
+        workspace_venv.parent.mkdir(parents=True)
+        workspace_venv.touch()
+        monkeypatch.setattr(install, "_python_can_import_hooks", lambda p: True)
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        with patch("pathlib.Path.home", return_value=fake_home):
+            with patch("pathlib.Path.cwd", return_value=tmp_path):
+                with patch.dict("os.environ", {}, clear=True):
+                    assert install._detect_venv() == workspace_venv
+
+    def test_unimportable_workspace_venv_loses_to_repo_local(self, tmp_path, monkeypatch):
+        """The probe is load-bearing for fallthrough, not decoration."""
+        root = self._sandbox_root(monkeypatch, tmp_path)
+        repo_venv = root / ".venv" / "bin" / "python"
+        repo_venv.parent.mkdir(parents=True)
+        repo_venv.touch()
+        workspace_venv = root.parent / ".venv" / "bin" / "python"
+        workspace_venv.parent.mkdir(parents=True)
+        workspace_venv.touch()
+        monkeypatch.setattr(install, "_python_can_import_hooks", lambda p: Path(p) == repo_venv)
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        with patch("pathlib.Path.home", return_value=fake_home):
+            with patch("pathlib.Path.cwd", return_value=tmp_path):
+                with patch.dict("os.environ", {}, clear=True):
+                    assert install._detect_venv() == repo_venv
+
+    def test_state_dir_venv_is_never_used(self, tmp_path, monkeypatch):
+        """~/.agentihooks/.venv must NEVER be picked up (operator directive)."""
+        self._sandbox_root(monkeypatch, tmp_path)
+        fake_home = tmp_path / "home"
+        state_venv = fake_home / ".agentihooks" / ".venv" / "bin" / "python"
+        state_venv.parent.mkdir(parents=True)
+        state_venv.touch()
+        with patch("pathlib.Path.home", return_value=fake_home):
+            with patch("pathlib.Path.cwd", return_value=tmp_path):
+                with patch.dict("os.environ", {}, clear=True):
+                    assert install._detect_venv() is None
+
+    def test_returns_none_when_no_venv(self, tmp_path, monkeypatch):
+        self._sandbox_root(monkeypatch, tmp_path)
         fake_home = tmp_path / "home"
         fake_home.mkdir()
         with patch("pathlib.Path.home", return_value=fake_home):
@@ -816,11 +936,11 @@ class TestLinkProfile:
         ):
             install._link_profile_link(external, name=None, append=True, run_init=False)
         result = json.loads(state_json.read_text())
-        assert result["targets"]["global"]["profile"] == "anton,brain"
+        assert result["targets"]["global"]["claude"]["profile"] == "anton,brain"
         assert result["linked_profiles"][0]["name"] == "brain"
         assert result["linked_profiles"][0]["path"] == str(external)
         # --no-init should bump installed_at
-        assert "installed_at" in result["targets"]["global"]
+        assert "installed_at" in result["targets"]["global"]["claude"]
 
     def test_link_idempotent_re_link(self, tmp_path):
         state_json, _, profiles_dir = self._setup(tmp_path)
@@ -842,7 +962,7 @@ class TestLinkProfile:
             install._link_profile_link(external, name=None, append=True, run_init=False)
         result = json.loads(state_json.read_text())
         # No duplicate in chain
-        assert result["targets"]["global"]["profile"] == "anton,brain"
+        assert result["targets"]["global"]["claude"]["profile"] == "anton,brain"
         assert len(result["linked_profiles"]) == 1
 
     # --- unlink ---
@@ -866,7 +986,7 @@ class TestLinkProfile:
         ):
             install._link_profile_unlink("brain", run_init=False)
         result = json.loads(state_json.read_text())
-        assert result["targets"]["global"]["profile"] == "anton"
+        assert result["targets"]["global"]["claude"]["profile"] == "anton"
         assert result["linked_profiles"] == []
 
     def test_unlink_empty_chain_falls_back_to_default(self, tmp_path):
@@ -888,7 +1008,7 @@ class TestLinkProfile:
         ):
             install._link_profile_unlink("brain", run_init=False)
         result = json.loads(state_json.read_text())
-        assert result["targets"]["global"]["profile"] == "default"
+        assert result["targets"]["global"]["claude"]["profile"] == "default"
 
     def test_unlink_unknown_name_exits(self, tmp_path):
         state_json, _, _ = self._setup(tmp_path)
@@ -1387,9 +1507,310 @@ class TestSaveStateBackup:
         bak = state_json.with_suffix(".json.bak")
         assert bak.exists()
         assert bak.read_text() == first_content
+        # _save_state persists verbatim (shape migration happens on load).
         assert json.loads(state_json.read_text())["targets"]["global"]["profile"] == "coding"
 
     def test_no_bak_on_first_save(self, tmp_path, monkeypatch):
         state_json = self._wire(tmp_path, monkeypatch)
         install._save_state({"targets": {}})
         assert not state_json.with_suffix(".json.bak").exists()
+
+
+# ---------------------------------------------------------------------------
+# Chain edits are per-target (link-profile / settings-profile)
+# ---------------------------------------------------------------------------
+
+
+class TestChainTargets:
+    """`link-profile` and `settings-profile` edit every installed target's
+    chain unless --for-target narrows it. Writing only claude's record is how
+    a codex chain silently diverges."""
+
+    BOTH = {
+        "targets": {
+            "global": {
+                "claude": {"profile": "anton", "path": "/h/.claude"},
+                "codex": {"profile": "anton", "path": "/h/.codex"},
+            }
+        }
+    }
+
+    def _setup(self, tmp_path: Path, state: dict):
+        state_json = tmp_path / "state.json"
+        state_json.write_text(json.dumps(state))
+        profiles_dir = tmp_path / "profiles"
+        (profiles_dir / "anton").mkdir(parents=True)
+        external = tmp_path / "external" / "brain"
+        external.mkdir(parents=True)
+        return state_json, profiles_dir, external
+
+    # --- _chain_targets resolution ---
+
+    def test_defaults_to_every_installed_target(self, tmp_path):
+        state_json, _, _ = self._setup(tmp_path, self.BOTH)
+        with patch.object(install, "STATE_JSON", state_json):
+            assert install._chain_targets(None) == ("claude", "codex")
+
+    def test_for_target_narrows_to_one(self, tmp_path):
+        state_json, _, _ = self._setup(tmp_path, self.BOTH)
+        with patch.object(install, "STATE_JSON", state_json):
+            assert install._chain_targets("codex") == ("codex",)
+
+    def test_for_target_must_already_be_installed(self, tmp_path, capsys):
+        """These commands edit a chain; they do not bootstrap a target.
+        Without the guard, --for-target codex on a claude-only machine writes
+        a codex record holding only a profile and no path, and every later
+        unscoped edit then tries to reinstall a target never set up."""
+        state_json, _, _ = self._setup(tmp_path, {"targets": {"global": {"claude": {"profile": "anton"}}}})
+        with patch.object(install, "STATE_JSON", state_json), pytest.raises(SystemExit) as exc:
+            install._chain_targets("codex")
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "not installed" in err and "init --target codex" in err
+
+    def test_link_to_uninstalled_target_writes_no_phantom_record(self, tmp_path):
+        state_json, profiles_dir, external = self._setup(
+            tmp_path, {"targets": {"global": {"claude": {"profile": "anton"}}}}
+        )
+        with (
+            patch.object(install, "STATE_JSON", state_json),
+            patch.object(install, "PROFILES_DIR", profiles_dir),
+            patch.object(install, "_get_bundle_path", return_value=None),
+            patch.object(install, "install_global") as mock_install,
+            pytest.raises(SystemExit),
+        ):
+            install.cmd_link_profile("link", path=str(external), no_init=True, for_target="codex")
+        assert "codex" not in json.loads(state_json.read_text())["targets"]["global"]
+        mock_install.assert_not_called()
+
+    def test_settings_profile_error_names_the_empty_scope(self, tmp_path, capsys):
+        """An unscoped 'no profile installed' reads as 'nothing is installed'
+        even when the other target is."""
+        state_json, _, _ = self._setup(
+            tmp_path, {"targets": {"global": {"claude": {"profile": "anton"}, "codex": {"path": "/h/.codex"}}}}
+        )
+        args = MagicMock(sp_name="lean", clear=False, for_target="codex")
+        with patch.object(install, "STATE_JSON", state_json), pytest.raises(SystemExit) as exc:
+            install._cmd_settings_profile(args)
+        assert exc.value.code == 1
+        assert "target 'codex'" in capsys.readouterr().err
+
+    def test_list_names_which_targets_carry_each_linked_profile(self, tmp_path, capsys):
+        """A name in one target's chain and absent from another's is a
+        divergence worth seeing, not something to collapse to '[in chain]'."""
+        state = {
+            "targets": {"global": {"claude": {"profile": "anton,brain"}, "codex": {"profile": "anton"}}},
+            "linked_profiles": [{"name": "brain", "path": str(tmp_path)}],
+        }
+        state_json, _, _ = self._setup(tmp_path, state)
+        with patch.object(install, "STATE_JSON", state_json):
+            install._link_profile_list()
+        assert "[in chain: claude]" in capsys.readouterr().out
+
+    def test_list_marks_a_profile_in_no_chain(self, tmp_path, capsys):
+        state = {
+            "targets": {"global": {"claude": {"profile": "anton"}, "codex": {"profile": "anton"}}},
+            "linked_profiles": [{"name": "brain", "path": str(tmp_path)}],
+        }
+        state_json, _, _ = self._setup(tmp_path, state)
+        with patch.object(install, "STATE_JSON", state_json):
+            install._link_profile_list()
+        assert "in chain" not in capsys.readouterr().out
+
+    def test_unknown_for_target_exits(self, tmp_path):
+        state_json, _, _ = self._setup(tmp_path, self.BOTH)
+        with patch.object(install, "STATE_JSON", state_json), pytest.raises(SystemExit) as exc:
+            install._chain_targets("emacs")
+        assert exc.value.code == 1
+
+    # --- link ---
+
+    def test_link_appends_to_every_target_chain(self, tmp_path):
+        state_json, profiles_dir, external = self._setup(tmp_path, self.BOTH)
+        with (
+            patch.object(install, "STATE_JSON", state_json),
+            patch.object(install, "PROFILES_DIR", profiles_dir),
+            patch.object(install, "_get_bundle_path", return_value=None),
+        ):
+            install._link_profile_link(external, name=None, append=True, run_init=False, targets=("claude", "codex"))
+        result = json.loads(state_json.read_text())["targets"]["global"]
+        assert result["claude"]["profile"] == "anton,brain"
+        assert result["codex"]["profile"] == "anton,brain"
+
+    def test_link_scoped_to_one_target_leaves_the_other_alone(self, tmp_path):
+        state_json, profiles_dir, external = self._setup(tmp_path, self.BOTH)
+        with (
+            patch.object(install, "STATE_JSON", state_json),
+            patch.object(install, "PROFILES_DIR", profiles_dir),
+            patch.object(install, "_get_bundle_path", return_value=None),
+        ):
+            install._link_profile_link(external, name=None, append=True, run_init=False, targets=("codex",))
+        result = json.loads(state_json.read_text())["targets"]["global"]
+        assert result["codex"]["profile"] == "anton,brain"
+        assert result["claude"]["profile"] == "anton"
+
+    def test_link_reinstalls_each_target_under_its_own_name(self, tmp_path):
+        """Without install_target on the namespace, install_global falls
+        through to DEFAULT_TARGET and reinstalls claude twice."""
+        state_json, profiles_dir, external = self._setup(tmp_path, self.BOTH)
+        with (
+            patch.object(install, "STATE_JSON", state_json),
+            patch.object(install, "PROFILES_DIR", profiles_dir),
+            patch.object(install, "_get_bundle_path", return_value=None),
+        ):
+            pending = install._link_profile_link(
+                external, name=None, append=True, run_init=True, targets=("claude", "codex")
+            )
+        assert [ns.install_target for ns in pending] == ["claude", "codex"]
+        assert {ns.profile for ns in pending} == {"anton,brain"}
+
+    # --- unlink ---
+
+    def test_unlink_strips_every_target_chain(self, tmp_path):
+        state = json.loads(json.dumps(self.BOTH))
+        state["targets"]["global"]["claude"]["profile"] = "anton,brain"
+        state["targets"]["global"]["codex"]["profile"] = "anton,brain"
+        state_json, _, external = self._setup(tmp_path, state)
+        state = json.loads(state_json.read_text())
+        state["linked_profiles"] = [{"name": "brain", "path": str(external)}]
+        state_json.write_text(json.dumps(state))
+        with (
+            patch.object(install, "STATE_JSON", state_json),
+            patch.object(install, "CLAUDE_HOME", tmp_path / ".claude"),
+            patch.object(install, "_available_profiles", return_value=["anton", "default"]),
+        ):
+            pending = install._link_profile_unlink("brain", run_init=True, targets=("claude", "codex"))
+        result = json.loads(state_json.read_text())["targets"]["global"]
+        assert result["claude"]["profile"] == "anton"
+        assert result["codex"]["profile"] == "anton"
+        assert [ns.install_target for ns in pending] == ["claude", "codex"]
+
+    def test_unlink_ignores_for_target_because_deregistration_is_global(self, tmp_path, capsys):
+        """Scoping unlink would leave the other target naming a profile that
+        no longer resolves."""
+        state = json.loads(json.dumps(self.BOTH))
+        state["targets"]["global"]["claude"]["profile"] = "anton,brain"
+        state["targets"]["global"]["codex"]["profile"] = "anton,brain"
+        state_json, _, external = self._setup(tmp_path, state)
+        state = json.loads(state_json.read_text())
+        state["linked_profiles"] = [{"name": "brain", "path": str(external)}]
+        state_json.write_text(json.dumps(state))
+        with (
+            patch.object(install, "STATE_JSON", state_json),
+            patch.object(install, "CLAUDE_HOME", tmp_path / ".claude"),
+            patch.object(install, "_available_profiles", return_value=["anton", "default"]),
+            patch.object(install, "install_global") as mock_install,
+        ):
+            install.cmd_link_profile("unlink", name="brain", no_init=True, for_target="codex")
+        result = json.loads(state_json.read_text())["targets"]["global"]
+        assert result["claude"]["profile"] == "anton"
+        assert result["codex"]["profile"] == "anton"
+        assert "--for-target ignored" in capsys.readouterr().out
+        mock_install.assert_not_called()
+
+    # --- settings-profile ---
+
+    def test_settings_profile_applies_to_every_target(self, tmp_path):
+        state_json, _, _ = self._setup(tmp_path, self.BOTH)
+        args = MagicMock(sp_name="lean", clear=False, for_target=None)
+        with (
+            patch.object(install, "STATE_JSON", state_json),
+            patch.object(install, "install_global") as mock_install,
+        ):
+            install._cmd_settings_profile(args)
+        calls = [c.args[0] for c in mock_install.call_args_list]
+        assert [ns.install_target for ns in calls] == ["claude", "codex"]
+        assert {ns.settings_profile for ns in calls} == {"lean"}
+
+    def test_settings_profile_for_target_scopes_to_one(self, tmp_path):
+        state_json, _, _ = self._setup(tmp_path, self.BOTH)
+        args = MagicMock(sp_name="lean", clear=False, for_target="codex")
+        with (
+            patch.object(install, "STATE_JSON", state_json),
+            patch.object(install, "install_global") as mock_install,
+        ):
+            install._cmd_settings_profile(args)
+        calls = [c.args[0] for c in mock_install.call_args_list]
+        assert [ns.install_target for ns in calls] == ["codex"]
+
+    def test_settings_profile_clear_covers_every_target(self, tmp_path):
+        state_json, _, _ = self._setup(tmp_path, self.BOTH)
+        args = MagicMock(sp_name=None, clear=True, for_target=None)
+        with (
+            patch.object(install, "STATE_JSON", state_json),
+            patch.object(install, "install_global") as mock_install,
+        ):
+            install._cmd_settings_profile(args)
+        calls = [c.args[0] for c in mock_install.call_args_list]
+        assert [ns.install_target for ns in calls] == ["claude", "codex"]
+        assert {ns.settings_profile for ns in calls} == {""}
+
+    def test_settings_profile_exits_when_nothing_installed(self, tmp_path):
+        state_json, _, _ = self._setup(tmp_path, {})
+        args = MagicMock(sp_name="lean", clear=False, for_target=None)
+        with patch.object(install, "STATE_JSON", state_json), pytest.raises(SystemExit) as exc:
+            install._cmd_settings_profile(args)
+        assert exc.value.code == 1
+
+
+# ---------------------------------------------------------------------------
+# install_global honours install_target (end-to-end, the one seam nothing ran)
+# ---------------------------------------------------------------------------
+
+
+class TestInstallGlobalHonoursTarget:
+    """`install_global` is the function the whole --for-target feature rests on,
+    and no test in this suite has ever executed it (see the two
+    `inspect.getsource` pins in test_install_validation.py, whose docstrings say
+    so). Everything else proves the right Namespace is *built*; nothing proved
+    it is *honoured*. It reads `getattr(args, "install_target", "") or
+    DEFAULT_TARGET`, so a dropped field silently reinstalls claude — exactly the
+    bug this whole line of work fixed.
+
+    Isolation is the autouse conftest fixture: HOME, Path.home, CODEX_HOME and
+    both codex resolvers are sandboxed and the fixture refuses to run otherwise.
+    """
+
+    def _tiny_profile(self, tmp_path):
+        profiles = tmp_path / "profiles"
+        tiny = profiles / "tiny" / ".claude"
+        tiny.mkdir(parents=True)
+        (tiny / "CLAUDE.md").write_text("# tiny persona\n")
+        (tiny / "settings.overrides.json").write_text("{}")
+        base = profiles / "_base"
+        base.mkdir()
+        (base / "settings.base.json").write_text(json.dumps({"hooks": {}}))
+        return profiles
+
+    def _run(self, tmp_path, monkeypatch, target):
+        profiles = self._tiny_profile(tmp_path)
+        monkeypatch.setattr(install, "PROFILES_DIR", profiles, raising=False)
+        monkeypatch.setattr(install, "_get_bundle_path", lambda: None)
+        # Heavy, network/tool-touching steps — not what this test is about.
+        monkeypatch.setattr(install, "_install_cli_tool", lambda *a, **k: None, raising=False)
+        monkeypatch.setattr(install, "_ensure_mcp_daemon", lambda *a, **k: None, raising=False)
+        # Claude's MCP registration hard-exits unless it can find an interpreter
+        # that imports hooks from a neutral cwd — an environment probe, and
+        # conftest deliberately points AGENTIHOOKS_ROOT at a scratch dir.
+        monkeypatch.setattr(install, "_resolve_hooks_python", lambda *a, **k: Path(sys.executable), raising=False)
+        install.install_global(argparse.Namespace(profile="tiny", settings_profile="", install_target=target))
+        return Path.home()
+
+    def test_codex_target_writes_codex_and_not_claude(self, tmp_path, monkeypatch):
+        home = self._run(tmp_path, monkeypatch, "codex")
+        assert (home / ".codex" / "config.toml").exists(), "codex config.toml not written"
+        assert (home / ".codex" / "AGENTS.md").exists(), "codex persona not written"
+        assert not (home / ".claude" / "settings.json").exists(), (
+            "installing codex wrote claude's settings.json — install_target was dropped"
+        )
+
+    def test_claude_target_writes_claude_and_not_codex(self, tmp_path, monkeypatch):
+        home = self._run(tmp_path, monkeypatch, "claude")
+        assert (home / ".claude" / "settings.json").exists(), "claude settings.json not written"
+        assert not (home / ".codex" / "config.toml").exists(), "installing claude wrote codex's config.toml"
+
+    def test_target_is_recorded_under_its_own_key(self, tmp_path, monkeypatch):
+        self._run(tmp_path, monkeypatch, "codex")
+        state = json.loads(install.STATE_JSON.read_text())
+        assert state["targets"]["global"]["codex"]["profile"] == "tiny"
+        assert "claude" not in state["targets"]["global"]

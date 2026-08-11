@@ -102,6 +102,26 @@ def parse_transcript_metrics(transcript_path: str) -> dict:
         if not path.exists():
             return metrics
 
+        from hooks.memory.transcript_reader import detect_transcript_format
+
+        if detect_transcript_format(path) == "codex":
+            # Codex rollout: derive turn count / last response from the
+            # unified record stream (the claude-shaped scan below would
+            # return all-None on a rollout file).
+            from hooks.memory.transcript_reader import iter_transcript_records
+
+            user_turns = 0
+            last_text = None
+            for rec in iter_transcript_records(path):
+                kind = rec.get("kind")
+                if kind == "user_text":
+                    user_turns += 1
+                elif kind in ("assistant_text", "turn_complete") and rec.get("text"):
+                    last_text = rec["text"]
+            metrics["num_turns"] = user_turns
+            metrics["last_response"] = last_text
+            return metrics
+
         first_timestamp = None
         last_timestamp = None
         user_count = 0
@@ -316,12 +336,38 @@ def on_session_start(payload: dict) -> None:
 
     if session_id and MCP_SESSION_ID_BANNER_ENABLED:
         from hooks.common import inject_context as _inject_sid
+        from hooks.targets import current_target as _sid_target
 
+        _host = "Codex" if _sid_target() == "codex" else "Claude Code"
         _inject_sid(
-            f"Your Claude Code session_id is `{session_id}`. Pass it as the "
+            f"Your {_host} session_id is `{session_id}`. Pass it as the "
             "`session_id` argument to the hooks-utils tools that need caller "
             "identity — call_agent, pool_list, pool_status, channel_acknowledge."
         )
+
+    # Codex has no command-backed statusline — the `ah:` status line the
+    # claude statusline renders is surfaced once per session here instead.
+    from hooks.targets import is_codex as _is_codex
+
+    if _is_codex():
+        try:
+            import json as _sjson
+
+            from hooks.config import AGENTIHOOKS_HOME as _ah_home
+            from hooks.config import BASE_CHANNELS as _channels
+            from hooks.targets import global_record as _global_record
+
+            _state = _sjson.loads((_ah_home / "state.json").read_text())
+            _profile = _global_record(_state).get("profile", "?")
+            from hooks.common import inject_context as _inject_ah
+
+            _inject_ah(
+                f"agentihooks active on codex — profile: {_profile} | "
+                f"channels: {','.join(_channels) if _channels else 'none'} | "
+                "guards: secrets, branch, prod-lockdown, kubectl-mutation, retry-breaker"
+            )
+        except Exception:
+            pass
 
     from hooks.config import MCP_HYGIENE_ENABLED
 
@@ -806,7 +852,7 @@ def on_pre_tool_use(payload: dict) -> None:
     if SECRETS_MODE == "off":
         log(
             f"Pre tool use: {tool_name} (secrets scanning skipped, mode=off)",
-            {"tool": tool_name},
+            {"tool": tool_name, "session_id": payload.get("session_id", "")},
         )
     else:
         from hooks.secrets import redact, scan
@@ -826,7 +872,7 @@ def on_pre_tool_use(payload: dict) -> None:
             safe_command = redact(command, mode=SECRETS_MODE)[:500]
             log(
                 f"Pre tool use: {tool_name}",
-                {"tool": tool_name, "command": safe_command},
+                {"tool": tool_name, "command": safe_command, "session_id": payload.get("session_id", "")},
             )
             hits = scan(command, mode=SECRETS_MODE)
             if hits:
@@ -878,7 +924,7 @@ def on_pre_tool_use(payload: dict) -> None:
                 )
         elif tool_name in ("Write", "Edit"):
             content = tool_input.get("content", "") or tool_input.get("new_string", "")
-            log(f"Pre tool use: {tool_name}", {"tool": tool_name})
+            log(f"Pre tool use: {tool_name}", {"tool": tool_name, "session_id": payload.get("session_id", "")})
             hits = scan(content, mode=SECRETS_MODE)
             if hits:
                 names = ", ".join(hits)
@@ -1121,18 +1167,28 @@ def on_pre_tool_use(payload: dict) -> None:
             log("enforcement pretool failed", {"error": str(e)})
 
     if _pretool_blocks:
-        import json as _json
+        from hooks.targets.capabilities import can_inject_context
 
-        print(
-            _json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "additionalContext": "\n\n".join(_pretool_blocks),
+        if can_inject_context("PreToolUse"):
+            import json as _json
+
+            print(
+                _json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "additionalContext": "\n\n".join(_pretool_blocks),
+                        }
                     }
-                }
+                )
             )
-        )
+        else:
+            # Codex PreToolUse has no context channel (deny-only output).
+            # These blocks re-inject at UserPromptSubmit; drop with a trace.
+            log(
+                "pretool context dropped — no PreToolUse context channel on this target",
+                {"blocks": len(_pretool_blocks)},
+            )
 
 
 def _trace_mark(phase: str, tool_name: str, session_id: str = "") -> None:
@@ -1331,7 +1387,16 @@ def on_post_tool_use(payload: dict) -> None:
                                 filtered = preprocess(filtered, level)
                     except Exception:
                         pass
-                    print(_json.dumps({"additionalContext": filtered}))
+                    from hooks.targets import is_codex
+
+                    if is_codex():
+                        # One-JSON-object rule: joins the single end-of-process
+                        # flush instead of printing its own object.
+                        from hooks.targets import emitter
+
+                        emitter.buffer_context(filtered)
+                    else:
+                        print(_json.dumps({"additionalContext": filtered}))
         except Exception as e:
             log("bash_output_filter failed", {"error": str(e)})
 
@@ -1769,6 +1834,41 @@ def on_permission_request(payload: dict) -> None:
     log(f"Permission requested: {tool_name}", {"tool": tool_name})
 
 
+def emit_permission_decision(event_name: str, decision: str, reason: str = "") -> None:
+    """Print a ``hookSpecificOutput.permissionDecision`` envelope.
+
+    The single legal call site for emitting a permission decision — route any
+    future allow/deny/ask logic through here rather than printing directly.
+    *decision* is filtered through ``hooks.targets.capabilities.
+    allowed_permission_decisions()`` for the current target first: codex's
+    PreToolUse output supports ``"deny"`` only (no allow/ask), so a decision
+    outside the target's allowed set is dropped with a log line instead of
+    being printed. This is what structurally closes the codex path even
+    though nothing emits a non-deny decision today — a future "allow"
+    fast-path can't leak through it.
+    """
+    from hooks.targets import current_target
+    from hooks.targets.capabilities import allowed_permission_decisions
+
+    target = current_target()
+    if decision not in allowed_permission_decisions(target):
+        log(
+            "permission decision dropped — not allowed on this target",
+            {"target": target, "event": event_name, "decision": decision},
+        )
+        return
+
+    output: dict[str, Any] = {
+        "hookSpecificOutput": {
+            "hookEventName": event_name,
+            "permissionDecision": decision,
+        }
+    }
+    if reason:
+        output["hookSpecificOutput"]["permissionDecisionReason"] = reason
+    print(json.dumps(output))
+
+
 # =============================================================================
 # EVENT ROUTER
 # =============================================================================
@@ -1805,15 +1905,51 @@ def main() -> None:
         # Read payload from stdin
         payload: dict[str, Any] = json.load(sys.stdin)
 
+        # Codex payloads get alias-filled into the internal shape; claude
+        # payloads pass through untouched (hooks/targets/normalizer.py).
+        from hooks.targets.normalizer import normalize_payload
+
+        payload = normalize_payload(payload)
+
         # Get event name from payload
         event_name = payload.get("hook_event_name", "Unknown")
 
         # Route to handler
         handler = EVENT_HANDLERS.get(event_name)
-        if handler:
-            handler(payload)
-        else:
-            log(f"Unknown event: {event_name}", payload)
+
+        from hooks.targets import emitter, is_codex
+
+        try:
+            if handler:
+                handler(payload)
+            else:
+                log(f"Unknown event: {event_name}", payload)
+
+            # Codex parses hook stdout as ONE JSON object — everything the
+            # handlers injected was buffered and is flushed here as a single
+            # envelope. No-op on the claude target (nothing buffers there).
+            emitter.flush(event_name)
+
+        except BlockAction as e:
+            # A BlockAction skips the flush above, so on codex any context a
+            # handler buffered before the block (e.g. an inline-secret NOTE
+            # buffered ahead of branch_guard's raise) would otherwise be
+            # silently lost — stdout carries nothing on the block path.
+            # Fold it into the stderr message instead, which is freeform and
+            # still reaches the model with the deny. Claude never buffers
+            # (every call site there prints immediately), so this is a no-op
+            # on that target and the message is unchanged.
+            reason = str(e)
+            if is_codex():
+                drained = emitter.drain()
+                if drained:
+                    reason = f"{reason}\n\n{drained}"
+            raise BlockAction(reason) from e
+        finally:
+            # Belt-and-braces: no exception path — BlockAction or otherwise —
+            # may leave content buffered into the next event's envelope.
+            # flush() already clears on success; this covers every other exit.
+            emitter.drain()
 
     except BlockAction as e:
         print(str(e), file=sys.stderr, flush=True)  # Claude Code reads stderr for hook messages

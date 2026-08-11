@@ -61,31 +61,68 @@ def _load_state() -> dict:
 
 
 def check_profile() -> dict[str, Any]:
+    """Profile chain per install target, plus linked-profile chain membership.
+
+    ``targets.global`` is keyed by install target (claude / codex). Reading it
+    as a flat record reports "(not installed)" on every multi-target machine,
+    so the shape is resolved through the same accessor the hook runtime uses.
+    """
+    from hooks.targets import DEFAULT_TARGET, split_global
+
     state = _load_state()
-    global_target = state.get("targets", {}).get("global", {})
-    name = global_target.get("profile", "")
-    settings_profile = global_target.get("settings_profile", "")
+    records = split_global(state.get("targets", {}).get("global"))
+
+    targets: list[dict[str, Any]] = []
+    for tname in sorted(records, key=lambda t: (t != DEFAULT_TARGET, t)):
+        rec = records[tname]
+        if not rec.get("profile"):
+            continue
+        targets.append(
+            {
+                "target": tname,
+                "profile": rec.get("profile", ""),
+                "settings_profile": rec.get("settings_profile", ""),
+                "path": rec.get("path", ""),
+            }
+        )
+
+    # Headline record: the target this machine last installed, else claude,
+    # else whichever is present. Keeps `name`/`settings_profile` meaningful for
+    # --json consumers and the status skill, which predate multi-target.
+    primary = state.get("install_target", "") or DEFAULT_TARGET
+    head = next(
+        (t for t in targets if t["target"] == primary),
+        next((t for t in targets if t["target"] == DEFAULT_TARGET), targets[0] if targets else None),
+    )
+    name = head["profile"] if head else ""
+    settings_profile = head["settings_profile"] if head else ""
+
     bundle = state.get("bundle", {}).get("path", "")
     bundle_ok = bool(bundle and Path(bundle).expanduser().exists())
     raw_links = state.get("linked_profiles", []) or []
-    chain = [p.strip() for p in name.split(",") if p.strip()]
+    # A linked profile counts as in-chain if ANY target carries it; naming the
+    # targets is what makes a claude/codex chain divergence visible here.
+    chains = {t["target"]: [p.strip() for p in t["profile"].split(",") if p.strip()] for t in targets}
     linked: list[dict[str, Any]] = []
     for entry in raw_links:
         if not isinstance(entry, dict):
             continue
         lname = entry.get("name", "")
         lpath = entry.get("path", "")
+        in_targets = [t for t, chain in chains.items() if lname in chain]
         linked.append(
             {
                 "name": lname,
                 "path": lpath,
-                "in_chain": lname in chain,
+                "in_chain": bool(in_targets),
+                "in_targets": in_targets,
                 "exists": bool(lpath and Path(lpath).expanduser().exists()),
             }
         )
     return {
         "name": name or "(not installed)",
         "settings_profile": settings_profile,
+        "targets": targets,
         "bundle": bundle or "(none)",
         "bundle_ok": bundle_ok,
         "linked_profiles": linked,
@@ -576,8 +613,14 @@ def format_cli(results: dict[str, Any]) -> str:
     bundle_str = f" (bundle: {p['bundle']})" if p["bundle"] != "(none)" else ""
     sp_str = f" | settings: {p['settings_profile']}" if p.get("settings_profile") else ""
     lines.append(_cprint(f"{tag} Profile: {p['name']}{sp_str}{bundle_str}"))
+    # One line per install target, so a claude/codex chain divergence is
+    # visible instead of hidden behind the headline record.
+    for t in p.get("targets", []) or []:
+        t_sp = f" | settings: {t['settings_profile']}" if t.get("settings_profile") else ""
+        lines.append(_cprint(f"     + target {t['target']}: {t['profile']}{t_sp}"))
     for lp in p.get("linked_profiles", []) or []:
-        in_chain = "in chain" if lp["in_chain"] else "NOT in chain"
+        where = ", ".join(lp.get("in_targets") or [])
+        in_chain = f"in chain: {where}" if lp["in_chain"] else "NOT in chain"
         exists = "" if lp["exists"] else " [MISSING]"
         lines.append(_cprint(f"     + linked: {lp['name']} -> {lp['path']} ({in_chain}){exists}"))
 

@@ -320,6 +320,17 @@ def inject_on_session_start() -> None:
         if not payload:
             log("ci_manifesto: empty payload (file missing?)", {"path": str(_manifesto_path())})
             return
+
+        from hooks.targets import is_codex
+
+        if is_codex():
+            # Codex parses hook stdout as ONE JSON object — queue for the
+            # single end-of-process flush instead of printing our own.
+            from hooks.targets import emitter
+
+            emitter.buffer_context(payload)
+            return
+
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": payload}}))
     except Exception as e:
         log("ci_manifesto inject_on_session_start failed", {"error": str(e)})
@@ -349,6 +360,17 @@ def maybe_refresh(session_id: str) -> None:
         payload = _build_injection()
         if not payload:
             return
+
+        from hooks.targets import is_codex
+
+        if is_codex():
+            # Codex parses hook stdout as ONE JSON object — queue for the
+            # single end-of-process flush instead of printing our own.
+            from hooks.targets import emitter
+
+            emitter.buffer_context(payload)
+            return
+
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": payload}}))
     except Exception as e:
         log("ci_manifesto maybe_refresh failed", {"error": str(e)})

@@ -1,0 +1,92 @@
+"""Claude Code target adapter.
+
+Every method delegates to the existing helpers in ``scripts.install`` — the
+bodies are the pre-refactor code paths, moved behind the adapter seam so the
+install flow is target-neutral. The regression bar for this file is
+byte-identical ``~/.claude`` output versus the pre-seam installer.
+
+Imports of the installer module are lazy (inside methods) because install.py
+imports this package at module load. The installer has two live identities —
+``install`` (test suite, ``scripts/`` on sys.path) and ``scripts.install``
+(console entry point) — and the adapter must bind to whichever object the
+process is actually running, or the test suite's home-isolation patches on
+``install`` would be bypassed and tests would write to the real home.
+"""
+
+from __future__ import annotations
+
+import sys
+from copy import deepcopy
+from pathlib import Path
+
+
+def _install_module():
+    mod = sys.modules.get("install") or sys.modules.get("scripts.install")
+    if mod is None:
+        from scripts import install as mod  # production cold path
+    return mod
+
+
+class ClaudeAdapter:
+    name = "claude"
+
+    def home(self) -> Path:
+        return _install_module().CLAUDE_HOME
+
+    def write_settings(self, rendered: dict) -> Path:
+        _i = _install_module()
+
+        existing_settings_path = _i.CLAUDE_HOME / "settings.json"
+        personal = _i._preserve_personal_keys(existing_settings_path)
+        merged: dict = deepcopy(personal)
+        merged.update(rendered)
+        merged[_i.MANAGED_BY_KEY] = _i.MANAGED_BY_VALUE
+
+        _i._backup_settings(existing_settings_path)
+        _i.CLAUDE_HOME.mkdir(parents=True, exist_ok=True)
+        _i.save_json(existing_settings_path, merged)
+        _i._cprint(f"[OK] Wrote {existing_settings_path}")
+        return existing_settings_path
+
+    def install_features(self, subdir: str, layers: list[tuple[str, Path]], filter_fn) -> None:
+        _i = _install_module()
+        dst = _i.CLAUDE_HOME / subdir
+        for label, src in layers:
+            _i._symlink_dir_contents(src, dst, label=label, filter_fn=filter_fn)
+
+    def install_persona(
+        self,
+        profile_dirs: list[tuple[str, Path]],
+        profile_chain: list[str],
+        bundle_dir: Path | None,
+    ) -> None:
+        _install_module()._install_claude_persona(profile_dirs, profile_chain, bundle_dir)
+
+    def register_hooks_utils(self, profile_name: str) -> None:
+        _install_module()._install_user_mcp(profile_name)
+
+    def register_mcp(self, servers: dict) -> None:
+        _install_module()._merge_mcp_to_user_scope(servers)
+
+    def post_install_reconcile(self, profile_chain: list[str], persisted_profile: str) -> None:
+        _i = _install_module()
+
+        # Guard: only prune when the FULL intended profile chain resolved this
+        # run — a transiently-missing profile source would otherwise shrink the
+        # managed set and falsely delete that profile's servers.
+        intended_chain = [p.strip() for p in persisted_profile.split(",") if p.strip()]
+        if len(profile_chain) == len(intended_chain):
+            current_managed = set(_i._collect_all_managed_mcp_servers().keys())
+            removed_mcp = _i._reconcile_managed_mcp_ledger(current_managed)
+            if removed_mcp:
+                _i._cprint(
+                    f"  [OK] Removed {len(removed_mcp)} MCP server(s) no longer in any "
+                    f"profile/bundle: {', '.join(removed_mcp)}"
+                )
+        else:
+            _i._cprint(
+                "  [--] Skipping MCP ledger reconcile — not every profile in the chain "
+                "resolved this run (transient source loss); ledger left unchanged."
+            )
+
+        _i._snapshot_claude_json()

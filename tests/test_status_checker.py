@@ -9,15 +9,60 @@ pytestmark = pytest.mark.unit
 
 
 class TestCheckProfile:
-    def test_with_state(self, tmp_path):
+    @staticmethod
+    def _check(tmp_path, state):
         from scripts.status_checker import check_profile
 
-        state = {"targets": {"global": {"profile": "anton"}}, "bundle": {"path": str(tmp_path)}}
         with patch("scripts.status_checker.STATE_JSON", tmp_path / "state.json"):
             (tmp_path / "state.json").write_text(json.dumps(state))
-            result = check_profile()
-            assert result["name"] == "anton"
-            assert result["ok"] is True
+            return check_profile()
+
+    def test_with_state(self, tmp_path):
+        """targets.global is keyed by install target — the flat read reports nothing."""
+        result = self._check(
+            tmp_path,
+            {"targets": {"global": {"claude": {"profile": "anton"}}}, "bundle": {"path": str(tmp_path)}},
+        )
+        assert result["name"] == "anton"
+        assert result["ok"] is True
+        assert [t["target"] for t in result["targets"]] == ["claude"]
+
+    def test_reports_every_installed_target(self, tmp_path):
+        result = self._check(
+            tmp_path,
+            {
+                "targets": {
+                    "global": {
+                        "claude": {"profile": "anton,brain"},
+                        "codex": {"profile": "anton", "settings_profile": "lean"},
+                    }
+                },
+                "install_target": "codex",
+            },
+        )
+        assert [t["target"] for t in result["targets"]] == ["claude", "codex"]
+        # Headline follows install_target, so `status` speaks for the target
+        # the operator last installed rather than always for claude.
+        assert result["name"] == "anton"
+        assert result["settings_profile"] == "lean"
+
+    def test_linked_profile_names_the_targets_carrying_it(self, tmp_path):
+        result = self._check(
+            tmp_path,
+            {
+                "targets": {"global": {"claude": {"profile": "anton,brain"}, "codex": {"profile": "anton"}}},
+                "linked_profiles": [{"name": "brain", "path": str(tmp_path)}],
+            },
+        )
+        lp = result["linked_profiles"][0]
+        assert lp["in_chain"] is True
+        assert lp["in_targets"] == ["claude"]  # divergence is visible, not collapsed
+
+    def test_legacy_flat_state_still_reads(self, tmp_path):
+        """Pre-multi-target state files must not regress to '(not installed)'."""
+        result = self._check(tmp_path, {"targets": {"global": {"profile": "anton"}}})
+        assert result["name"] == "anton"
+        assert result["ok"] is True
 
     def test_missing_state(self, tmp_path):
         from scripts.status_checker import check_profile
@@ -351,3 +396,98 @@ class TestHookInjectionProbe:
                 "PostToolUse",
                 "Stop",
             }
+
+
+class TestFormatterTargetLines:
+    """The per-target lines and the `targets` JSON key are the whole point of
+    the multi-target status fix; TestFormatters' fixtures predate them."""
+
+    RESULT = {
+        "name": "anton,brain",
+        "settings_profile": "",
+        "targets": [
+            {"target": "claude", "profile": "anton,brain", "settings_profile": "", "path": "/h/.claude"},
+            {"target": "codex", "profile": "anton", "settings_profile": "lean", "path": "/h/.codex"},
+        ],
+        "bundle": "(none)",
+        "bundle_ok": True,
+        "linked_profiles": [
+            {"name": "brain", "path": "/p/brain", "in_chain": True, "in_targets": ["claude"], "exists": True}
+        ],
+        "ok": True,
+    }
+
+    def _full(self):
+        return {
+            "profile": self.RESULT,
+            "hooks": {"total": 10, "expected": 10, "ok": True},
+            "python": {"path": "/x/python", "ok": True},
+            "redis": {"connected": False, "session_count": 0, "ok": False},
+            "otel": {"enabled": False, "ok": True},
+            "guardrails": {"active": 0, "total": 0, "details": {}, "ok": True},
+            "mcp": {"total": 0, "enabled": 0, "disabled": 0, "servers": {}, "ok": True},
+            "quota": {"summary": "(not configured)", "peak": "off-peak", "ok": False},
+        }
+
+    def test_cli_prints_one_line_per_target(self):
+        from scripts.status_checker import format_cli
+
+        out = format_cli(self._full())
+        assert "+ target claude: anton,brain" in out
+        assert "+ target codex: anton | settings: lean" in out
+
+    def test_cli_names_the_targets_carrying_a_linked_profile(self):
+        from scripts.status_checker import format_cli
+
+        assert "(in chain: claude)" in format_cli(self._full())
+
+    def test_cli_survives_a_result_with_no_targets_key(self):
+        """Older callers / hand-built fixtures must not crash the formatter."""
+        from scripts.status_checker import format_cli
+
+        stripped = self._full()
+        stripped["profile"] = {k: v for k, v in self.RESULT.items() if k != "targets"}
+        assert "Profile: anton,brain" in format_cli(stripped)
+
+    def test_json_carries_the_targets_array(self, tmp_path):
+        """Built from a real check_profile(), not a literal — format_json is a
+        bare json.dumps, so a hand-written fixture would assert only itself."""
+        import json as _json
+
+        from scripts.status_checker import check_profile, format_json
+
+        state = {
+            "targets": {"global": {"claude": {"profile": "anton"}, "codex": {"profile": "smith"}}},
+            "install_target": "codex",
+        }
+        with patch("scripts.status_checker.STATE_JSON", tmp_path / "state.json"):
+            (tmp_path / "state.json").write_text(json.dumps(state))
+            results = dict(self._full(), profile=check_profile())
+        parsed = _json.loads(format_json(results))
+        assert [t["target"] for t in parsed["profile"]["targets"]] == ["claude", "codex"]
+        assert parsed["profile"]["name"] == "smith"
+
+
+class TestCheckProfileHeadlineFallback:
+    """check_profile resolves its headline record install_target -> claude ->
+    first-present. Only the first two arms had coverage."""
+
+    @staticmethod
+    def _check(tmp_path, state):
+        from scripts.status_checker import check_profile
+
+        with patch("scripts.status_checker.STATE_JSON", tmp_path / "state.json"):
+            (tmp_path / "state.json").write_text(json.dumps(state))
+            return check_profile()
+
+    def test_falls_back_to_the_only_target_when_install_target_absent(self, tmp_path):
+        result = self._check(tmp_path, {"targets": {"global": {"codex": {"profile": "smith"}}}})
+        assert result["name"] == "smith"
+        assert result["ok"] is True
+
+    def test_falls_back_to_claude_when_install_target_names_an_absent_target(self, tmp_path):
+        result = self._check(
+            tmp_path,
+            {"targets": {"global": {"claude": {"profile": "anton"}}}, "install_target": "codex"},
+        )
+        assert result["name"] == "anton"

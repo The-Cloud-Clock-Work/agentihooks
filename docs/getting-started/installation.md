@@ -42,11 +42,11 @@ cd agentihooks
 
 ## 3. Create the dedicated venv
 
-AgentiHooks uses a fixed venv at `~/.agentihooks/.venv` as its canonical Python environment. All hook commands written into `~/.claude/settings.json` point to this venv's Python, so every hook subprocess finds the right packages regardless of which shell, activated venv, or terminal Claude Code is launched from.
+AgentiHooks resolves its Python in this order: `AGENTIHOOKS_PYTHON` (explicit pin, settable in `~/.agentihooks/.env`), the activated `VIRTUAL_ENV`, a `.venv` next to the repo or in its parent directory, then a `.venv` in the cwd. All hook commands written into `~/.claude/settings.json` point at the resolved Python, so every hook subprocess finds the right packages regardless of which shell or terminal Claude Code is launched from.
 
 ```bash
-uv venv ~/.agentihooks/.venv
-uv pip install --python ~/.agentihooks/.venv/bin/python -e ".[all]"
+uv venv .venv
+uv pip install --python .venv/bin/python -e ".[all]"
 ```
 
 The `[all]` extra pulls in every optional dependency: `boto3`, `psycopg2`, `redis`, `pyyaml`, `playwright`, and others.
@@ -54,14 +54,14 @@ The `[all]` extra pulls in every optional dependency: `boto3`, `psycopg2`, `redi
 Verify:
 
 ```bash
-~/.agentihooks/.venv/bin/python -c "import hooks; print('OK')"
+.venv/bin/python -c "import hooks; print('OK')"
 ```
 
 ---
 
 ## 4. Run the global install
 
-Always run the installer **from the `~/.agentihooks/.venv` Python** -- the installer bakes `sys.executable` into every hook command it writes.
+Always run the installer **from the venv Python it should bake in** -- the installer writes the resolved interpreter into every hook command.
 
 ```bash
 agentihooks init
@@ -71,7 +71,7 @@ This single command:
 
 1. Reads `profiles/_base/settings.base.json` (the canonical settings source)
 2. Merges settings: base -> profile `.claude/settings.overrides.json` -> OTEL
-3. Substitutes `/app` placeholders with the real repo path and `__PYTHON__` with `~/.agentihooks/.venv/bin/python`
+3. Substitutes `/app` placeholders with the real repo path and `__PYTHON__` with the resolved venv Python
 4. Writes `~/.claude/settings.json` with hook wiring and tool permissions
 5. Symlinks skills, agents, commands, and rules via 3-layer merge (agentihooks built-in -> bundle global -> profile-specific)
 6. Symlinks `~/.claude/CLAUDE.md` to the chosen profile's `CLAUDE.md` (at profile root)
@@ -93,7 +93,7 @@ Confirm hook commands point to the venv:
 
 ```bash
 grep -o '"command": "[^"]*"' ~/.claude/settings.json | head -3
-# Should show: ~/.agentihooks/.venv/bin/python -m hooks
+# Should show: <your venv>/bin/python -m hooks
 ```
 
 Confirm the MCP server is registered:
@@ -185,10 +185,10 @@ Run the MCP server directly (useful for testing):
 
 ```bash
 # All 12 tools
-~/.agentihooks/.venv/bin/python -m hooks.mcp
+<your venv>/bin/python -m hooks.mcp
 
 # Specific categories only
-MCP_CATEGORIES=channels,enforcement ~/.agentihooks/.venv/bin/python -m hooks.mcp
+MCP_CATEGORIES=channels,enforcement <your venv>/bin/python -m hooks.mcp
 ```
 
 That runs it in the foreground on stdio, which is only useful for testing. To run

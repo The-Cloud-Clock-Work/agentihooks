@@ -1,4 +1,11 @@
-"""Automatic transcript logging - logs new entries on each PostToolUse."""
+"""Automatic transcript logging - logs new entries on each PostToolUse.
+
+Deliberately NOT migrated to hooks.memory.transcript_reader: this is an
+incremental line-offset tail (last-logged-line tracking per session), while
+the unified reader is a whole-file record parser. Same reasoning applies to
+hooks/observability/event_relay.py (binary tail-read). Claude-format only;
+codex sessions simply log nothing here.
+"""
 
 import json
 from pathlib import Path

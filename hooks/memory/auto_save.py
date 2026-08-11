@@ -4,7 +4,6 @@ Reads the transcript, extracts user prompts + assistant responses,
 creates a condensed digest, and stores it via MemoryStore.
 """
 
-import json
 from pathlib import Path
 from typing import Optional
 
@@ -48,57 +47,17 @@ def auto_save_session(session_id: str, transcript_path: str) -> None:
 
 
 def _read_transcript(path: Path) -> list[dict]:
-    """Read transcript JSONL and extract user/assistant text entries."""
+    """Extract user/assistant text entries from a claude or codex transcript."""
+    from hooks.memory.transcript_reader import iter_transcript_records
+
     entries = []
-    with open(path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            if not isinstance(entry, dict):
-                continue
-
-            entry_type = entry.get("type", "")
-            if entry_type not in ("user", "assistant"):
-                continue
-
-            text = _extract_text(entry)
-            if text:
-                entries.append({"type": entry_type, "text": text})
-
+    for rec in iter_transcript_records(path):
+        kind = rec.get("kind", "")
+        if kind == "user_text":
+            entries.append({"type": "user", "text": rec.get("text", "")})
+        elif kind in ("assistant_text", "turn_complete") and rec.get("text"):
+            entries.append({"type": "assistant", "text": rec.get("text", "")})
     return entries
-
-
-def _extract_text(entry: dict) -> Optional[str]:
-    """Extract readable text from a transcript entry.
-
-    Same logic as hooks.observability.transcript.extract_content.
-    """
-    message = entry.get("message")
-
-    if isinstance(message, str):
-        return message
-
-    if isinstance(message, dict):
-        content = message.get("content", [])
-        if isinstance(content, list):
-            texts = []
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text = block.get("text", "")
-                    if text:
-                        texts.append(text)
-            if texts:
-                return "\n".join(texts)
-        elif isinstance(content, str):
-            return content
-
-    return None
 
 
 def _build_summary(entries: list[dict]) -> str:

@@ -34,8 +34,21 @@ _ATTR_RE = re.compile(r'(\w+)=(?:"([^"]*)"|(\S+))')
 _WRITER_TYPES = frozenset({"lesson", "milestone", "signal", "decision"})
 
 
+_RESERVED_ATTRS = frozenset({"ts"})
+
+
 def _parse_attrs(attr_str: str) -> dict[str, str]:
-    return {m.group(1): m.group(2) or m.group(3) for m in _ATTR_RE.finditer(attr_str)}
+    """Parse marker attributes, dropping reserved names.
+
+    `ts` is reserved: brain-api backdates a marker into its original dated
+    vault files from attrs.ts, and that trust belongs only to the hook's own
+    buffered-at timestamp — never to text the model emitted (which can echo
+    injected content).
+    """
+    attrs = {m.group(1): m.group(2) or m.group(3) for m in _ATTR_RE.finditer(attr_str)}
+    for k in _RESERVED_ATTRS:
+        attrs.pop(k, None)
+    return attrs
 
 
 def _find_markers(text: str) -> list[dict[str, Any]]:
@@ -56,24 +69,14 @@ def _find_markers(text: str) -> list[dict[str, Any]]:
 
 
 def _parse_transcript_for_markers(transcript_path: str, max_markers: int) -> list[dict]:
-    """Read JSONL transcript, extract markers from assistant responses."""
-    path = Path(transcript_path)
-    if not path.exists():
-        return []
+    """Extract markers from assistant text in a transcript (claude or codex)."""
+    from hooks.memory.transcript_reader import iter_transcript_records
 
-    all_text: list[str] = []
-    for line in path.read_text().splitlines():
-        if not line.strip():
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if entry.get("type") != "assistant":
-            continue
-        for block in entry.get("message", {}).get("content", []):
-            if block.get("type") == "text":
-                all_text.append(block["text"])
+    all_text: list[str] = [
+        rec["text"]
+        for rec in iter_transcript_records(transcript_path)
+        if rec.get("kind") in ("assistant_text", "turn_complete") and rec.get("text")
+    ]
 
     if not all_text:
         return []
@@ -129,12 +132,13 @@ def _marker_request(marker: dict, session_id: str) -> tuple[dict, str]:
     attrs.setdefault("session_id", session_id)
     attrs.setdefault("source", attrs.get("source") or os.getenv("AGENTICORE_AGENT_NAME", "agent"))
 
+    content = marker["content"][:4096]
     body = {
         "type": marker["type"],
-        "content": marker["content"][:4096],
+        "content": content,
         "attrs": attrs,
     }
-    key_src = f"{session_id}-{marker['type']}-{marker['content']}"
+    key_src = f"{session_id}-{marker['type']}-{content}"
     idem = uuid.uuid5(uuid.NAMESPACE_URL, key_src).hex[:32]
     return body, idem
 
@@ -165,26 +169,39 @@ def _publish_to_http(markers: list[dict], session_id: str) -> tuple[int, list[di
 def _drain_outbox(outbox_dir: str) -> int:
     """Re-POST buffered markers; delete each file once brain-api accepts it.
 
-    Stops at the first refused POST — brain-api is evidently still down, and
-    the remaining files get their retry on the next run. Unparseable files are
-    quarantined with a .bad suffix so they cannot wedge the queue.
+    Also sweeps the outbox's ``-backlog`` sibling — the dir where a stuck pile
+    was parked in the SSH-sync era — so orphaned markers self-deliver once
+    brain-api is reachable, with no cron and no manual replay.
+
+    A payload the server rejects outright (400/404/422) quarantines with a
+    .bad suffix exactly like an unparseable file — one poison marker must not
+    wedge every file sorted after it, forever, on every session. Any other
+    refusal (server down, 5xx, stale credentials) stops the loop; those are
+    caller/server conditions where retrying the rest is futile and deleting
+    anything would destroy good markers. Each file's original ``ts`` rides in
+    attrs so brain-api backdates the marker instead of stamping replay time.
     """
     from hooks._brain_http import brain_http_enabled, post
 
     if not brain_http_enabled():
         return 0
     outbox = Path(outbox_dir)
-    if not outbox.is_dir():
-        return 0
+    backlog = outbox.with_name(outbox.name + "-backlog")
+    # Backlog first: months older than the live outbox, and append-only vault
+    # targets keep arrival order — oldest-first stays chronological.
+    files = [f for d in (backlog, outbox) if d.is_dir() for f in sorted(d.glob("*.json"))]
 
     drained = 0
-    for f in sorted(outbox.glob("*.json")):
+    for f in files:
         try:
             payload = json.loads(f.read_text())
+            attrs = dict(payload.get("attrs") or {})
+            if payload.get("ts"):
+                attrs.setdefault("ts", payload["ts"])
             marker = {
                 "type": payload["type"],
                 "content": payload["content"],
-                "attrs": payload.get("attrs") or {},
+                "attrs": attrs,
             }
         except (OSError, KeyError, TypeError, json.JSONDecodeError):
             try:
@@ -195,7 +212,22 @@ def _drain_outbox(outbox_dir: str) -> int:
             continue
 
         body, idem = _marker_request(marker, payload.get("session_id", ""))
-        response = post("/marker", body=body, idempotency_key=idem)
+        response = post("/marker", body=body, idempotency_key=idem, surface_http_errors=True)
+        status = (response or {}).get("__http_status__")
+        if status in (400, 404, 422):
+            # Server rejected THIS payload — permanent, retrying is futile.
+            # 401/403/429 stay out of this bucket: those are caller-credential
+            # or rate conditions, and quarantining on them would destroy the
+            # whole queue over a stale token.
+            try:
+                f.rename(f.with_name(f.name + ".bad"))
+                log(
+                    "brain_writer: quarantined server-rejected outbox file",
+                    {"file": f.name, "status": status},
+                )
+            except OSError:
+                pass
+            continue
         if not (response and response.get("ok")):
             break
         # The outbox may be shared (Stop + SubagentStop, concurrent sessions,
