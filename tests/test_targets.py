@@ -222,3 +222,26 @@ class TestInstalledTargets:
 
     def test_legacy_flat_state_reports_claude(self):
         assert install._installed_targets({"targets": {"global": {"profile": "anton"}}}) == ("claude",)
+
+
+class TestTargetConstantParity:
+    """``hooks/targets`` and ``scripts/targets`` each define DEFAULT_TARGET.
+
+    They cannot share one: the hook runtime must not import the installer
+    (``scripts`` is not on the hook process's import path), and the installer
+    already imports ``hooks``. A tripwire is cheaper than a refactor and turns
+    silent drift — which would send hook-runtime reads to a different record
+    than the installer writes — into a loud failure.
+    """
+
+    def test_default_target_agrees_across_packages(self):
+        from hooks.targets import DEFAULT_TARGET as hooks_default
+        from scripts.targets import DEFAULT_TARGET as scripts_default
+
+        assert hooks_default == scripts_default
+
+    def test_default_target_is_a_supported_target(self):
+        from hooks.targets import DEFAULT_TARGET as hooks_default
+        from scripts.targets import SUPPORTED_TARGETS
+
+        assert hooks_default in SUPPORTED_TARGETS

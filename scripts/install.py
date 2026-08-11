@@ -1013,12 +1013,27 @@ def _chain_targets(for_target: str | None) -> tuple[str, ...]:
     deliberately does not go through :func:`resolve_target`, whose job is to
     pick a *single* target for ``init`` and whose TTY prompt would be wrong
     here, where the default is "all of them".
+
+    A named target must already be installed. These commands edit a chain;
+    they do not bootstrap a target. Without the guard, ``--for-target codex``
+    on a claude-only machine materialises a ``codex`` record holding only a
+    profile and no path — after which ``_installed_targets`` reports codex
+    installed forever and every later unscoped edit tries to reinstall a
+    target that was never set up. ``init --target <t>`` is the way in.
     """
     chosen = (for_target or "").strip().lower()
     if chosen:
         if chosen not in SUPPORTED_TARGETS:
             print(
                 f"ERROR: Unknown target '{chosen}'. Supported: {', '.join(SUPPORTED_TARGETS)}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        state = _load_state()
+        if chosen not in _installed_targets(state, default=()):
+            print(
+                f"ERROR: Target '{chosen}' is not installed, so it has no chain to edit.\n"
+                f"       Install it first: agentihooks init --target {chosen}",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -1775,7 +1790,10 @@ def _cmd_settings_profile(args: argparse.Namespace) -> None:
     installed = {t: rec for t, rec in records.items() if rec.get("profile")}
 
     if not installed:
-        print("ERROR: No profile installed. Run 'agentihooks init' first.", file=sys.stderr)
+        # Name the scope that came up empty. An unscoped "no profile installed"
+        # reads as "nothing is installed" even when the other target is.
+        scope = f" for target '{targets[0]}'" if getattr(args, "for_target", None) else ""
+        print(f"ERROR: No profile installed{scope}. Run 'agentihooks init' first.", file=sys.stderr)
         sys.exit(1)
 
     if getattr(args, "clear", False):
@@ -3533,6 +3551,10 @@ def _reseed_managed_mcp_sources() -> None:
     server) are always present in user scope.
     """
     state = _load_state()
+    # Claude-scoped on purpose: this assembles ~/.claude.json's mcpServers,
+    # which has no codex equivalent (codex MCP lives in config.toml and is
+    # written by the codex adapter). Iterating targets here would merge codex
+    # state into claude's file.
     profile_name = _global_record(state).get("profile")
 
     # Layer 1: hooks-utils (driven by profile mcp_categories)

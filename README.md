@@ -170,9 +170,14 @@ agenti                                       # alias (after source ~/.bashrc)
 agentihooks bundle link ~/dev/my-tools       # link a bundle
 agentihooks bundle pull                      # update linked bundle
 
-# Link an external profile dir into the chain
+# Link an external profile dir into the chain.
+# Chain edits span EVERY installed target (claude + codex) so the two cannot
+# silently diverge; --for-target narrows to one. unlink is always global —
+# it de-registers the profile, so leaving another target naming it would
+# make that chain unresolvable.
 agentihooks link-profile link ~/dev/brain-profile     # auto-appends to chain + re-installs
 agentihooks link-profile link ~/dev/brain --name br   # disambiguate name on collision
+agentihooks link-profile link ~/dev/x --for-target codex   # codex's chain only
 agentihooks link-profile list                         # show all linked external profiles
 agentihooks link-profile unlink brain-profile         # remove from chain + sweep symlinks
 
@@ -261,9 +266,14 @@ Built-in profiles: `default` (auto), `coding` (acceptEdits), `admin` (bypassPerm
 
 ```bash
 agentihooks init --profile anton --settings-profile admin
-agentihooks settings-profile admin           # quick-switch
+agentihooks settings-profile admin           # quick-switch (every installed target)
+agentihooks settings-profile admin --for-target codex   # one target only
 agentihooks settings-profile --clear         # revert
 ```
+
+Codex has no `settings.json`, but the same rendered settings dict drives its
+`config.toml` permission posture — so the settings layer is meaningful on both
+targets and `settings-profile` applies to both by default.
 
 ## Hook Events
 

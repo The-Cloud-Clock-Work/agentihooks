@@ -1555,6 +1555,45 @@ class TestChainTargets:
         with patch.object(install, "STATE_JSON", state_json):
             assert install._chain_targets("codex") == ("codex",)
 
+    def test_for_target_must_already_be_installed(self, tmp_path, capsys):
+        """These commands edit a chain; they do not bootstrap a target.
+        Without the guard, --for-target codex on a claude-only machine writes
+        a codex record holding only a profile and no path, and every later
+        unscoped edit then tries to reinstall a target never set up."""
+        state_json, _, _ = self._setup(tmp_path, {"targets": {"global": {"claude": {"profile": "anton"}}}})
+        with patch.object(install, "STATE_JSON", state_json), pytest.raises(SystemExit) as exc:
+            install._chain_targets("codex")
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "not installed" in err and "init --target codex" in err
+
+    def test_link_to_uninstalled_target_writes_no_phantom_record(self, tmp_path):
+        state_json, profiles_dir, external = self._setup(
+            tmp_path, {"targets": {"global": {"claude": {"profile": "anton"}}}}
+        )
+        with (
+            patch.object(install, "STATE_JSON", state_json),
+            patch.object(install, "PROFILES_DIR", profiles_dir),
+            patch.object(install, "_get_bundle_path", return_value=None),
+            patch.object(install, "install_global") as mock_install,
+            pytest.raises(SystemExit),
+        ):
+            install.cmd_link_profile("link", path=str(external), no_init=True, for_target="codex")
+        assert "codex" not in json.loads(state_json.read_text())["targets"]["global"]
+        mock_install.assert_not_called()
+
+    def test_settings_profile_error_names_the_empty_scope(self, tmp_path, capsys):
+        """An unscoped 'no profile installed' reads as 'nothing is installed'
+        even when the other target is."""
+        state_json, _, _ = self._setup(
+            tmp_path, {"targets": {"global": {"claude": {"profile": "anton"}, "codex": {"path": "/h/.codex"}}}}
+        )
+        args = MagicMock(sp_name="lean", clear=False, for_target="codex")
+        with patch.object(install, "STATE_JSON", state_json), pytest.raises(SystemExit) as exc:
+            install._cmd_settings_profile(args)
+        assert exc.value.code == 1
+        assert "target 'codex'" in capsys.readouterr().err
+
     def test_unknown_for_target_exits(self, tmp_path):
         state_json, _, _ = self._setup(tmp_path, self.BOTH)
         with patch.object(install, "STATE_JSON", state_json), pytest.raises(SystemExit) as exc:
