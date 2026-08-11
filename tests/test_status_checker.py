@@ -9,15 +9,60 @@ pytestmark = pytest.mark.unit
 
 
 class TestCheckProfile:
-    def test_with_state(self, tmp_path):
+    @staticmethod
+    def _check(tmp_path, state):
         from scripts.status_checker import check_profile
 
-        state = {"targets": {"global": {"profile": "anton"}}, "bundle": {"path": str(tmp_path)}}
         with patch("scripts.status_checker.STATE_JSON", tmp_path / "state.json"):
             (tmp_path / "state.json").write_text(json.dumps(state))
-            result = check_profile()
-            assert result["name"] == "anton"
-            assert result["ok"] is True
+            return check_profile()
+
+    def test_with_state(self, tmp_path):
+        """targets.global is keyed by install target — the flat read reports nothing."""
+        result = self._check(
+            tmp_path,
+            {"targets": {"global": {"claude": {"profile": "anton"}}}, "bundle": {"path": str(tmp_path)}},
+        )
+        assert result["name"] == "anton"
+        assert result["ok"] is True
+        assert [t["target"] for t in result["targets"]] == ["claude"]
+
+    def test_reports_every_installed_target(self, tmp_path):
+        result = self._check(
+            tmp_path,
+            {
+                "targets": {
+                    "global": {
+                        "claude": {"profile": "anton,brain"},
+                        "codex": {"profile": "anton", "settings_profile": "lean"},
+                    }
+                },
+                "install_target": "codex",
+            },
+        )
+        assert [t["target"] for t in result["targets"]] == ["claude", "codex"]
+        # Headline follows install_target, so `status` speaks for the target
+        # the operator last installed rather than always for claude.
+        assert result["name"] == "anton"
+        assert result["settings_profile"] == "lean"
+
+    def test_linked_profile_names_the_targets_carrying_it(self, tmp_path):
+        result = self._check(
+            tmp_path,
+            {
+                "targets": {"global": {"claude": {"profile": "anton,brain"}, "codex": {"profile": "anton"}}},
+                "linked_profiles": [{"name": "brain", "path": str(tmp_path)}],
+            },
+        )
+        lp = result["linked_profiles"][0]
+        assert lp["in_chain"] is True
+        assert lp["in_targets"] == ["claude"]  # divergence is visible, not collapsed
+
+    def test_legacy_flat_state_still_reads(self, tmp_path):
+        """Pre-multi-target state files must not regress to '(not installed)'."""
+        result = self._check(tmp_path, {"targets": {"global": {"profile": "anton"}}})
+        assert result["name"] == "anton"
+        assert result["ok"] is True
 
     def test_missing_state(self, tmp_path):
         from scripts.status_checker import check_profile

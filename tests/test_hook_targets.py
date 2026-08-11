@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from hooks.targets import current_target, is_codex
+from hooks.targets import current_target, global_record, is_codex, split_global
 from hooks.targets.capabilities import allowed_permission_decisions, can_inject_context
 from hooks.targets.emitter import buffer_context, drain, flush, has_buffered
 from hooks.targets.normalizer import normalize_payload
@@ -371,3 +371,48 @@ class TestPreToolUseLogAttribution:
         pre = [p for m, p in seen if m.startswith("Pre tool use")]
         assert pre, "no Pre tool use line logged"
         assert pre[0].get("session_id") == "sid-attribution"
+
+
+class TestSplitGlobal:
+    """The one shape rule shared by the installer's migration and the hook
+    runtime, which never runs that migration."""
+
+    KEYED = {"claude": {"profile": "anton"}, "codex": {"profile": "smith"}}
+    FLAT = {"path": "/home/x/.claude", "profile": "anton"}
+    MIXED = {"path": "/home/x/.claude", "profile": "anton", "codex": {"profile": "smith"}}
+
+    def test_keyed_passes_through(self):
+        assert split_global(self.KEYED) == self.KEYED
+
+    def test_flat_nests_under_claude(self):
+        assert split_global(self.FLAT) == {"claude": self.FLAT}
+
+    def test_mixed_keeps_records_and_nests_flat_fields(self):
+        assert split_global(self.MIXED) == {
+            "claude": {"path": "/home/x/.claude", "profile": "anton"},
+            "codex": {"profile": "smith"},
+        }
+
+    def test_flat_fields_win_over_existing_claude_record(self):
+        g = {"claude": {"profile": "old", "settings_profile": "lean"}, "profile": "new"}
+        assert split_global(g) == {"claude": {"profile": "new", "settings_profile": "lean"}}
+
+    def test_junk_is_empty(self):
+        assert split_global(None) == {}
+        assert split_global({}) == {}
+        assert split_global("nonsense") == {}
+
+    def test_never_mutates_input(self):
+        g = dict(self.MIXED)
+        split_global(g)
+        assert g == self.MIXED
+
+    def test_mixed_shape_does_not_leak_sibling_into_current_target(self, codex):
+        """The old any-non-dict heuristic handed back the whole blob, so the
+        codex record arrived carrying claude's fields and a nested 'codex' key."""
+        rec = global_record({"targets": {"global": dict(self.MIXED)}})
+        assert rec == {"profile": "smith"}
+
+    def test_mixed_shape_claude_record_is_the_flat_fields(self, claude):
+        rec = global_record({"targets": {"global": dict(self.MIXED)}})
+        assert rec == {"path": "/home/x/.claude", "profile": "anton"}

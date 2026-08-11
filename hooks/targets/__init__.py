@@ -11,28 +11,55 @@ from __future__ import annotations
 
 import os
 
+DEFAULT_TARGET = "claude"
+
 
 def current_target() -> str:
-    return os.environ.get("AGENTIHOOKS_TARGET", "").strip().lower() or "claude"
+    return os.environ.get("AGENTIHOOKS_TARGET", "").strip().lower() or DEFAULT_TARGET
 
 
 def is_codex() -> bool:
     return current_target() == "codex"
 
 
+def split_global(g: object) -> dict[str, dict]:
+    """``targets.global`` in any shape → ``{target: record}``. Pure.
+
+    Three shapes exist in the wild and this is the single rule for all of
+    them, shared by the installer's migration (which writes the result back)
+    and by the hook runtime (which only reads):
+
+    - **keyed** — ``{"claude": {...}, "codex": {...}}``: returned as-is.
+    - **legacy flat** — the pre-multi-target record's fields (path, profile,
+      installed_at, …) sitting directly under ``global``: nested under
+      ``claude``.
+    - **mixed** — flat claude fields *alongside* a keyed record for another
+      target, which a version-skewed pre-multi-target binary can still write.
+      Every dict-valued record survives untouched; the flat fields are merged
+      over whatever claude record already exists, since they are what the old
+      binary just wrote.
+
+    The mixed case is why this cannot be an ``any(not isinstance(...))``
+    heuristic that hands back the raw blob: doing so exposes the sibling
+    target's sub-dict as if it were a field of the current target's record.
+
+    Never mutates *g* — the hook runtime has no business rewriting state.json,
+    and the installer owns persistence.
+    """
+    if not isinstance(g, dict) or not g:
+        return {}
+    records = {k: v for k, v in g.items() if isinstance(v, dict)}
+    flat = {k: v for k, v in g.items() if not isinstance(v, dict)}
+    if not flat:
+        return records
+    return {**records, DEFAULT_TARGET: {**records.get(DEFAULT_TARGET, {}), **flat}}
+
+
 def global_record(state: dict) -> dict:
     """The current target's record under ``targets.global`` in state.json.
 
-    Tolerates both the target-keyed shape ({"claude": {...}, "codex": {...}})
-    and the legacy flat shape (pre-migration state files, where the record's
-    fields sit directly under "global").
+    Tolerates every shape :func:`split_global` handles — hook processes never
+    run the installer's migration, so they must read a half-migrated file
+    correctly rather than assume one was applied.
     """
-    g = state.get("targets", {}).get("global", {})
-    if not isinstance(g, dict):
-        return {}
-    rec = g.get(current_target())
-    if isinstance(rec, dict):
-        return rec
-    if g and any(not isinstance(v, dict) for v in g.values()):
-        return g
-    return {}
+    return split_global(state.get("targets", {}).get("global")).get(current_target(), {})

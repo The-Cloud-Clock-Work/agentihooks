@@ -201,3 +201,24 @@ class TestGetAdapter:
         adapter = get_adapter("codex")
         assert adapter.name == "codex"
         assert adapter.home().name == ".codex"
+
+
+class TestInstalledTargets:
+    def test_lists_every_record_in_supported_order(self):
+        state = {"targets": {"global": {"codex": {"profile": "a"}, "claude": {"profile": "b"}}}}
+        assert install._installed_targets(state) == ("claude", "codex")
+
+    def test_empty_state_defaults_to_claude(self):
+        assert install._installed_targets({}) == ("claude",)
+
+    def test_default_is_overridable_for_init(self):
+        """init must tell 'nothing installed' from 'claude installed' — the
+        first prompts, the second recalls."""
+        assert install._installed_targets({}, default=()) == ()
+
+    def test_unknown_target_name_is_kept(self):
+        state = {"targets": {"global": {"claude": {"profile": "a"}, "future": {"profile": "z"}}}}
+        assert install._installed_targets(state) == ("claude", "future")
+
+    def test_legacy_flat_state_reports_claude(self):
+        assert install._installed_targets({"targets": {"global": {"profile": "anton"}}}) == ("claude",)
