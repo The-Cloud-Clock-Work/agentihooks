@@ -436,3 +436,43 @@ class TestPersonaIdentityNaming:
         fake.MARKER = "from-main"
         monkeypatch.setitem(sys.modules, "__main__", fake)
         assert codex_target._install_module().MARKER == "from-main"
+
+
+class TestHooksUtilsTransport:
+    """The url form must never hardcode a scheme, and the transport must be
+    resolved the same way the claude path resolves it (sonar S5332 flagged the
+    hardcoded http:// here after the claude path had already fixed it)."""
+
+    def _entry(self, monkeypatch, **env):
+        import install as _i
+        from targets.codex_target import CodexAdapter
+
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        captured: dict = {}
+        adapter = CodexAdapter()
+        monkeypatch.setattr(adapter, "register_mcp", lambda servers: captured.update(servers))
+        monkeypatch.setattr(_i, "_detect_venv", lambda: None)
+        adapter.register_hooks_utils("default")
+        return captured["hooks-utils"]
+
+    def test_stdio_is_a_command_entry(self, monkeypatch):
+        entry = self._entry(monkeypatch, AGENTIHOOKS_MCP_TRANSPORT="stdio")
+        assert entry["args"] == ["-m", "hooks.mcp"]
+        assert "url" not in entry
+
+    def test_url_mode_defaults_to_http_on_loopback(self, monkeypatch):
+        entry = self._entry(monkeypatch, AGENTIHOOKS_MCP_TRANSPORT="streamable-http")
+        assert entry["url"] == "http://localhost:8642/mcp"
+
+    def test_url_mode_honours_mcp_scheme(self, monkeypatch):
+        """An operator fronting the daemon with TLS needs https — the scheme is
+        a knob on both targets, not a literal on one of them."""
+        entry = self._entry(
+            monkeypatch,
+            AGENTIHOOKS_MCP_TRANSPORT="streamable-http",
+            MCP_SCHEME="https",
+            MCP_HOST="mcp.internal",
+            MCP_PORT="9443",
+        )
+        assert entry["url"] == "https://mcp.internal:9443/mcp"

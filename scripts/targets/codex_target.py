@@ -491,13 +491,22 @@ class CodexAdapter:
     def register_hooks_utils(self, profile_name: str) -> None:
         _i = _install_module()
         python_bin = str(_i._detect_venv() or sys.executable)
-        transport = os.environ.get("MCP_TRANSPORT", "stdio").strip() or "stdio"
+        # Same transport resolver as the claude path — it reads
+        # AGENTIHOOKS_MCP_TRANSPORT and ~/.agentihooks/.env, which a bare
+        # os.environ["MCP_TRANSPORT"] read does not, so the two targets could
+        # otherwise disagree about whether the daemon is even in use.
+        transport = _i._resolve_installer_mcp_transport()
         if transport == "stdio":
             entry: dict = {"command": python_bin, "args": ["-m", "hooks.mcp"]}
         else:
-            host = os.environ.get("MCP_HOST", "localhost")
-            port = os.environ.get("MCP_PORT", "8642")
-            entry = {"url": f"http://{host}:{port}/mcp"}
+            # Reuse the claude-side builder rather than re-deriving the URL: it
+            # validates MCP_PORT and honours MCP_SCHEME (the daemon serves
+            # plaintext on its loopback bind, but an operator fronting it with
+            # TLS or moving it off loopback needs https) and picks the path per
+            # transport. Re-deriving it here is how this adapter shipped a
+            # hardcoded http:// that the claude path had already fixed.
+            # Codex takes the url alone — it infers the type itself.
+            entry = {"url": _i._build_mcp_config("")["mcpServers"]["hooks-utils"]["url"]}
         self.register_mcp({"hooks-utils": entry})
 
     def register_mcp(self, servers: dict) -> None:
