@@ -2,7 +2,7 @@
 
 Stores memories as hashes in Redis, indexed by sorted sets for efficient
 retrieval by recency, tag, or session. Falls back to a local JSONL file
-when Redis is unavailable (same pattern as session_registry.py).
+when Redis is unavailable.
 """
 
 import json

@@ -120,12 +120,6 @@ agentihooks init
 
 `agentihooks init` wires hooks into `~/.claude/settings.json`, symlinks skills/agents/commands/rules, merges MCP servers into `~/.claude.json`, and installs the CLI globally. Re-run any time — it is idempotent.
 
-## A CLI that keeps up with your fleet
-
-`agentihooks sessions` shows every running Claude Code session at a glance — session names from `/rename`, accurate lifetimes, and reopen by index for crash recovery.
-
-![agentihooks sessions listing 5 alive Claude Code sessions with NAME, AGE, CWD, and ID columns](docs/assets/sessions-list-with-names.png)
-
 ## Architecture
 
 ```
@@ -195,11 +189,6 @@ agentihooks brain refresh                    # force re-read + republish
 agentihooks refresh-rules --dry-run          # preview payload + target session IDs
 agentihooks refresh-rules                    # one-shot push to all alive sessions
 agentihooks refresh-rules --clear            # cancel a pending marker
-
-# Session registry (crash recovery + session picker)
-agentihooks sessions                         # list recent sessions with NAME + AGE columns
-agentihooks sessions reopen <IDX>            # reopen by index from the list
-agentihooks sessions backfill                # seed registry from JSONL transcripts
 
 # Diagnostics
 agentihooks status                           # full system health

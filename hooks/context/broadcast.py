@@ -616,57 +616,6 @@ def encode_cwd(cwd: str) -> str:
     return cwd.replace("/", "-").replace(".", "-")
 
 
-def derive_session_title(session_id: str, cwd: str, max_len: int = 60) -> str:
-    """Return the session's display name.
-
-    Priority:
-      1. Most recent `custom-title` event (set by Claude Code /rename or --name flag)
-      2. Most recent `agent-name` event
-      3. First user message text
-      4. cwd basename (fallback when transcript unreadable)
-    """
-    try:
-        transcript = Path.home() / ".claude" / "projects" / encode_cwd(cwd) / f"{session_id}.jsonl"
-        if transcript.exists():
-            custom_title: str | None = None
-            agent_name: str | None = None
-            first_user_msg: str | None = None
-            with transcript.open("r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    event_type = obj.get("type")
-                    if event_type == "custom-title":
-                        t = obj.get("customTitle", "")
-                        if t:
-                            custom_title = t
-                    elif event_type == "agent-name":
-                        n = obj.get("agentName", "")
-                        if n:
-                            agent_name = n
-                    elif event_type == "user" and first_user_msg is None:
-                        msg = obj.get("message", {})
-                        content = msg.get("content", "")
-                        if isinstance(content, list):
-                            parts = [c.get("text", "") for c in content if isinstance(c, dict)]
-                            content = " ".join(p for p in parts if p)
-                        if isinstance(content, str):
-                            content = content.strip().replace("\n", " ")
-                            if content:
-                                first_user_msg = content
-            if custom_title:
-                return custom_title[:max_len]
-            if agent_name:
-                return agent_name[:max_len]
-            if first_user_msg:
-                return first_user_msg[:max_len]
-    except OSError:
-        pass
-    return Path(cwd).name or cwd or "(unknown)"
-
-
 def register_session(session_id: str, pid: int, cwd: str, model: str) -> None:
     with _file_lock(_sessions_path()):
         sessions = _load_sessions()
@@ -708,7 +657,7 @@ def deregister_session(session_id: str) -> None:
 
 def mark_session_closed(session_id: str) -> None:
     """Flip a session to status=closed on clean SessionEnd. Keeps the entry
-    for the 24h retention window so `sessions reopen` can still recover it."""
+    for the 24h retention window so the pool can still report on it."""
     with _file_lock(_sessions_path()):
         sessions = _load_sessions()
         entry = sessions.get(session_id)
@@ -720,21 +669,7 @@ def mark_session_closed(session_id: str) -> None:
 
 
 def heartbeat_sessions() -> dict:
-    """Daemon tick: update last_seen for live PIDs, flip dead ones, prune 24h-old.
-
-    Also calls reconcile_live_sessions (lazy import) to pick up any claude
-    processes that started before this registry was deployed and thus never
-    fired a SessionStart hook.
-    """
-    # Lazy import to avoid a circular dependency (session_registry imports
-    # helpers from this module).
-    try:
-        from scripts.session_registry import reconcile_live_sessions
-
-        reconcile_live_sessions()
-    except Exception:
-        pass
-
+    """Daemon tick: update last_seen for live PIDs, flip dead ones, prune 24h-old."""
     sessions = _load_sessions()
     now_dt = datetime.now(timezone.utc)
     now_iso = now_dt.isoformat().replace("+00:00", "Z")
@@ -793,8 +728,7 @@ def get_active_sessions(cleanup: bool = False, include_all: bool = False) -> dic
     closed, and dead entries.
 
     When cleanup=True, entries whose PID is gone are marked "dead" (not
-    deleted — preserved for the 24h retention window used by
-    `sessions list`).
+    deleted — preserved for the 24h retention window).
     """
     sessions = _load_sessions()
     if cleanup:

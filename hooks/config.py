@@ -492,7 +492,7 @@ AGENT_POOL_COUNTER_FILE: str = os.getenv(
     str(AGENTIHOOKS_HOME / "agent_pool_counters.json"),
 )
 # Idle threshold (seconds) below which a peer's transcript write means it is
-# still live → fork, not resume. Mirrors session_registry.SESSION_BUSY_WINDOW.
+# still live → fork, not resume.
 AGENT_POOL_IDLE_THRESHOLD: int = int(os.getenv("AGENT_POOL_IDLE_THRESHOLD", "60"))
 # Model for the fork/resume claude subprocess call_agent spawns.
 AGENT_POOL_CALL_MODEL: str = os.getenv("AGENT_POOL_CALL_MODEL", "haiku")

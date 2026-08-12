@@ -4,7 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.1.0] - 2026-08-12
+
+### Removed
+
+- **`agentihooks sessions` (list / reopen / backfill / reconcile).** Claude Code
+  now ships its own session picker and resume flow, which supersedes the
+  homegrown crash-recovery registry CLI and its Windows Terminal / Terminal.app
+  relaunch shim. Reopen a session with Claude Code's native `/resume` or
+  `claude --resume`.
+
+  The underlying session registry (`~/.agentihooks/active-sessions.json`) is
+  unchanged and still load-bearing — broadcast delivery, the agent pool, and
+  `refresh-rules` all read it. Only the operator-facing CLI surface is gone,
+  along with `broadcast.derive_session_title` and the heartbeat's
+  reconcile-live-sessions bridge, which existed solely to render that listing.
+
+### Fixed
+
+- **The codex adapter hardcoded `http://` in the hooks-utils MCP url.** It
+  re-derived the daemon url instead of reusing the builder the claude path
+  already had, reintroducing a defect that target had closed (Sonar
+  `python:S5332`). It now calls `_build_mcp_config` and takes the url from
+  there, so `MCP_SCHEME` / `MCP_PORT` are honoured on both targets — an
+  operator fronting the daemon with TLS, or moving it off loopback, gets an
+  `https://` client url instead of a hardcoded plaintext one.
+
 ## [Unreleased]
+
+> These entries predate the `2.0.0` tag and were never stamped into a released
+> section. They ship in `2.0.0` and earlier; they are not part of `2.1.0`.
 
 ### Added
 
