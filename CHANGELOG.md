@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed
+
+- **`agentihooks sessions` (list / reopen / backfill / reconcile).** Claude Code
+  now ships its own session picker and resume flow, which supersedes the
+  homegrown crash-recovery registry CLI and its Windows Terminal / Terminal.app
+  relaunch shim. Reopen a session with Claude Code's native `/resume` or
+  `claude --resume`.
+
+  The underlying session registry (`~/.agentihooks/active-sessions.json`) is
+  unchanged and still load-bearing — broadcast delivery, the agent pool, and
+  `refresh-rules` all read it. Only the operator-facing CLI surface is gone,
+  along with `broadcast.derive_session_title` and the heartbeat's
+  reconcile-live-sessions bridge, which existed solely to render that listing.
+
 ### Added
 
 - **`agentihooks init` now owns the hooks-utils daemon, and `agentihooks mcp

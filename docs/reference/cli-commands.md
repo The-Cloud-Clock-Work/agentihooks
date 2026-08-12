@@ -283,42 +283,6 @@ agentihooks refresh-rules --clear
 
 ---
 
-## `agentihooks sessions`
-
-Crash-recovery session picker. Lists recent Claude Code sessions (24h window) with names, lifetimes, and IDs. Reopen a session by index from the list.
-
-![agentihooks sessions output showing alive, closed, and superseded sessions with NAME and AGE columns](/agentihooks/assets/sessions-list-with-names.png)
-
-```bash
-agentihooks sessions list [--hours N] [--limit N]
-agentihooks sessions reopen <IDX> [--force]
-agentihooks sessions backfill [--hours N]
-```
-
-### Columns
-
-| Column | Meaning |
-|--------|---------|
-| `IDX` | Index to pass to `reopen` |
-| `STATUS` | `alive` / `closed` / `dead` / `superseded` |
-| `AGE` | For `alive`: session lifetime (time since `started_at`). For others: time since last activity. |
-| `NAME` | Session title from Claude Code `/rename` or `--name` flag, or first user message snippet |
-| `CWD` | Working directory (home-relative, truncated if long) |
-| `ID` | Session UUID |
-
-### Subcommands
-
-- **`list`** (alias `ls`) — show recent sessions. Default: 10 most recent in the last 24h. `--hours` controls the lookback window; `--limit 0` shows all.
-- **`reopen <IDX>`** (alias `open`) — relaunch Claude Code resuming the selected session. Uses Windows Terminal on WSL when available.
-- **`backfill`** — seed the registry from `~/.claude/projects/*.jsonl` for sessions that started before agentihooks was installed.
-- **`reconcile`** — health-check the registry.
-
-### Sort behavior
-
-Alive sessions appear first (longest-running on top), followed by closed, dead, and superseded. Supersede is used for session IDs that were cycled by `/resume` or `/clear` within the same PID — they're kept for audit but can't be reopened.
-
----
-
 ## `agentihooks mcp`
 
 Two unrelated jobs behind one word: a surface-area report, and the hooks-utils

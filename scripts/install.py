@@ -5939,42 +5939,6 @@ notes:
     rr_p.add_argument("--dry-run", action="store_true", help="Print what would be pushed without writing")
     rr_p.add_argument("--clear", action="store_true", help="Delete existing marker instead of pushing")
 
-    # --- Sessions subcommand ---
-    sess_p = sub.add_parser(
-        "sessions",
-        help="List and reopen recent Claude Code sessions (24h crash-recovery registry)",
-    )
-    sess_sub = sess_p.add_subparsers(dest="sessions_action")
-    sess_list_p = sess_sub.add_parser(
-        "list", aliases=["ls"], help="List the most recent sessions (default: last 10 in 24h window)"
-    )
-    sess_list_p.add_argument("--hours", type=int, default=24, help="Lookback window (default: 24)")
-    sess_list_p.add_argument("--limit", type=int, default=10, help="How many to show (default: 10, 0 = all)")
-    sess_reopen_p = sess_sub.add_parser(
-        "reopen",
-        aliases=["open"],
-        help="Reopen specific sessions by IDX from `sessions list` (e.g. `sessions reopen 6 7 8`)",
-    )
-    sess_reopen_p.add_argument(
-        "indices",
-        nargs="+",
-        help="IDX numbers from `sessions list` — space or comma-separated (e.g. `6 7` or `6,7,8`)",
-    )
-    sess_reopen_p.add_argument(
-        "--force",
-        action="store_true",
-        help="Override busy-JSONL and alive-status guards (DANGEROUS — can fork duplicate sessions)",
-    )
-    sess_backfill_p = sess_sub.add_parser(
-        "backfill",
-        help="Seed the registry from ~/.claude/projects/*.jsonl (for pre-existing sessions)",
-    )
-    sess_backfill_p.add_argument("--hours", type=int, default=24, help="Lookback window (default: 24)")
-    sess_sub.add_parser(
-        "reconcile",
-        help="Walk running claude processes and flip matched registry entries to alive",
-    )
-
     args = parser.parse_args(_argv)
 
     if args.list_profiles:
@@ -6168,27 +6132,6 @@ notes:
         _cmd_brain(args)
     elif args.command == "refresh-rules":
         _cmd_refresh_rules(args)
-    elif args.command == "sessions":
-        _cmd_sessions(args)
-
-
-def _cmd_sessions(args) -> None:
-    from scripts.session_registry import cmd_list, cmd_reopen
-
-    action = getattr(args, "sessions_action", None) or "list"
-    from scripts.session_registry import cmd_backfill, cmd_reconcile
-
-    if action in ("list", "ls"):
-        cmd_list(args)
-    elif action in ("reopen", "open"):
-        cmd_reopen(args)
-    elif action == "backfill":
-        cmd_backfill(args)
-    elif action == "reconcile":
-        cmd_reconcile(args)
-    else:
-        print(f"Unknown sessions action: {action}", file=sys.stderr)
-        sys.exit(1)
 
 
 if __name__ == "__main__":
