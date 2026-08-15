@@ -3168,6 +3168,24 @@ def _state_mark_foreign_mcp(names: set[str]) -> None:
         _save_state(state)
 
 
+def _state_claim_mcp(names: set[str]) -> None:
+    """Record names agentihooks wrote into ~/.claude.json.
+
+    Without this the ledger stays empty forever: every pre-existing server then
+    reads as the operator's, and prune's orphan sweep — which only considers
+    ledger entries — has nothing to act on.
+    """
+    if not names:
+        return
+    state = _load_state()
+    ledger = set(state.get("managed_mcp_servers", []) or [])
+    foreign = set(state.get("foreign_mcp_servers", []) or [])
+    if names - ledger or names & foreign:
+        state["managed_mcp_servers"] = sorted(ledger | names)
+        state["foreign_mcp_servers"] = sorted(foreign - names)
+        _save_state(state)
+
+
 def _merge_mcp_to_user_scope(servers: dict) -> None:
     """Merge *servers* into the top-level mcpServers of ~/.claude.json.
 
@@ -3180,10 +3198,15 @@ def _merge_mcp_to_user_scope(servers: dict) -> None:
     existing: dict = load_json(_CLAUDE_JSON) if _CLAUDE_JSON.exists() else {}
     existing_servers: dict = existing.get("mcpServers", {})
     ours = set(_load_state().get("managed_mcp_servers", []))
-    added, updated, skipped = [], [], []
+    added, updated, skipped, claimed = [], [], [], []
     for name, config in servers.items():
         if name in existing_servers:
-            if name not in ours:
+            # An identical config is ours by construction — it is what this
+            # profile chain writes. Treating it as the operator's is how a
+            # machine that predates the ledger marks every server foreign,
+            # leaving the ledger permanently empty and prune with nothing to
+            # sweep.
+            if name not in ours and existing_servers[name] != config:
                 skipped.append(name)
                 continue
             if existing_servers[name] != config:
@@ -3191,9 +3214,11 @@ def _merge_mcp_to_user_scope(servers: dict) -> None:
         else:
             added.append(name)
         existing_servers[name] = config
+        claimed.append(name)
     existing["mcpServers"] = existing_servers
     save_json(_CLAUDE_JSON, existing)
     _state_mark_foreign_mcp(set(skipped))
+    _state_claim_mcp(set(claimed))
     if added:
         _cprint(f"  [OK] Added user-scope MCP servers  : {', '.join(added)}")
     if updated:
@@ -4945,14 +4970,16 @@ def _get_managed_mcp_names() -> set[str] | None:
         return None
 
 
-def _prune_stale_mcp_servers(known_servers_file: Path, *, verbose: bool = False) -> dict:
+def _prune_stale_mcp_servers(known_servers_file: Path, *, verbose: bool = False, sweep_all: bool = False) -> dict:
     """Remove stale MCP entries from all tracking locations.
 
     Prunes:
     0. Orphaned mcpServers in ~/.claude.json — servers agentihooks INSTALLED
        (per ``state['managed_mcp_servers']``) that no source file defines any
        more. Servers the operator added by hand are never in that ledger and
-       are therefore never removed.
+       are therefore never removed. With *sweep_all*, provenance is ignored and
+       every user-scope server no source defines is removed — the escape hatch
+       for entries stranded outside the ledger.
     1. disabledMcpServers in every project entry in ~/.claude.json
     2. known-mcp-servers.json
     3. enabled_mcps in state.json
@@ -4985,6 +5012,8 @@ def _prune_stale_mcp_servers(known_servers_file: Path, *, verbose: bool = False)
         if verbose:
             print("  Skipping orphan sweep — cannot determine what the profile chain defines.")
         state_ledger = set()
+    elif sweep_all:
+        state_ledger = _get_user_scope_mcp_names()
     if state_ledger and _CLAUDE_JSON.exists():
         data = load_json(_CLAUDE_JSON)
         current_servers = data.get("mcpServers", {})
@@ -5000,7 +5029,8 @@ def _prune_stale_mcp_servers(known_servers_file: Path, *, verbose: bool = False)
             summary["pruned_orphaned"] = len(orphaned)
             valid -= orphaned
             state = _load_state()
-            state["managed_mcp_servers"] = sorted(state_ledger - orphaned)
+            state["managed_mcp_servers"] = sorted(set(state.get("managed_mcp_servers", [])) - orphaned)
+            state["foreign_mcp_servers"] = sorted(_state_foreign_mcp() - orphaned)
             _save_state(state)
             if verbose:
                 for name in sorted(orphaned):
@@ -5796,6 +5826,12 @@ def main() -> None:
 
     prune_p = sub.add_parser("prune", help="Remove stale MCP entries from all config files")
     prune_p.add_argument("--verbose", "-v", action="store_true", help="Show details of each pruned entry")
+    prune_p.add_argument(
+        "--all",
+        dest="sweep_all",
+        action="store_true",
+        help="Also remove user-scope servers no source file defines, regardless of provenance",
+    )
 
     sp_p = sub.add_parser(
         "settings-profile",
@@ -6099,7 +6135,7 @@ notes:
         known_servers_file = AGENTIHOOKS_STATE_DIR / "known-mcp-servers.json"
         valid = _get_valid_mcp_names()
         print(f"Valid MCP servers ({len(valid)}): {', '.join(sorted(valid))}")
-        summary = _prune_stale_mcp_servers(known_servers_file, verbose=True)
+        summary = _prune_stale_mcp_servers(known_servers_file, verbose=True, sweep_all=args.sweep_all)
         total = (
             summary["pruned_orphaned"]
             + summary["pruned_disabled"]

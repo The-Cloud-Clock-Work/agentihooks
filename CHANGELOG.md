@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.1.1] - 2026-08-15
+
+### Fixed
+
+- **`agentihooks prune` could never remove a stale MCP server.** The ledger it
+  works from (`managed_mcp_servers` in `~/.agentihooks/state.json`) was never
+  written — the function that fills it had no callers. An empty ledger made
+  every pre-existing server in `~/.claude.json` read as the operator's, latched
+  it into `foreign_mcp_servers` permanently, and left the orphan sweep with no
+  candidates, so prune always reported "everything is clean". A server dropped
+  from a profile `.mcp.json` survived in `~/.claude.json` indefinitely.
+
+  The user-scope merge now claims what it writes and clears the matching foreign
+  marks; a pre-existing entry whose config already matches the one being
+  installed is treated as agentihooks', not the operator's.
+
+### Added
+
+- **`agentihooks prune --all`** — sweeps user-scope MCP servers that no source
+  file defines, ignoring provenance. The escape hatch for entries stranded
+  outside the ledger by the bug above.
+
 ## [2.1.0] - 2026-08-12
 
 ### Removed
