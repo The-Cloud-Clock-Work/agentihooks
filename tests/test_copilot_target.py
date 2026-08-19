@@ -55,19 +55,40 @@ class TestSettingsJson:
         doc = json.loads((home / "settings.json").read_text())
         assert "disableAllHooks" in doc
 
-    def test_bypass_seeds_trusted_folder(self, adapter):
+    def test_bypass_writes_allow_all_env(self, adapter):
+        """Copilot has no settings key for YOLO: permissions.allow rules cover
+        tools only (a write rule still hits path verification) and
+        trustedFolders is not a recognized setting. COPILOT_ALLOW_ALL is the
+        switch, exported by the installer's agentienv shell block."""
+        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+        env_file = install.AGENTIHOOKS_STATE_DIR / "copilot.env"
+        assert env_file.exists(), "bypassPermissions must produce the copilot env file"
+        assert "COPILOT_ALLOW_ALL=1" in env_file.read_text()
+
+    def test_non_bypass_removes_allow_all_env(self, adapter):
+        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+        env_file = install.AGENTIHOOKS_STATE_DIR / "copilot.env"
+        assert env_file.exists()
+        adapter.write_settings({"permissions": {"defaultMode": "default"}})
+        assert not env_file.exists(), "turning bypass off must withdraw the env file"
+
+    def test_bypass_does_not_write_unrecognized_trusted_folders(self, adapter):
+        """trustedFolders is not in Copilot's canonical settings keys — writing
+        it makes the CLI warn about an unknown key on every launch."""
         adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
         doc = json.loads((copilot_home() / "settings.json").read_text())
-        assert str(install.AGENTIHOOKS_ROOT) in doc["trustedFolders"]
+        assert "trustedFolders" not in doc
 
-    def test_existing_trusted_folders_preserved(self, adapter):
+    def test_teardown_removes_stale_trusted_folders_and_env(self, adapter):
         home = copilot_home()
-        home.mkdir(parents=True, exist_ok=True)
-        (home / "settings.json").write_text(json.dumps({"trustedFolders": ["/srv/work"]}))
         adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
         doc = json.loads((home / "settings.json").read_text())
-        assert "/srv/work" in doc["trustedFolders"]
-        assert str(install.AGENTIHOOKS_ROOT) in doc["trustedFolders"]
+        doc["trustedFolders"] = [str(install.AGENTIHOOKS_ROOT)]
+        (home / "settings.json").write_text(json.dumps(doc))
+        adapter.teardown()
+        doc = json.loads((home / "settings.json").read_text())
+        assert "trustedFolders" not in doc
+        assert not (install.AGENTIHOOKS_STATE_DIR / "copilot.env").exists()
 
     def test_operator_hand_set_managed_key_survives_reinit(self, adapter, capsys):
         adapter.write_settings({})

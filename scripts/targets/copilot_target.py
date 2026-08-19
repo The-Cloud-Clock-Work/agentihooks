@@ -155,6 +155,38 @@ class CopilotAdapter:
     def _managed_sidecar(home: Path) -> Path:
         return home / ".agentihooks-managed.json"
 
+    @staticmethod
+    def _bypass_env_file() -> Path:
+        return _install_module().AGENTIHOOKS_STATE_DIR / "copilot.env"
+
+    def _write_bypass_env(self, enabled: bool) -> None:
+        """Translate claude's ``bypassPermissions`` into Copilot's YOLO switch.
+
+        Copilot has no settings key for it: ``permissions.allow`` rules cover
+        tools only (a ``write`` rule still hits path verification), and
+        ``trustedFolders`` is not a recognized user setting at all. The only
+        global switch is ``COPILOT_ALLOW_ALL`` (the env form of
+        ``--allow-all-tools``), proven to clear a denial that tool rules did
+        not. It is written to a managed env file the installer's ``agentienv``
+        shell block already auto-exports, so it applies to interactive
+        sessions the way ``defaultMode`` does for claude.
+        """
+        _i = _install_module()
+        path = self._bypass_env_file()
+        if not enabled:
+            if path.exists():
+                path.unlink()
+                _i._cprint(f"  [RM] bypass mode off — removed {path}")
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(
+            path,
+            "# managed-by: agentihooks — regenerate with: agentihooks init --target copilot\n"
+            "# claude permissions.defaultMode=bypassPermissions → Copilot allow-all-tools\n"
+            "COPILOT_ALLOW_ALL=1\n",
+        )
+        _i._cprint(f"  [OK] bypassPermissions → COPILOT_ALLOW_ALL=1 in {path} (run: source ~/.bashrc)")
+
     # ------------------------------------------------------------------
     # settings: settings.json managed keys + hooks/agentihooks.json + wrapper
     # ------------------------------------------------------------------
@@ -212,23 +244,7 @@ class CopilotAdapter:
         _atomic_write(self._managed_sidecar(home), json.dumps(recorded, indent=2) + "\n")
 
         default_mode = (rendered.get("permissions") or {}).get("defaultMode", "")
-        if default_mode == "bypassPermissions":
-            # Copilot has no global bypass switch in settings — trust is
-            # per-directory. The repo root the install ran from is seeded so
-            # the operator is not re-prompted for it; anything else stays a
-            # deliberate /add-dir.
-            #
-            # Deliberately outside the managed-key rule above: trustedFolders
-            # is a set the operator also edits (via /add-dir), so treating a
-            # non-empty list as a hand-edit would mean never seeding the root
-            # on any machine that had ever trusted a directory. Union, never
-            # replace — nothing the operator trusted is dropped.
-            trusted = doc.get("trustedFolders")
-            trusted = list(trusted) if isinstance(trusted, list) else []
-            root = str(_i.AGENTIHOOKS_ROOT)
-            if root not in trusted:
-                trusted.append(root)
-            doc["trustedFolders"] = trusted
+        self._write_bypass_env(default_mode == "bypassPermissions")
 
         _atomic_write(settings_path, json.dumps(doc, indent=2) + "\n")
         _i._cprint(f"[OK] Wrote managed keys into {settings_path}")
@@ -696,15 +712,21 @@ class CopilotAdapter:
                 if "disableAllHooks" in doc:
                     _i._cprint("  [!!] no managed-key record found — disableAllHooks left as-is; review it")
             doc.pop("agentihooks", None)
-            trusted = doc.get("trustedFolders")
-            if isinstance(trusted, list):
+            # trustedFolders was written by older installs and is not a
+            # recognized Copilot setting — withdraw the stale key entirely
+            # rather than leaving a value the CLI warns about on every launch.
+            if isinstance(doc.get("trustedFolders"), list):
                 root = str(_i.AGENTIHOOKS_ROOT)
-                if root in trusted:
-                    doc["trustedFolders"] = [t for t in trusted if t != root]
+                remaining = [t for t in doc["trustedFolders"] if t != root]
+                if remaining:
+                    doc["trustedFolders"] = remaining
+                else:
+                    doc.pop("trustedFolders", None)
             _atomic_write(settings_path, json.dumps(doc, indent=2) + "\n")
             if removed_keys:
                 _i._cprint(f"  [RM] Removed managed keys from {settings_path}: {', '.join(removed_keys)}")
         self._managed_sidecar(home).unlink(missing_ok=True)
+        self._write_bypass_env(False)
 
         strip_persona(home / "copilot-instructions.md", _MANAGED_HEADER, _MANAGED_FOOTER)
 

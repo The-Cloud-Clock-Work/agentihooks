@@ -14,6 +14,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `toolCalls[]` with stringified args and copilot tool names translated onto
   the Claude vocabulary the guardrails read — previously every copilot
   preToolUse guardrail received empty inputs and allowed everything.
+- Copilot now translates claude's `permissions.defaultMode: bypassPermissions`
+  into `COPILOT_ALLOW_ALL=1`, written to a managed `~/.agentihooks/copilot.env`
+  that the installer's `agentienv` shell block already auto-exports. Copilot has
+  no settings key for YOLO: `permissions.allow` rules cover tools only (a `write`
+  rule still hits path verification) and `trustedFolders` — which the adapter
+  previously wrote — is not a recognized user setting at all, so that write was a
+  no-op the CLI warns about. Stale `trustedFolders` values are withdrawn on teardown.
 - Copilot http MCP headers with a `${VAR}`/`$VAR` reference now resolve
   from the install environment and are written as the literal value copilot
   needs (it has no runtime header expansion) — the same value `~/.claude.json`
