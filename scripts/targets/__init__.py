@@ -124,6 +124,15 @@ class TargetAdapter(Protocol):
         """Target-specific end-of-install bookkeeping (ledgers, snapshots)."""
         ...
 
+    def teardown(self) -> None:
+        """Remove every artifact this adapter wrote, preserving operator content.
+
+        Claude's teardown lives in ``uninstall_global`` (it predates the
+        adapter seam); the non-claude adapters implement it here so a full
+        uninstall reaches all installed targets. Must be idempotent — running
+        against a clean home is a no-op, never an error."""
+        ...
+
 
 def get_adapter(target: str) -> TargetAdapter:
     if target == "claude":

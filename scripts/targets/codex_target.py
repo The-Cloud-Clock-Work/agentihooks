@@ -34,9 +34,14 @@ from scripts.targets._common import (
     _install_module,
     agents_skills_home,
     build_persona,
+    clear_managed_mcp,
+    drop_if_credentialed,
+    has_env_reference,
     reap_translated_commands,
+    record_managed_mcp,
     scannable,
     skill_names_in,
+    strip_persona,
     write_persona,
 )
 
@@ -379,6 +384,8 @@ class CodexAdapter:
         added: list[str] = []
         for name, spec in servers.items():
             spec = dict(spec)
+            if drop_if_credentialed(name, spec, "config.toml"):
+                continue
             stype = spec.get("type", "stdio" if spec.get("command") else "http")
             if stype == "sse":
                 _i._cprint(
@@ -424,12 +431,14 @@ class CodexAdapter:
                 clean_headers: dict = {}
                 for hk, hv in dict(spec.get("headers") or {}).items():
                     hv_s = str(hv)
-                    bearer = _re.fullmatch(r"Bearer\s+\$\{(\w+)\}", hv_s)
+                    # Braced or unbraced — codex expands neither, so both map
+                    # to its native env indirection or get dropped.
+                    bearer = _re.fullmatch(r"Bearer\s+\$\{?(\w+)\}?", hv_s)
                     if hk.lower() == "authorization" and bearer:
                         entry["bearer_token_env_var"] = bearer.group(1)
-                    elif "${" in hv_s:
+                    elif has_env_reference(hv_s):
                         _i._cprint(
-                            f"  [!!] MCP '{name}' header '{hk}' uses a ${{VAR}} placeholder — "
+                            f"  [!!] MCP '{name}' header '{hk}' uses a ${{VAR}}/$VAR reference — "
                             "codex does not expand these; header dropped. Use a literal value "
                             "or an Authorization Bearer ${VAR} (mapped to bearer_token_env_var)."
                         )
@@ -452,7 +461,122 @@ class CodexAdapter:
             added.append(name)
         self._dump_toml(config_path, doc)
         if added:
+            record_managed_mcp(self.name, added)
             _i._cprint(f"  [OK] Codex MCP servers: {', '.join(added)}")
+
+    def teardown(self) -> None:
+        _i = _install_module()
+        home = self.home()
+        wrapper = home / "agentihooks-hook.sh"
+
+        # hooks.json: strip our groups per event; foreign groups survive.
+        hooks_path = home / "hooks.json"
+        if hooks_path.exists():
+            try:
+                doc = json.loads(hooks_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                # Unparseable file may hold operator hooks mid-edit — preserve
+                # it rather than treating it as empty and deleting it.
+                backup = hooks_path.with_suffix(f".json.bak.{datetime.now(timezone.utc):%Y%m%d%H%M%S}")
+                shutil.move(str(hooks_path), str(backup))
+                _i._cprint(f"  [!!] {hooks_path.name} unparseable — preserved at {backup.name}")
+                doc = None
+            merged = doc.get("hooks", {}) if isinstance(doc, dict) and isinstance(doc.get("hooks"), dict) else {}
+            foreign_left = {}
+            for event, groups in merged.items():
+                groups = groups if isinstance(groups, list) else []
+                foreign = [
+                    g
+                    for g in groups
+                    if not any(_command_is_wrapper(h.get("command", ""), wrapper) for h in g.get("hooks", []))
+                ]
+                if foreign:
+                    foreign_left[event] = foreign
+            if foreign_left:
+                _atomic_write(hooks_path, json.dumps({"hooks": foreign_left}, indent=2))
+                _i._cprint(f"  [RM] Removed agentihooks entries from {hooks_path} (operator hooks kept)")
+            elif doc is not None:
+                hooks_path.unlink()
+                _i._cprint(f"  [RM] Removed {hooks_path}")
+        wrapper.unlink(missing_ok=True)
+
+        # config.toml: keys still holding our recorded value are withdrawn; a
+        # hand-edited key is the operator's and stays. `notify` goes only if it
+        # still points at our shim. [features].hooks is left as-is — true with
+        # no hooks configured is inert, and the operator may run their own.
+        config_path = home / "config.toml"
+        if config_path.exists():
+            doc = self._load_toml(config_path)
+            agentihooks_tbl = doc.get("agentihooks")
+            managed = agentihooks_tbl.get("managed", {}) if isinstance(agentihooks_tbl, dict) else {}
+            removed_keys = []
+            for key in list(managed.keys() if hasattr(managed, "keys") else []):
+                if doc.get(key) == managed.get(key):
+                    doc.pop(key, None)
+                    removed_keys.append(key)
+            if not managed and any(k in doc for k in ("approval_policy", "sandbox_mode")):
+                # No record (legacy install / hand-deleted table). These values
+                # carry no agentihooks fingerprint, so removing by name could
+                # revert a deliberate operator choice — warn instead, loudly:
+                # danger-full-access left behind is worth the operator's look.
+                _i._cprint(
+                    "  [!!] no [agentihooks].managed record — approval_policy/sandbox_mode "
+                    "left as-is; review them (a torn-down bypass install would have set "
+                    '"never"/"danger-full-access").'
+                )
+            if "agentihooks" in doc:
+                doc.pop("agentihooks", None)
+            notify = doc.get("notify")
+            if isinstance(notify, list) and any("notify_shim" in str(part) for part in notify):
+                doc.pop("notify", None)
+            # Ours by construction (install_persona sets it on every run).
+            doc.pop("project_doc_max_bytes", None)
+            table = doc.get("mcp_servers")
+            from scripts.targets._common import managed_mcp_names
+
+            recorded_names = managed_mcp_names(self.name)
+            removed = []
+            if table is not None:
+                for n in recorded_names:
+                    if table.pop(n, None) is not None:
+                        removed.append(n)
+                if not recorded_names and "hooks-utils" in table:
+                    # No record: remove hooks-utils only when its content proves
+                    # it is ours — a name collision with the operator's own
+                    # server must not delete their entry.
+                    import tomlkit as _tomlkit
+
+                    entry_text = _tomlkit.dumps({"e": table["hooks-utils"]})
+                    if "hooks.mcp" in entry_text:
+                        table.pop("hooks-utils")
+                        removed.append("hooks-utils")
+                    else:
+                        _i._cprint(
+                            "  [!!] 'hooks-utils' in config.toml has no install record and "
+                            "does not look agentihooks-managed — left in place; review it."
+                        )
+                if not len(table):
+                    doc.pop("mcp_servers", None)
+            self._dump_toml(config_path, doc)
+            if removed_keys or removed:
+                _i._cprint(
+                    f"  [RM] Removed from {config_path}: " + ", ".join(removed_keys + [f"mcp:{n}" for n in removed])
+                )
+        clear_managed_mcp(self.name)
+
+        strip_persona(home / "AGENTS.md", _MANAGED_HEADER, _MANAGED_FOOTER)
+
+        # Translated prompts: reap everything the manifest owns.
+        prompts_dir = home / "prompts"
+        manifest_path = prompts_dir / ".agentihooks-manifest.json"
+        if manifest_path.exists():
+            try:
+                for name in json.loads(manifest_path.read_text()):
+                    (prompts_dir / name).unlink(missing_ok=True)
+            except (json.JSONDecodeError, OSError):
+                pass
+            manifest_path.unlink(missing_ok=True)
+            _i._cprint(f"  [RM] Removed translated prompts from {prompts_dir}")
 
     def post_install_reconcile(self, profile_chain: list[str], persisted_profile: str) -> None:
         _i = _install_module()

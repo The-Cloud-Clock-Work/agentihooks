@@ -270,3 +270,58 @@ class TestCopilotPreToolUseChannel:
         assert supports_arg_mutation("copilot") is True
         assert supports_arg_mutation("codex") is False
         assert supports_arg_mutation("claude") is False
+
+
+class TestGarbledStdin:
+    """Fail-open is the rule; a garbled payload that names a tool-permission
+    event gets deny-on-doubt instead — copilot's preToolUse gate is fail-closed
+    on non-zero, so exit 0 there reads as "allowed"."""
+
+    def test_garbled_pretooluse_denies(self, tmp_path):
+        for raw in (
+            'not json {{{ "hookEventName": "preToolUse", "toolName": "Bash"',
+            'zzz "hook_event_name": "PreToolUse" zzz',
+            'xx "hookEventName": "permissionRequest" {{{',
+        ):
+            result = subprocess.run(
+                [sys.executable, "-m", "hooks"],
+                input=raw,
+                capture_output=True,
+                text=True,
+                cwd=_PROJECT_ROOT,
+                env=_env(tmp_path),
+            )
+            assert result.returncode == 2, f"{raw!r} did not deny"
+            assert "BLOCKED" in result.stderr
+
+    def test_nested_marker_beyond_head_window_does_not_block(self, tmp_path):
+        """The sniff reads only the payload head — a marker EMBEDDED deep in a
+        garbled non-tool event must not deny it (a SessionStart carrying a raw
+        sample payload in a debug field is not a tool call)."""
+        pad = "x" * 600
+        raw = (
+            '{"hook_event_name": "SessionStart", "session_id": "abc", "pad": "'
+            + pad
+            + '", "debug": {"hook_event_name": "PreToolUse"'
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "hooks"],
+            input=raw,
+            capture_output=True,
+            text=True,
+            cwd=_PROJECT_ROOT,
+            env=_env(tmp_path),
+        )
+        assert result.returncode == 0, "deep nested marker wrongly denied a SessionStart"
+
+    def test_garbled_non_tool_event_stays_fail_open(self, tmp_path):
+        for raw in ("not json at all {{{", 'xx "hook_event_name": "SessionStart" xx{{{', ""):
+            result = subprocess.run(
+                [sys.executable, "-m", "hooks"],
+                input=raw,
+                capture_output=True,
+                text=True,
+                cwd=_PROJECT_ROOT,
+                env=_env(tmp_path),
+            )
+            assert result.returncode == 0, f"{raw!r} wrongly blocked a non-tool event"

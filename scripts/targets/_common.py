@@ -17,7 +17,23 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-_PLACEHOLDER = re.compile(r"\$\{\w+\}")
+# Braced references only. Stripping unbraced `$VAR` too was a scan bypass: it
+# eats the `$`-containing tail of a LITERAL credential (`pa$sword123` →
+# `pa`), splitting it below the patterns' minimum lengths. A bare `$VAR` that
+# really is a reference carries nothing credential-shaped, so leaving it in
+# the scanned text costs no false positives — the scanner just finds no hit.
+#
+# `${VAR:-default}` substitutes its default text rather than vanishing: the
+# fallback is a literal value on disk, and `${DB_PASS:-<real token>}` hiding
+# from the scan would be an embedded credential in a reference costume. A
+# fallback like `:-changeme` in a db URL therefore flags — that is a literal
+# password and the flag is correct, not a false positive.
+_PLACEHOLDER = re.compile(r"\$\{(\w+)(?::-([^}]*))?\}")
+
+# What counts as "contains a reference" for functional handling (headers the
+# CLI will not expand, env passthrough) — deliberately wider than what
+# scanning strips: braced with or without a default, or unbraced.
+_ANY_REFERENCE = re.compile(r"\$\{\w+[^}]*\}|\$\w+")
 
 
 def scannable(value: str) -> str:
@@ -25,10 +41,112 @@ def scannable(value: str) -> str:
 
     A bare reference carries no secret, but skipping the scan whenever a value
     merely *contains* one lets ``${SAFE}-and-<literal token>`` through
-    unscanned. Strip the references and scan what is left; an empty result
-    means the value was nothing but references.
+    unscanned. Strip the references, keep any literal fallback text, and scan
+    what is left; an empty result means the value was nothing but references.
     """
-    return _PLACEHOLDER.sub("", value).strip()
+    return _PLACEHOLDER.sub(lambda m: m.group(2) or "", value).strip()
+
+
+def has_env_reference(value: str) -> bool:
+    """Whether *value* contains a ``${VAR}``/``${VAR:-x}``/``$VAR`` reference."""
+    return bool(_ANY_REFERENCE.search(value))
+
+
+def mcp_spec_credential_hits(name: str, spec: dict) -> list[str]:
+    """Credential findings in the fields no adapter used to scan.
+
+    ``env`` values and header values were always scanned per-adapter; ``url``
+    (``https://user:TOKEN@host``, ``?api_key=TOKEN``), ``command`` and each
+    ``args`` element were written verbatim on every target. A hit here means
+    the whole server entry must be dropped — a credential inside a URL or an
+    argv pair cannot be redacted without breaking the entry, and writing a
+    broken entry silently is worse than refusing loudly.
+
+    Returns human-readable findings, empty when clean. Pure — the caller
+    decides how to warn and what to drop.
+    """
+    from hooks.secrets import scan as _scan_secrets
+
+    findings: list[str] = []
+    for field in ("url", "command"):
+        value = spec.get(field)
+        if value:
+            hits = _scan_secrets(scannable(str(value)), mode="strict")
+            if hits:
+                findings.append(f"{field} ({', '.join(hits)})")
+    for i, arg in enumerate(spec.get("args") or []):
+        hits = _scan_secrets(scannable(str(arg)), mode="strict")
+        if hits:
+            findings.append(f"args[{i}] ({', '.join(hits)})")
+    return findings
+
+
+def sanitize_env_and_headers(name: str, spec: dict, target_file: str) -> dict:
+    """A copy of *spec* with credential-shaped env and header VALUES removed.
+
+    The per-field counterpart of :func:`drop_if_credentialed`, for the claude
+    merge path — codex and copilot carry their own env/header loops with
+    target-specific handling (bearer mapping, reference dropping), but claude
+    wrote both sub-dicts entirely unscanned. References pass through
+    untouched; claude expands them at connect time. Field-level drop, not
+    server-level: unlike a credential inside a URL, removing one value leaves
+    a coherent entry.
+    """
+    from hooks.secrets import scan as _scan_secrets
+
+    _i = _install_module()
+    spec = dict(spec)
+    for field in ("env", "headers"):
+        block = spec.get(field)
+        if not isinstance(block, dict):
+            continue
+        clean: dict = {}
+        for key, value in block.items():
+            text = scannable(str(value))
+            hits = _scan_secrets(text, mode="strict") if text else []
+            if hits:
+                label = "env var" if field == "env" else "header"
+                _i._cprint(
+                    f"  [!!] MCP '{name}' {label} '{key}' looks like a credential "
+                    f"({', '.join(hits)}) — dropped from {target_file}. Reference it as "
+                    "${VAR} instead of embedding the value."
+                )
+                continue
+            clean[key] = value
+        if clean:
+            spec[field] = clean
+        else:
+            spec.pop(field, None)
+    return spec
+
+
+def drop_if_credentialed(name: str, spec: dict, target_file: str) -> bool:
+    """True when *spec* must be dropped; warns with the finding list."""
+    findings = mcp_spec_credential_hits(name, spec)
+    if not findings:
+        return False
+    _install_module()._cprint(
+        f"  [!!] MCP '{name}' carries credential-shaped literals in {'; '.join(findings)} "
+        f"— server NOT written to {target_file}. Reference secrets via environment "
+        "variables instead of embedding the value."
+    )
+    return True
+
+
+def record_managed_mcp(target: str, names: list[str]) -> None:
+    """Remember which MCP names this target's adapter wrote, for teardown."""
+    if not names:
+        return
+    _i = _install_module()
+    state = _i._load_state()
+    record = _i._global_record(state, target, create=True)
+    record["managed_mcp"] = sorted(set(record.get("managed_mcp", [])) | set(names))
+    _i._save_state(state)
+
+
+def managed_mcp_names(target: str) -> list[str]:
+    _i = _install_module()
+    return list(_i._global_record(_i._load_state(), target).get("managed_mcp", []))
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -206,6 +324,47 @@ def identity_preamble(profile_chain: list[str]) -> str:
         "description of the underlying coding agent, and never by reciting "
         "the raw profile chain as if it were a name."
     )
+
+
+def strip_persona(dst: Path, managed_header: str, managed_footer: str) -> None:
+    """Remove the managed region from *dst*, keeping any operator tail.
+
+    A file that is entirely ours is deleted; a non-managed file is left alone
+    (it is the operator's, whatever its name).
+    """
+    _i = _install_module()
+    if not dst.exists():
+        return
+    text = dst.read_text()
+    if managed_header not in text:
+        _i._cprint(f"  [--] {dst.name} is not agentihooks-managed — left in place")
+        return
+    if managed_footer not in text:
+        # Header without footer: the managed region cannot be separated from
+        # whatever the operator appended, so nothing here is safely deletable.
+        # Preserve the whole file as a backup instead of destroying content.
+        backup = dst.with_suffix(f"{dst.suffix}.bak.{datetime.now(timezone.utc):%Y%m%d%H%M%S}")
+        shutil.move(str(dst), str(backup))
+        _i._cprint(
+            f"  [!!] {dst.name} has the managed header but no managed-end marker — "
+            f"cannot separate operator content; whole file preserved at {backup.name}"
+        )
+        return
+    tail = text.split(managed_footer, 1)[1]
+    if tail.strip():
+        _atomic_write(dst, tail.lstrip("\n"))
+        _i._cprint(f"  [RM] Removed managed region from {dst} (operator tail kept)")
+    else:
+        dst.unlink()
+        _i._cprint(f"  [RM] Removed {dst}")
+
+
+def clear_managed_mcp(target: str) -> None:
+    _i = _install_module()
+    state = _i._load_state()
+    record = _i._global_record(state, target)
+    if record.pop("managed_mcp", None) is not None:
+        _i._save_state(state)
 
 
 def build_persona(

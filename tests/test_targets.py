@@ -249,6 +249,94 @@ class TestGetAdapter:
             assert get_adapter(target).name == target
 
 
+class TestSharedSanitizer:
+    def test_dollar_containing_literal_credential_is_not_split(self):
+        """Stripping unbraced $VAR ate the tail of `pa$sword`-style literals,
+        pushing them below the patterns' minimum lengths — a scan bypass."""
+        from scripts.targets._common import mcp_spec_credential_hits, scannable
+
+        url = "postgres://user:pa$ssword123@db.internal:5432/app"
+        assert scannable(url) == url
+        assert mcp_spec_credential_hits("s", {"command": "npx", "args": ["-y", url]})
+
+    def test_braced_reference_still_stripped(self):
+        from scripts.targets._common import mcp_spec_credential_hits
+
+        assert mcp_spec_credential_hits("s", {"url": "postgres://user:${DB_PASS}@host/db"}) == []
+
+    def test_reference_default_text_is_scanned_as_literal(self):
+        """`${T:-<token>}` must not hide the token; a fallback IS a literal."""
+        from hooks.secrets import scan
+        from scripts.targets._common import scannable
+
+        assert scan(scannable("x=${T:-ghp_" + "a" * 36 + "}"), mode="strict")
+        assert scan(scannable("x=${T}"), mode="strict") == []
+
+    def test_claude_merge_sanitizes_env_and_headers(self, capsys):
+        import json
+
+        install._merge_mcp_to_user_scope(
+            {
+                "srv": {
+                    "command": "npx",
+                    "env": {"GH_TOKEN": "ghp_" + "b" * 36, "SAFE": "${REF}", "PLAIN": "hello"},
+                    "headers": {"Authorization": "Bearer ghp_" + "c" * 36, "X-Env": "prod"},
+                }
+            }
+        )
+        doc = json.loads(install._CLAUDE_JSON.read_text())
+        spec = doc["mcpServers"]["srv"]
+        assert sorted(spec["env"]) == ["PLAIN", "SAFE"]
+        assert list(spec["headers"]) == ["X-Env"]
+        assert "credential" in capsys.readouterr().out
+
+
+class TestSharedSkillsSweep:
+    def test_ledger_only_sweep_spares_operator_link_into_our_sources(self, tmp_path):
+        """~/.agents/skills is a shared cross-tool dir: destination alone must
+        not claim an operator's hand-made symlink into our source tree."""
+        from pathlib import Path
+
+        from scripts.targets._common import agents_skills_home
+
+        skills = agents_skills_home()
+        skills.mkdir(parents=True, exist_ok=True)
+        real = tmp_path / "real-skill"
+        real.mkdir()
+        ledgered = skills / "ledgered"
+        ledgered.symlink_to(real)
+        install._state_record_link(ledgered, real, "skill")
+        operator = skills / "operator-link"
+        operator.symlink_to(Path(install.AGENTIHOOKS_ROOT))
+
+        n = install._remove_agentihooks_symlinks(skills, "skill", ledger_only=True)
+        assert n == 1
+        assert not ledgered.is_symlink()
+        assert operator.is_symlink()
+
+
+class TestClaudeSettingsEnvScan:
+    def test_credential_shaped_env_value_dropped(self, capsys):
+        adapter = get_adapter("claude")
+        tok = "ghp_" + "k" * 36
+        adapter.write_settings({"env": {"LEAKED": tok, "SAFE_REF": "${MY_TOKEN}", "PLAIN": "hello"}})
+        import json
+
+        doc = json.loads((install.CLAUDE_HOME / "settings.json").read_text())
+        assert "LEAKED" not in doc["env"]
+        assert doc["env"]["SAFE_REF"] == "${MY_TOKEN}"
+        assert doc["env"]["PLAIN"] == "hello"
+        assert "credential" in capsys.readouterr().out
+
+    def test_env_block_all_credentials_removed_entirely(self):
+        adapter = get_adapter("claude")
+        adapter.write_settings({"env": {"LEAKED": "ghp_" + "m" * 36}})
+        import json
+
+        doc = json.loads((install.CLAUDE_HOME / "settings.json").read_text())
+        assert "env" not in doc
+
+
 class TestInstalledTargets:
     def test_lists_every_record_in_supported_order(self):
         state = {"targets": {"global": {"codex": {"profile": "a"}, "claude": {"profile": "b"}}}}

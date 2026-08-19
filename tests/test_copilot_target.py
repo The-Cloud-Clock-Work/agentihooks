@@ -418,7 +418,7 @@ class TestMcp:
         )
         doc = json.loads((copilot_home() / "mcp-config.json").read_text())
         assert "headers" not in doc["mcpServers"]["gw"]
-        assert "placeholder" in capsys.readouterr().out
+        assert "reference" in capsys.readouterr().out
 
     def test_literal_credential_in_header_is_dropped(self, adapter, capsys):
         adapter.register_mcp(
@@ -469,6 +469,33 @@ class TestMcp:
         doc = json.loads((copilot_home() / "mcp-config.json").read_text())
         assert set(doc["mcpServers"]) == {"a", "b"}
 
+    def test_unbraced_env_reference_header_dropped(self, adapter, capsys):
+        adapter.register_mcp(
+            {"gw": {"type": "http", "url": "https://gw.example/mcp", "headers": {"X-Tok": "$MY_TOKEN"}}}
+        )
+        doc = json.loads((copilot_home() / "mcp-config.json").read_text())
+        assert "headers" not in doc["mcpServers"]["gw"]
+        assert "reference" in capsys.readouterr().out
+
+    def test_credential_in_url_drops_the_whole_server(self, adapter, capsys):
+        tok = "ghp_" + "f" * 36
+        adapter.register_mcp({"bad": {"type": "http", "url": f"https://user:{tok}@gw.example/mcp"}})
+        doc = json.loads((copilot_home() / "mcp-config.json").read_text())
+        assert "bad" not in doc.get("mcpServers", {})
+        assert "NOT written" in capsys.readouterr().out
+
+    def test_credential_in_args_drops_the_whole_server(self, adapter, capsys):
+        tok = "ghp_" + "g" * 36
+        adapter.register_mcp({"bad": {"command": "/bin/srv", "args": ["--token", tok]}})
+        doc = json.loads((copilot_home() / "mcp-config.json").read_text())
+        assert "bad" not in doc.get("mcpServers", {})
+        assert "NOT written" in capsys.readouterr().out
+
+    def test_registered_names_recorded_for_teardown(self, adapter):
+        adapter.register_mcp({"a": {"command": "/bin/a"}})
+        state = install._load_state()
+        assert "a" in install._global_record(state, "copilot").get("managed_mcp", [])
+
     def test_operator_servers_preserved(self, adapter):
         home = copilot_home()
         home.mkdir(parents=True, exist_ok=True)
@@ -510,3 +537,131 @@ class TestAdapterRegistration:
         from targets.copilot_target import CopilotAdapter as Bare
 
         assert Bare().name == "copilot"
+
+
+class TestTeardown:
+    def _full_install(self, adapter, tmp_path):
+        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+        adapter.register_mcp({"hooks-utils": {"command": "/usr/bin/python", "args": ["-m", "hooks.mcp"]}})
+        agents_src = tmp_path / "agents"
+        agents_src.mkdir(exist_ok=True)
+        (agents_src / "scout.md").write_text("---\ndescription: X\n---\n\nbody\n")
+        adapter.install_features("agents", [("bundle", agents_src)], lambda p: p.suffix == ".md")
+        cmds_src = tmp_path / "commands"
+        cmds_src.mkdir(exist_ok=True)
+        (cmds_src / "review.md").write_text("---\ndescription: X\n---\n\nbody\n")
+        adapter.install_features("commands", [("bundle", cmds_src)], lambda p: p.suffix == ".md")
+        prof = tmp_path / "prof"
+        prof.mkdir(exist_ok=True)
+        (prof / "CLAUDE.md").write_text("persona")
+        adapter.install_persona([("p", prof)], ["p"], None)
+
+    def test_removes_own_artifacts(self, adapter, tmp_path):
+        self._full_install(adapter, tmp_path)
+        adapter.teardown()
+        home = copilot_home()
+        assert not (home / "agentihooks-hook.sh").exists()
+        assert not (home / "hooks" / "agentihooks.json").exists()
+        assert not (home / "copilot-instructions.md").exists()
+        assert not (home / "agents" / "scout.md").exists()
+        assert not (agents_skills_home() / "review").exists()
+        doc = json.loads((home / "settings.json").read_text())
+        assert "agentihooks" not in doc
+        assert "statusLine" not in doc
+        assert str(install.AGENTIHOOKS_ROOT) not in doc.get("trustedFolders", [])
+        mcp = json.loads((home / "mcp-config.json").read_text())
+        assert "hooks-utils" not in mcp.get("mcpServers", {})
+        assert install._global_record(install._load_state(), "copilot").get("managed_mcp") is None
+
+    def test_preserves_operator_content(self, adapter, tmp_path):
+        self._full_install(adapter, tmp_path)
+        home = copilot_home()
+        doc = json.loads((home / "settings.json").read_text())
+        doc["theme"] = "dim"
+        (home / "settings.json").write_text(json.dumps(doc))
+        hooks_doc = json.loads((home / "hooks" / "agentihooks.json").read_text())
+        hooks_doc["hooks"]["preToolUse"].append({"type": "command", "command": "/usr/bin/operator-hook"})
+        (home / "hooks" / "agentihooks.json").write_text(json.dumps(hooks_doc))
+        persona = home / "copilot-instructions.md"
+        persona.write_text(persona.read_text() + "\n## operator tail\n")
+        mcp = json.loads((home / "mcp-config.json").read_text())
+        mcp["mcpServers"]["operators-own"] = {"type": "local", "command": "/bin/x"}
+        (home / "mcp-config.json").write_text(json.dumps(mcp))
+
+        adapter.teardown()
+
+        doc = json.loads((home / "settings.json").read_text())
+        assert doc["theme"] == "dim"
+        hooks_doc = json.loads((home / "hooks" / "agentihooks.json").read_text())
+        assert hooks_doc["hooks"]["preToolUse"][0]["command"] == "/usr/bin/operator-hook"
+        assert "## operator tail" in persona.read_text()
+        assert "managed-by: agentihooks" not in persona.read_text()
+        mcp = json.loads((home / "mcp-config.json").read_text())
+        assert "operators-own" in mcp["mcpServers"]
+
+    def test_hand_edited_managed_key_survives(self, adapter, tmp_path):
+        self._full_install(adapter, tmp_path)
+        home = copilot_home()
+        doc = json.loads((home / "settings.json").read_text())
+        doc["statusLine"] = {"type": "command", "command": "/usr/local/bin/my-status"}
+        (home / "settings.json").write_text(json.dumps(doc))
+        adapter.teardown()
+        doc = json.loads((home / "settings.json").read_text())
+        assert doc["statusLine"]["command"] == "/usr/local/bin/my-status"
+
+    def test_idempotent_on_clean_home(self, adapter):
+        adapter.teardown()
+        adapter.teardown()
+
+
+class TestTeardownDestructiveEdges:
+    def test_header_without_footer_preserves_whole_file_as_backup(self, adapter):
+        from scripts.targets.copilot_target import _MANAGED_HEADER
+
+        home = copilot_home()
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "copilot-instructions.md").write_text(_MANAGED_HEADER + "\nmanaged\n\nMY OWN NOTES\n")
+        adapter.teardown()
+        assert not (home / "copilot-instructions.md").exists()
+        baks = list(home.glob("copilot-instructions*.bak*"))
+        assert baks and any("MY OWN NOTES" in b.read_text() for b in baks)
+
+    def test_unrecorded_operator_hooks_utils_survives(self, adapter, capsys):
+        home = copilot_home()
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "mcp-config.json").write_text(
+            json.dumps({"mcpServers": {"hooks-utils": {"type": "local", "command": "/opt/operator-own/server"}}})
+        )
+        adapter.teardown()
+        doc = json.loads((home / "mcp-config.json").read_text())
+        assert "hooks-utils" in doc["mcpServers"]
+        assert "review it" in capsys.readouterr().out
+
+    def test_missing_record_content_verified_statusline_removed(self, adapter):
+        home = copilot_home()
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "settings.json").write_text(
+            json.dumps({"statusLine": {"type": "command", "command": "python -m hooks.statusline"}})
+        )
+        adapter.teardown()
+        doc = json.loads((home / "settings.json").read_text())
+        assert "statusLine" not in doc
+
+    def test_missing_record_operator_statusline_survives(self, adapter):
+        home = copilot_home()
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "settings.json").write_text(
+            json.dumps({"statusLine": {"type": "command", "command": "/usr/local/bin/my-status"}})
+        )
+        adapter.teardown()
+        doc = json.loads((home / "settings.json").read_text())
+        assert doc["statusLine"]["command"] == "/usr/local/bin/my-status"
+
+    def test_unparseable_hooks_file_backed_up_not_deleted(self, adapter):
+        home = copilot_home()
+        (home / "hooks").mkdir(parents=True, exist_ok=True)
+        (home / "hooks" / "agentihooks.json").write_text('{"hooks": {"x": [{"command": "operator_hook"}]}],,,')
+        adapter.teardown()
+        assert not (home / "hooks" / "agentihooks.json").exists()
+        baks = list((home / "hooks").glob("agentihooks*.bak*"))
+        assert baks and any("operator_hook" in b.read_text() for b in baks)

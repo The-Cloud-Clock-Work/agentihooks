@@ -37,10 +37,15 @@ from scripts.targets._common import (
     _install_module,
     agents_skills_home,
     build_persona,
+    clear_managed_mcp,
+    drop_if_credentialed,
+    has_env_reference,
     load_manifest,
     reap_translated_commands,
+    record_managed_mcp,
     scannable,
     skill_names_in,
+    strip_persona,
     write_persona,
 )
 
@@ -506,6 +511,8 @@ class CopilotAdapter:
         added: list[str] = []
         for name, spec in servers.items():
             spec = dict(spec)
+            if drop_if_credentialed(name, spec, "mcp-config.json"):
+                continue
             stype = spec.get("type") or ("local" if spec.get("command") else "http")
             if stype == "stdio":
                 stype = "local"
@@ -539,9 +546,9 @@ class CopilotAdapter:
                 clean_headers: dict = {}
                 for hk, hv in dict(spec.get("headers") or {}).items():
                     hv_s = str(hv)
-                    if "${" in hv_s:
+                    if has_env_reference(hv_s):
                         _i._cprint(
-                            f"  [!!] MCP '{name}' header '{hk}' uses a ${{VAR}} placeholder — "
+                            f"  [!!] MCP '{name}' header '{hk}' uses a ${{VAR}}/$VAR reference — "
                             "Copilot sends header values literally and does not expand these; "
                             "header dropped. Use a literal value or an env-backed proxy."
                         )
@@ -577,7 +584,120 @@ class CopilotAdapter:
         doc["mcpServers"] = table
         _atomic_write(config_path, json.dumps(doc, indent=2) + "\n")
         if added:
+            record_managed_mcp(self.name, added)
             _i._cprint(f"  [OK] Copilot MCP servers: {', '.join(added)}")
+
+    def teardown(self) -> None:
+        _i = _install_module()
+        home = self.home()
+        wrapper = home / "agentihooks-hook.sh"
+
+        # Hooks: strip our entries from our file; foreign entries the operator
+        # added to it survive, and other files under hooks/ are never touched.
+        hooks_path = home / "hooks" / "agentihooks.json"
+        if hooks_path.exists():
+            try:
+                doc = json.loads(hooks_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                # Unparseable file may hold operator hooks mid-edit — preserve
+                # it rather than treating it as empty and deleting it.
+                backup = hooks_path.with_suffix(f".json.bak.{datetime.now(timezone.utc):%Y%m%d%H%M%S}")
+                shutil.move(str(hooks_path), str(backup))
+                _i._cprint(f"  [!!] {hooks_path.name} unparseable — preserved at {backup.name}")
+                doc = None
+            merged = doc.get("hooks", {}) if isinstance(doc, dict) and isinstance(doc.get("hooks"), dict) else {}
+            if doc is None:
+                merged = None
+            if merged is not None:
+                foreign_left = {}
+                for event, hooks in merged.items():
+                    hooks = hooks if isinstance(hooks, list) else []
+                    foreign = [h for h in hooks if not _command_is_wrapper(h.get("command", ""), wrapper)]
+                    if foreign:
+                        foreign_left[event] = foreign
+                if foreign_left:
+                    _atomic_write(hooks_path, json.dumps({"version": 1, "hooks": foreign_left}, indent=2) + "\n")
+                    _i._cprint(f"  [RM] Removed agentihooks entries from {hooks_path} (operator hooks kept)")
+                else:
+                    hooks_path.unlink()
+                    _i._cprint(f"  [RM] Removed {hooks_path}")
+        wrapper.unlink(missing_ok=True)
+
+        # settings.json: remove keys still holding our recorded value; a key
+        # the operator hand-edited since is theirs and stays. Our seeded
+        # trustedFolders entry is withdrawn; the operator's own entries stay.
+        settings_path = home / "settings.json"
+        if settings_path.exists():
+            doc = self._load_json(settings_path)
+            managed = doc.get("agentihooks")
+            recorded = managed.get("managed", {}) if isinstance(managed, dict) else {}
+            removed_keys = []
+            for key, value in list(recorded.items() if isinstance(recorded, dict) else []):
+                if doc.get(key) == value:
+                    doc.pop(key, None)
+                    removed_keys.append(key)
+            if not recorded:
+                # No record (legacy install / hand-deleted table): remove only
+                # what is content-verifiably ours rather than claiming by name.
+                status = doc.get("statusLine")
+                if isinstance(status, dict) and "hooks.statusline" in str(status.get("command", "")):
+                    doc.pop("statusLine", None)
+                    removed_keys.append("statusLine")
+                if "disableAllHooks" in doc:
+                    _i._cprint("  [!!] no managed-key record found — disableAllHooks left as-is; review it")
+            doc.pop("agentihooks", None)
+            trusted = doc.get("trustedFolders")
+            if isinstance(trusted, list):
+                root = str(_i.AGENTIHOOKS_ROOT)
+                if root in trusted:
+                    doc["trustedFolders"] = [t for t in trusted if t != root]
+            _atomic_write(settings_path, json.dumps(doc, indent=2) + "\n")
+            if removed_keys:
+                _i._cprint(f"  [RM] Removed managed keys from {settings_path}: {', '.join(removed_keys)}")
+
+        strip_persona(home / "copilot-instructions.md", _MANAGED_HEADER, _MANAGED_FOOTER)
+
+        # Translated agents + commands: reap everything the manifests own.
+        agents_dir = home / "agents"
+        agents_manifest = agents_dir / ".agentihooks-manifest.json"
+        for name in load_manifest(agents_manifest):
+            (agents_dir / name).unlink(missing_ok=True)
+        agents_manifest.unlink(missing_ok=True)
+
+        skills_dir = agents_skills_home()
+        cmd_manifest = skills_dir / TRANSLATED_COMMANDS_MANIFEST
+        reap_translated_commands(set(load_manifest(cmd_manifest)), reason="copilot target removed")
+        cmd_manifest.unlink(missing_ok=True)
+
+        # MCP: remove the names this adapter recorded writing; anything else in
+        # the file is the operator's.
+        mcp_path = home / "mcp-config.json"
+        from scripts.targets._common import managed_mcp_names
+
+        recorded_names = managed_mcp_names(self.name)
+        if mcp_path.exists():
+            doc = self._load_json(mcp_path)
+            table = doc.get("mcpServers")
+            if isinstance(table, dict):
+                removed = [n for n in recorded_names if table.pop(n, None) is not None]
+                if not recorded_names and "hooks-utils" in table:
+                    # No record: remove hooks-utils only when its content proves
+                    # it is ours — a name collision with the operator's own
+                    # server must not delete their entry.
+                    entry_text = json.dumps(table["hooks-utils"])
+                    if "hooks.mcp" in entry_text:
+                        table.pop("hooks-utils")
+                        removed.append("hooks-utils")
+                    else:
+                        _i._cprint(
+                            "  [!!] 'hooks-utils' in mcp-config.json has no install record and "
+                            "does not look agentihooks-managed — left in place; review it."
+                        )
+                doc["mcpServers"] = table
+                _atomic_write(mcp_path, json.dumps(doc, indent=2) + "\n")
+                if removed:
+                    _i._cprint(f"  [RM] Removed MCP servers from {mcp_path}: {', '.join(removed)}")
+        clear_managed_mcp(self.name)
 
     def post_install_reconcile(self, profile_chain: list[str], persisted_profile: str) -> None:
         _i = _install_module()

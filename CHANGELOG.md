@@ -8,6 +8,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Teardown never destroys operator content it cannot attribute.** Findings
+  from an adversarial refuter run against the initial teardown, each fixed and
+  regression-tested: a persona file with the managed header but no managed-end
+  marker is preserved whole as a timestamped backup instead of deleted (the
+  operator tail below the missing marker was unrecoverable); an unparseable
+  hooks file is backed up, never treated as empty and removed; with no
+  install record, `hooks-utils` is removed only when its content proves it is
+  ours — a name collision with an operator's own server survives with a
+  warning, and codex's `approval_policy`/`sandbox_mode` are left in place with
+  a loud review warning rather than a false "[RM] Removed" line; the shared
+  `~/.agents/skills` sweep is ledger-only, so an operator's hand-made symlink
+  into agentihooks' source tree is never claimed by destination alone.
+
+- **`teardown()` on the target adapters, wired into `agentihooks uninstall`.**
+  Uninstall previously removed only `~/.claude` artifacts; codex and copilot
+  installs survived a green uninstall in full. Each non-claude adapter now
+  removes what it wrote — wrapper script, its hook entries (operator hooks
+  kept), the managed persona region (operator tail kept), translated
+  prompts/agents/commands via their manifests, managed settings keys (a
+  hand-edited value survives), and the MCP servers it recorded installing —
+  and the shared `~/.agents/skills` symlinks are swept once by ledger.
+  Adapters record their MCP names under `targets.global.<target>.managed_mcp`
+  at register time so teardown removes exactly what was installed.
+
+- **Deny-on-doubt for garbled tool-permission payloads.** Hooks stay fail-open
+  on unparseable stdin — except when the raw text visibly names a
+  tool-permission event (`preToolUse`/`preMcpToolCall`/`permissionRequest`,
+  either spelling), which now exits 2 instead of 0. Copilot's tool gate is
+  fail-closed on non-zero exit, so exiting 0 there read as "allowed" for a
+  tool call no guardrail ever scanned. Non-tool events keep the fail-open rule.
+
+- **MCP `url`, `command` and `args` are now secret-scanned on every target.**
+  A credential embedded in a server URL (`https://user:TOKEN@host`,
+  `?api_key=TOKEN`), the command, or an argv element previously reached
+  `~/.claude.json` / `config.toml` / `mcp-config.json` verbatim. A hit drops
+  the whole server with a warning naming the field — a URL credential cannot
+  be redacted without breaking the entry.
+
+- **Claude's `settings.json` env block is scanned.** `ClaudeAdapter` copies the
+  rendered settings dict verbatim, so a connector-injected literal credential
+  in a profile's `env` block landed on disk; values are now scanned and
+  credential-shaped literals dropped. `${VAR}`/`$VAR` references pass through.
+
+- **Unbraced `$VAR` references are handled.** Codex maps `Bearer $VAR` to
+  `bearer_token_env_var` like the braced form; other unbraced references in
+  headers are dropped with a warning on codex and copilot (neither CLI expands
+  them, so the literal string was a silently broken config). Scanning
+  deliberately strips only the braced form: stripping `$VAR` too ate the tail
+  of `pa$sword`-style literal credentials, splitting them below the patterns'
+  minimum lengths — a bypass an adversarial refuter reproduced end-to-end.
+  `${VAR:-default}` substitutes its fallback text for scanning, so a literal
+  token hiding in a default is still caught.
+
+- **Claude's MCP merge sanitizes `env` and `headers` values.** Codex and
+  copilot always scanned both; claude wrote them to `~/.claude.json` verbatim,
+  so the same profile `.mcp.json` got asymmetric protection per target.
+  Field-level drop with a warning; `${VAR}` references pass through (claude
+  expands them at connect time).
+
+- **The garbled-payload sniff reads only the payload head.** An unanchored
+  search over the full stream let a marker embedded deep inside a garbled
+  non-tool event (a raw sample payload in a debug field) deny a SessionStart.
+  The event name sits among the first keys of every real payload shape, so a
+  512-byte window keeps the truncated-tool-call catch and drops the false
+  block.
+
 - **GitHub Copilot CLI is a third install target.** `agentihooks init --target
   copilot` writes `~/.copilot`: `settings.json` managed keys (command-backed
   status line, `disableAllHooks` pinned false, trusted-folder seeding),

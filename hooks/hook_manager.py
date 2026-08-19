@@ -1905,8 +1905,14 @@ def main() -> None:
     # even when the block fires before dispatch resolved one.
     _blocked_event = "Unknown"
     try:
-        # Read payload from stdin
-        payload: dict[str, Any] = json.load(sys.stdin)
+        # Read payload from stdin. Raw text is kept for the parse-failure path:
+        # fail-open is the rule (a hook must never crash the host), but a
+        # garbled payload that visibly names a tool-permission event gets
+        # deny-on-doubt instead — exiting 0 there reads as "allowed" on hosts
+        # whose tool gate is fail-closed on non-zero (copilot preToolUse), so
+        # fail-open on those events is the one direction that loses a guardrail.
+        _raw_stdin = sys.stdin.read()
+        payload: dict[str, Any] = json.loads(_raw_stdin)
 
         # Codex and Copilot payloads get alias-filled into the internal shape;
         # claude payloads pass through untouched (hooks/targets/normalizer.py).
@@ -1971,6 +1977,27 @@ def main() -> None:
         sys.stderr.flush()
         os._exit(2)  # blocks the action — skip Python shutdown (OTEL threads)
     except json.JSONDecodeError:
+        import re as _re
+
+        # Search only the head of the payload: the event name is among the
+        # first keys in every real payload shape, and an unanchored search over
+        # the whole stream lets a marker EMBEDDED in a garbled non-tool event
+        # (a raw nested object in a debug field) deny a SessionStart. The
+        # design-target case — a huge tool_input truncated at the END — keeps
+        # its event name well inside this window.
+        if _re.search(
+            r'"(?:hook_?[eE]vent_?[nN]ame|hook_?[tT]ype)"\s*:\s*"(?:[pP]reToolUse|'
+            r'[pP]reMcpToolCall|[pP]ermissionRequest)"',
+            _raw_stdin[:512],
+        ):
+            log("Unparseable payload names a tool-permission event — denying", {"bytes": len(_raw_stdin)})
+            print(
+                "BLOCKED: hook payload was not valid JSON but names a tool-permission "
+                "event — denying rather than silently allowing an unscanned tool call.",
+                file=sys.stderr,
+                flush=True,
+            )
+            os._exit(2)
         log("Failed to parse JSON payload")
     except KeyboardInterrupt:
         # Operator pressed Ctrl+C mid-hook (most common during SessionEnd

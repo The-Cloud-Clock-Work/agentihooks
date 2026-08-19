@@ -3200,11 +3200,17 @@ def _merge_mcp_to_user_scope(servers: dict) -> None:
     so the next profile that drops the name deletes the operator's server
     outright. Such names are left alone and remembered as foreign.
     """
+    from scripts.targets._common import drop_if_credentialed, sanitize_env_and_headers
+
     existing: dict = load_json(_CLAUDE_JSON) if _CLAUDE_JSON.exists() else {}
     existing_servers: dict = existing.get("mcpServers", {})
     ours = set(_load_state().get("managed_mcp_servers", []))
     added, updated, skipped, claimed = [], [], [], []
     for name, config in servers.items():
+        if isinstance(config, dict):
+            if drop_if_credentialed(name, config, str(_CLAUDE_JSON)):
+                continue
+            config = sanitize_env_and_headers(name, config, str(_CLAUDE_JSON))
         if name in existing_servers:
             # An identical config is ours by construction — it is what this
             # profile chain writes. Treating it as the operator's is how a
@@ -3879,11 +3885,18 @@ def _uninstall_cli_tool() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _remove_agentihooks_symlinks(dst_dir: Path, label: str) -> int:
+def _remove_agentihooks_symlinks(dst_dir: Path, label: str, *, ledger_only: bool = False) -> int:
     """Remove the symlinks in *dst_dir* that agentihooks recorded installing.
 
     Ownership comes from ``state.json['managed_links']``. Links the operator or
     another tool put there are never touched, whatever they point at.
+
+    *ledger_only* drops :func:`_link_is_managed`'s points-into-managed-sources
+    signal and trusts the ledger alone. Required for shared cross-tool dirs
+    (``~/.agents/skills``): an operator's own hand-made symlink into the bundle
+    tree is indistinguishable from ours by destination, so destination alone
+    must not claim it there. Claude-exclusive dirs keep both signals — the
+    destination signal is what reaps pre-ledger installs.
     """
     if not dst_dir.exists():
         return 0
@@ -3892,7 +3905,15 @@ def _remove_agentihooks_symlinks(dst_dir: Path, label: str) -> int:
     for link in sorted(dst_dir.iterdir()):
         if not link.is_symlink():
             continue
-        if not _link_is_managed(link, ledger):
+        if ledger_only:
+            entry = ledger.get(str(link))
+            try:
+                raw = os.readlink(link)
+            except OSError:
+                raw = None
+            if not entry or (raw is not None and raw.rstrip("/") != str(entry.get("target", "")).rstrip("/")):
+                continue
+        elif not _link_is_managed(link, ledger):
             continue
         link.unlink()
         _cprint(f"  [RM] Removed {label} symlink: {link.name}")
@@ -4573,6 +4594,9 @@ def uninstall_global(args: argparse.Namespace) -> None:
     # this a machine whose only artifact is a live daemon reports "nothing to
     # uninstall" and walks away from a running process.
     daemon_running = _mcp_daemon_module().read_pidfile().get("pid") is not None
+    # Non-claude targets (codex, copilot) tear down through their adapters —
+    # claude's removal is the body of this function.
+    other_targets = [t for t in _installed_targets(_load_state(), default=()) if t != "claude"]
     total_work = (
         int(remove_settings)
         + n_skills
@@ -4585,6 +4609,7 @@ def uninstall_global(args: argparse.Namespace) -> None:
         + int(_cli_tool_is_installed())
         + int(systemd_unit_present)
         + int(daemon_running)
+        + len(other_targets)
     )
     if total_work == 0:
         print("Nothing to uninstall — agentihooks is not installed.")
@@ -4620,6 +4645,8 @@ def uninstall_global(args: argparse.Namespace) -> None:
         print(f"  MCP servers from {_CLAUDE_JSON}: {', '.join(sorted(managed_servers.keys()))}")
     else:
         print(f"  MCP servers from {_CLAUDE_JSON}: [none found]")
+    for t in other_targets:
+        print(f"  {t} target artifacts (adapter teardown)")
     print("  agentihooks CLI (uv tool / symlink)")
     print()
     print(f"NOT removed (your data): {STATE_JSON}")
@@ -4726,6 +4753,29 @@ def uninstall_global(args: argparse.Namespace) -> None:
     ledger_state = _load_state()
     if ledger_state.pop("managed_mcp_servers", None) is not None:
         _save_state(ledger_state)
+
+    # --- 6b. Non-claude targets: adapter teardown ---
+    if other_targets:
+        print()
+        from scripts.targets._common import agents_skills_home as _agents_skills_home
+
+        for t in other_targets:
+            print(f"Tearing down {t} target:")
+            try:
+                get_adapter(t).teardown()
+            except Exception as exc:  # a broken teardown must not abort the rest
+                _cprint(f"  {_YELLOW}[WARN] {t} teardown failed: {exc} — remove its artifacts by hand.{_RESET}")
+        # The shared open-standard skills dir is swept once, after every
+        # adapter has run — LEDGER-ONLY: other tools and the operator also put
+        # symlinks here, and a hand-made link into our source tree is theirs.
+        n = _remove_agentihooks_symlinks(_agents_skills_home(), "skill", ledger_only=True)
+        if n == 0:
+            _cprint(f"  [--] No managed skill symlinks found in {_agents_skills_home()}")
+        st = _load_state()
+        targets_global = st.get("targets", {}).get("global", {})
+        for t in other_targets:
+            targets_global.pop(t, None)
+        _save_state(st)
 
     # --- 7. Remove bashrc block ---
     if _remove_bashrc_block():
