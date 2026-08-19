@@ -33,6 +33,24 @@ class TestResolveTarget:
         monkeypatch.delenv("AGENTIHOOKS_TARGET", raising=False)
         assert resolve_target(None, "", ("codex",), interactive_ok=False) == "codex"
 
+    def test_copilot_only_installed_recalls_copilot(self, monkeypatch):
+        monkeypatch.delenv("AGENTIHOOKS_TARGET", raising=False)
+        assert resolve_target(None, "", ("copilot",), interactive_ok=False) == "copilot"
+
+    def test_three_installed_targets_warn_names_all_and_default(self, monkeypatch, capsys):
+        monkeypatch.delenv("AGENTIHOOKS_TARGET", raising=False)
+        assert resolve_target(None, "", ("claude", "codex", "copilot"), interactive_ok=False) == DEFAULT_TARGET
+        err = capsys.readouterr().err
+        for name in ("claude", "codex", "copilot"):
+            assert name in err
+        assert "--target" in err
+
+    def test_copilot_via_cli_flag_and_env(self, monkeypatch):
+        monkeypatch.delenv("AGENTIHOOKS_TARGET", raising=False)
+        assert resolve_target("copilot", "claude", interactive_ok=False) == "copilot"
+        monkeypatch.setenv("AGENTIHOOKS_TARGET", "copilot")
+        assert resolve_target(None, "claude", interactive_ok=False) == "copilot"
+
     def test_multiple_installed_targets_warn_and_default_noninteractive(self, monkeypatch, capsys):
         monkeypatch.delenv("AGENTIHOOKS_TARGET", raising=False)
         result = resolve_target(None, "codex", ("claude", "codex"), interactive_ok=False)
@@ -120,6 +138,22 @@ class TestGlobalRecord:
         rec["profile"] = "anton"
         assert state["targets"]["global"]["claude"]["profile"] == "anton"
 
+    def test_copilot_record_isolated_from_siblings(self):
+        state = {
+            "targets": {
+                "global": {
+                    "claude": {"profile": "anton"},
+                    "codex": {"profile": "smith"},
+                    "copilot": {"profile": "agenticore"},
+                }
+            }
+        }
+        assert install._global_record(state, "copilot")["profile"] == "agenticore"
+        assert install._global_record(state, "claude")["profile"] == "anton"
+        from hooks.targets import split_global
+
+        assert set(split_global(state["targets"]["global"])) == {"claude", "codex", "copilot"}
+
     def test_per_target_isolation(self):
         state: dict = {}
         install._global_record(state, "claude", create=True)["profile"] = "anton"
@@ -202,11 +236,35 @@ class TestGetAdapter:
         assert adapter.name == "codex"
         assert adapter.home().name == ".codex"
 
+    def test_copilot_adapter_resolves(self):
+        adapter = get_adapter("copilot")
+        assert adapter.name == "copilot"
+        assert adapter.home().name == ".copilot"
+
+    def test_every_supported_target_has_an_adapter(self):
+        """A name in SUPPORTED_TARGETS with no adapter fails only at install time."""
+        from scripts.targets import SUPPORTED_TARGETS
+
+        for target in SUPPORTED_TARGETS:
+            assert get_adapter(target).name == target
+
 
 class TestInstalledTargets:
     def test_lists_every_record_in_supported_order(self):
         state = {"targets": {"global": {"codex": {"profile": "a"}, "claude": {"profile": "b"}}}}
         assert install._installed_targets(state) == ("claude", "codex")
+
+    def test_three_installed_targets_listed_in_supported_order(self):
+        state = {
+            "targets": {
+                "global": {
+                    "copilot": {"profile": "c"},
+                    "codex": {"profile": "a"},
+                    "claude": {"profile": "b"},
+                }
+            }
+        }
+        assert install._installed_targets(state) == ("claude", "codex", "copilot")
 
     def test_empty_state_defaults_to_claude(self):
         assert install._installed_targets({}) == ("claude",)

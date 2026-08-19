@@ -2744,7 +2744,7 @@ def _install_global_inner(args: argparse.Namespace) -> None:
         profile_sources.append(f"{pname} ({src})")
 
     print(f"{_BOLD}agentihooks root{_RESET} : {AGENTIHOOKS_ROOT}")
-    print(f"Target           : {CLAUDE_HOME}")
+    print(f"Target           : {install_target} → {adapter.home()}")
     if len(profile_chain) > 1:
         print(f"Profile chain    : {' → '.join(profile_sources)}")
     else:
@@ -2962,11 +2962,16 @@ def _install_global_inner(args: argparse.Namespace) -> None:
     print(f"{_DIM}Verify:{_RESET}")
     print(f"  {_DIM}ls -la {existing_settings_path}{_RESET}")
     claude_md = CLAUDE_HOME / _CLAUDE_MD_NAME
-    if claude_md.is_symlink():
+    if install_target == "claude" and claude_md.is_symlink():
         print(f"  {_DIM}ls -la {claude_md}{_RESET}")
+    if install_target != "claude":
+        print(f"  {_DIM}agentihooks doctor --target {install_target}{_RESET}")
     print()
-    print(f"Launch:  {_CYAN}agentihooks claude{_RESET}   {_DIM}# or: agenti (after source ~/.bashrc){_RESET}")
-    print(f"Re-run:  {_DIM}agentihooks init{_RESET}")
+    if install_target == "claude":
+        print(f"Launch:  {_CYAN}agentihooks claude{_RESET}   {_DIM}# or: agenti (after source ~/.bashrc){_RESET}")
+    else:
+        print(f"Launch:  {_CYAN}{install_target}{_RESET}")
+    print(f"Re-run:  {_DIM}agentihooks init --target {install_target}{_RESET}")
 
 
 def _install_claude_persona(
@@ -5693,7 +5698,7 @@ def main() -> None:
         choices=list(SUPPORTED_TARGETS),
         default=None,
         help=(
-            "Agent CLI to install for (claude | codex). Default: AGENTIHOOKS_TARGET env, "
+            "Agent CLI to install for (claude | codex | copilot). Default: AGENTIHOOKS_TARGET env, "
             "then the target stored in state.json, then an interactive prompt, then claude."
         ),
     )
@@ -6106,11 +6111,14 @@ notes:
 
         print(format_cli(run_all_checks()))
     elif args.command == "doctor":
-        if getattr(args, "doctor_target", "claude") == "codex":
-            from scripts.targets.codex_target import CodexAdapter
+        _doctor_target = getattr(args, "doctor_target", "claude")
+        if _doctor_target != "claude":
+            # Non-claude adapters carry their own doctor(); claude's health
+            # check is the status_checker suite below.
+            from scripts.targets import get_adapter as _get_adapter
 
-            print("AgentiHooks doctor — codex target")
-            failed = CodexAdapter().doctor()
+            print(f"AgentiHooks doctor — {_doctor_target} target")
+            failed = _get_adapter(_doctor_target).doctor()
             sys.exit(1 if failed else 0)
         sys.path.insert(0, str(AGENTIHOOKS_ROOT))
         from scripts.status_checker import (

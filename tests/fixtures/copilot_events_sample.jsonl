@@ -1,0 +1,13 @@
+{"id":"e1","timestamp":"2026-08-19T10:00:00.000Z","parentId":null,"type":"session.start","data":{"sessionId":"cop-sess-1","cwd":"/repo"}}
+{"id":"e2","timestamp":"2026-08-19T10:00:01.000Z","parentId":"e1","type":"system.message","data":{"content":"You are a coding agent.","role":"system"}}
+{"id":"e3","timestamp":"2026-08-19T10:00:02.000Z","parentId":"e1","type":"user.message","data":{"content":"list the files"}}
+{"id":"e4","timestamp":"2026-08-19T10:00:03.000Z","parentId":"e3","type":"assistant.message","data":{"messageId":"m1","content":"I'll list them.","model":"gpt-5"}}
+{"id":"e5","timestamp":"2026-08-19T10:00:04.000Z","parentId":"e3","type":"tool.execution_start","data":{"toolCallId":"call_1","toolName":"shell","arguments":{"command":"ls"}}}
+{"id":"e6","timestamp":"2026-08-19T10:00:05.000Z","parentId":"e3","type":"tool.execution_complete","data":{"toolCallId":"call_1","success":true,"result":{"content":"README.md\nsrc/"}}}
+{"id":"e7","timestamp":"2026-08-19T10:00:06.000Z","parentId":"e3","type":"tool.execution_start","data":{"toolCallId":"call_2","toolName":"view","arguments":{"path":"/nope"}}}
+{"id":"e8","timestamp":"2026-08-19T10:00:07.000Z","parentId":"e3","type":"tool.execution_complete","data":{"toolCallId":"call_2","success":false,"error":{"message":"ENOENT: no such file or directory","code":"ENOENT"}}}
+{"id":"e9","timestamp":"2026-08-19T10:00:08.000Z","parentId":"e3","ephemeral":true,"type":"assistant.usage","data":{"model":"gpt-5","inputTokens":1200,"outputTokens":80}}
+{"id":"e10","timestamp":"2026-08-19T10:00:09.000Z","parentId":"e3","ephemeral":true,"type":"assistant.streaming_delta","data":{"content":"partial text that must never be counted"}}
+{"id":"e11","timestamp":"2026-08-19T10:00:10.000Z","parentId":"e3","type":"session.task_complete","data":{"summary":"Listed the files.","success":true}}
+{"id":"e12","timestamp":"2026-08-19T10:00:11.000Z","parentId":"e1","type":"user.message","data":{"content":"thanks"}}
+{"id":"e13","timestamp":"2026-08-19T10:00:12.000Z","parentId":"e12","type":"session.task_complete","data":{"summary":"Acknowledged.","success":true}}

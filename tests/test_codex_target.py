@@ -166,6 +166,30 @@ class TestHooksJson:
         assert (home / "hooks.json").exists()
 
 
+class TestSharedSkillsDir:
+    def test_codex_reaps_a_copilot_translated_command_shadowing_a_real_skill(self, adapter, tmp_path):
+        """~/.agents/skills is shared: codex must clear copilot's translated
+        command when a real skill claims that name, or the skill never links."""
+        from scripts.targets._common import TRANSLATED_COMMANDS_MANIFEST, agents_skills_home
+        from scripts.targets.copilot_target import CopilotAdapter
+
+        cmds = tmp_path / "commands"
+        cmds.mkdir()
+        (cmds / "shared-name.md").write_text("---\ndescription: cmd\n---\n\nold command\n")
+        CopilotAdapter().install_features("commands", [("bundle", cmds)], lambda p: p.suffix == ".md")
+        shared = agents_skills_home() / "shared-name"
+        assert shared.is_dir() and not shared.is_symlink()
+        assert TRANSLATED_COMMANDS_MANIFEST in [f.name for f in agents_skills_home().iterdir()]
+
+        skills_src = tmp_path / "skills"
+        (skills_src / "shared-name").mkdir(parents=True)
+        (skills_src / "shared-name" / "SKILL.md").write_text("REAL SKILL")
+        adapter.install_features("skills", [("bundle", skills_src)], lambda p: p.is_dir())
+
+        assert shared.is_symlink()
+        assert (shared / "SKILL.md").read_text() == "REAL SKILL"
+
+
 class TestPersona:
     def test_agents_md_compiles_chain_rules_and_manifesto(self, adapter, tmp_path, monkeypatch):
         prof = tmp_path / "prof-anton"
@@ -340,6 +364,18 @@ class TestMcp:
         out = capsys.readouterr().out
         assert "X-Api-Key" in out
         assert "gateway" in out
+
+    def test_credential_concatenated_onto_a_placeholder_is_dropped(self, adapter, capsys):
+        """A value merely CONTAINING ${VAR} must not skip the scan."""
+        dummy_key = "AKIA" + "TESTDUMMY0000000"
+        adapter.register_mcp({"local": {"command": "/py", "env": {"UPSTREAM_KEY": "${SAFE_VAR}-and-" + dummy_key}}})
+        text = (codex_home() / "config.toml").read_text()
+        assert dummy_key not in text
+        assert "UPSTREAM_KEY" in capsys.readouterr().out
+
+    def test_pure_env_reference_still_survives(self, adapter):
+        adapter.register_mcp({"local": {"command": "/py", "env": {"UPSTREAM_KEY": "${MY_TOKEN}"}}})
+        assert "${MY_TOKEN}" in (codex_home() / "config.toml").read_text()
 
     def test_credential_shaped_env_var_dropped(self, adapter, capsys):
         dummy_key = "AKIA" + "TESTDUMMY0000000"

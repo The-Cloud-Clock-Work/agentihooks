@@ -104,10 +104,10 @@ def parse_transcript_metrics(transcript_path: str) -> dict:
 
         from hooks.memory.transcript_reader import detect_transcript_format
 
-        if detect_transcript_format(path) == "codex":
-            # Codex rollout: derive turn count / last response from the
-            # unified record stream (the claude-shaped scan below would
-            # return all-None on a rollout file).
+        if detect_transcript_format(path) in ("codex", "copilot"):
+            # Codex rollout / copilot session-events log: derive turn count and
+            # last response from the unified record stream (the claude-shaped
+            # scan below would return all-None on either file).
             from hooks.memory.transcript_reader import iter_transcript_records
 
             user_turns = 0
@@ -338,7 +338,7 @@ def on_session_start(payload: dict) -> None:
         from hooks.common import inject_context as _inject_sid
         from hooks.targets import current_target as _sid_target
 
-        _host = "Codex" if _sid_target() == "codex" else "Claude Code"
+        _host = {"codex": "Codex", "copilot": "Copilot CLI"}.get(_sid_target(), "Claude Code")
         _inject_sid(
             f"Your {_host} session_id is `{session_id}`. Pass it as the "
             "`session_id` argument to the hooks-utils tools that need caller "
@@ -1387,9 +1387,9 @@ def on_post_tool_use(payload: dict) -> None:
                                 filtered = preprocess(filtered, level)
                     except Exception:
                         pass
-                    from hooks.targets import is_codex
+                    from hooks.targets import buffers_single_envelope
 
-                    if is_codex():
+                    if buffers_single_envelope():
                         # One-JSON-object rule: joins the single end-of-process
                         # flush instead of printing its own object.
                         from hooks.targets import emitter
@@ -1901,23 +1901,27 @@ def main() -> None:
     flushed by the handlers (stderr for banners, log() files), so skipping
     atexit handlers is safe.
     """
+    # Bound before the try so the outer BlockAction handler can name the event
+    # even when the block fires before dispatch resolved one.
+    _blocked_event = "Unknown"
     try:
         # Read payload from stdin
         payload: dict[str, Any] = json.load(sys.stdin)
 
-        # Codex payloads get alias-filled into the internal shape; claude
-        # payloads pass through untouched (hooks/targets/normalizer.py).
+        # Codex and Copilot payloads get alias-filled into the internal shape;
+        # claude payloads pass through untouched (hooks/targets/normalizer.py).
         from hooks.targets.normalizer import normalize_payload
 
         payload = normalize_payload(payload)
 
         # Get event name from payload
         event_name = payload.get("hook_event_name", "Unknown")
+        _blocked_event = event_name
 
         # Route to handler
         handler = EVENT_HANDLERS.get(event_name)
 
-        from hooks.targets import emitter, is_codex
+        from hooks.targets import buffers_single_envelope, emitter
 
         try:
             if handler:
@@ -1925,14 +1929,14 @@ def main() -> None:
             else:
                 log(f"Unknown event: {event_name}", payload)
 
-            # Codex parses hook stdout as ONE JSON object — everything the
-            # handlers injected was buffered and is flushed here as a single
-            # envelope. No-op on the claude target (nothing buffers there).
+            # Codex and Copilot parse hook stdout as ONE JSON object —
+            # everything the handlers injected was buffered and is flushed here
+            # as a single envelope. No-op on claude (nothing buffers there).
             emitter.flush(event_name)
 
         except BlockAction as e:
-            # A BlockAction skips the flush above, so on codex any context a
-            # handler buffered before the block (e.g. an inline-secret NOTE
+            # A BlockAction skips the flush above, so on an envelope target any
+            # context a handler buffered before the block (an inline-secret NOTE
             # buffered ahead of branch_guard's raise) would otherwise be
             # silently lost — stdout carries nothing on the block path.
             # Fold it into the stderr message instead, which is freeform and
@@ -1940,7 +1944,7 @@ def main() -> None:
             # (every call site there prints immediately), so this is a no-op
             # on that target and the message is unchanged.
             reason = str(e)
-            if is_codex():
+            if buffers_single_envelope():
                 drained = emitter.drain()
                 if drained:
                     reason = f"{reason}\n\n{drained}"
@@ -1952,6 +1956,16 @@ def main() -> None:
             emitter.drain()
 
     except BlockAction as e:
+        # Some hosts treat exit 2 as advisory on events other than their
+        # tool-permission one. Where that is a live risk, state the denial in
+        # the stdout envelope as well — belt and braces, one JSON object.
+        try:
+            from hooks.targets.capabilities import requires_envelope_block
+
+            if requires_envelope_block(_blocked_event):
+                emit_permission_decision(_blocked_event, "deny", str(e))
+        except Exception:  # NOSONAR — a block must never be weakened by this
+            pass
         print(str(e), file=sys.stderr, flush=True)  # Claude Code reads stderr for hook messages
         sys.stdout.flush()
         sys.stderr.flush()

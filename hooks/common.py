@@ -235,16 +235,17 @@ def inject_context(content: str, also_log: bool = True, skip_compression: bool =
         except Exception:
             pass
 
-    # Print to STDOUT - this gets injected into Claude's context. Codex parses
-    # hook stdout as a single JSON object instead of concatenating raw lines,
-    # so under that target the content is buffered and flushed once by main().
+    # Print to STDOUT - this gets injected into Claude's context. Codex and
+    # Copilot parse hook stdout as a single JSON object instead of
+    # concatenating raw lines, so under those targets the content is buffered
+    # and flushed once by main().
     try:
-        from hooks.targets import is_codex
+        from hooks.targets import buffers_single_envelope
 
-        _codex = is_codex()
+        _envelope = buffers_single_envelope()
     except Exception:
-        _codex = False
-    if _codex:
+        _envelope = False
+    if _envelope:
         from hooks.targets import emitter
 
         emitter.buffer_context(f"=== CONTEXT INJECTION ===\n{content}")

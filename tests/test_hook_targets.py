@@ -1,16 +1,28 @@
 """Tests for the hook-runtime target layer (hooks/targets/).
 
-Covers target detection, the Codex payload normalizer, the per-(target,
-event) capability map, and the buffer-then-flush emitter contract (Codex
-parses hook stdout as ONE JSON object).
+Covers target detection, the Codex and Copilot payload normalizers, the
+per-(target, event) capability map, and the buffer-then-flush emitter contract
+(both parse hook stdout as ONE JSON object).
 """
 
 import json
 
 import pytest
 
-from hooks.targets import current_target, global_record, is_codex, split_global
-from hooks.targets.capabilities import allowed_permission_decisions, can_inject_context
+from hooks.targets import (
+    buffers_single_envelope,
+    current_target,
+    global_record,
+    is_codex,
+    is_copilot,
+    split_global,
+)
+from hooks.targets.capabilities import (
+    allowed_permission_decisions,
+    can_inject_context,
+    requires_envelope_block,
+    supports_arg_mutation,
+)
 from hooks.targets.emitter import buffer_context, drain, flush, has_buffered
 from hooks.targets.normalizer import normalize_payload
 
@@ -18,6 +30,11 @@ from hooks.targets.normalizer import normalize_payload
 @pytest.fixture
 def codex(monkeypatch):
     monkeypatch.setenv("AGENTIHOOKS_TARGET", "codex")
+
+
+@pytest.fixture
+def copilot(monkeypatch):
+    monkeypatch.setenv("AGENTIHOOKS_TARGET", "copilot")
 
 
 @pytest.fixture
@@ -33,6 +50,19 @@ class TestDetection:
     def test_env_marker_selects_codex(self, codex):
         assert current_target() == "codex"
         assert is_codex()
+        assert not is_copilot()
+
+    def test_env_marker_selects_copilot(self, copilot):
+        assert current_target() == "copilot"
+        assert is_copilot()
+        assert not is_codex()
+
+    def test_envelope_buffering_is_target_capability_not_codex_identity(self, claude, codex, copilot):
+        # Fixtures apply in order; the last one wins. Assert against explicit
+        # arguments so this does not depend on that ordering.
+        assert buffers_single_envelope("codex") is True
+        assert buffers_single_envelope("copilot") is True
+        assert buffers_single_envelope("claude") is False
 
 
 class TestNormalizer:
@@ -416,3 +446,116 @@ class TestSplitGlobal:
     def test_mixed_shape_claude_record_is_the_flat_fields(self, claude):
         rec = global_record({"targets": {"global": dict(self.MIXED)}})
         assert rec == {"path": "/home/x/.claude", "profile": "anton"}
+
+
+class TestCopilotNormalizer:
+    def test_camelcase_keys_filled_to_snake_case(self, copilot):
+        payload = normalize_payload(
+            {
+                "hookEventName": "preToolUse",
+                "sessionId": "s1",
+                "toolName": "shell",
+                "toolArgs": {"command": "ls"},
+            }
+        )
+        assert payload["hook_event_name"] == "PreToolUse"
+        assert payload["session_id"] == "s1"
+        assert payload["tool_name"] == "shell"
+        assert payload["tool_input"] == {"command": "ls"}
+
+    def test_event_names_map_to_dispatch_vocabulary(self, copilot):
+        from hooks.hook_manager import EVENT_HANDLERS
+
+        for raw, expected in (
+            ("sessionStart", "SessionStart"),
+            ("sessionEnd", "SessionEnd"),
+            ("userPromptSubmitted", "UserPromptSubmit"),
+            ("preToolUse", "PreToolUse"),
+            ("postToolUse", "PostToolUse"),
+            ("postToolUseFailure", "PostToolUse"),
+            ("agentStop", "Stop"),
+            ("subagentStop", "SubagentStop"),
+            ("preCompact", "PreCompact"),
+            ("permissionRequest", "PermissionRequest"),
+            ("notification", "Notification"),
+        ):
+            payload = normalize_payload({"hookEventName": raw})
+            assert payload["hook_event_name"] == expected
+            assert expected in EVENT_HANDLERS, f"{raw} maps to an undispatched event"
+
+    def test_every_registered_event_resolves_to_a_handler(self, copilot):
+        """An unmapped name reaches no handler and exits 0 — a silent bypass of
+        every guardrail for that event."""
+        from hooks.hook_manager import EVENT_HANDLERS
+        from scripts.targets.copilot_target import COPILOT_HOOK_EVENTS
+
+        for registered in COPILOT_HOOK_EVENTS:
+            payload = normalize_payload({"hookEventName": registered})
+            resolved = payload.get("hook_event_name")
+            assert resolved in EVENT_HANDLERS, f"{registered} resolves to {resolved!r}, which dispatches nothing"
+
+    def test_every_camelcase_value_has_a_pascalcase_identity(self, copilot):
+        from hooks.targets.normalizer import _COPILOT_EVENTS
+
+        for dispatch_name in set(_COPILOT_EVENTS.values()):
+            assert _COPILOT_EVENTS.get(dispatch_name) == dispatch_name
+
+    def test_present_but_empty_key_does_not_shadow_the_real_value(self, copilot):
+        """setdefault would keep the empty dict and hand guardrails blank args
+        while the tool call still executes."""
+        payload = normalize_payload(
+            {
+                "hookEventName": "preToolUse",
+                "toolName": "Bash",
+                "toolArgs": {"command": "rm -rf /"},
+                "tool_input": {},
+                "tool_name": "",
+            }
+        )
+        assert payload["tool_input"] == {"command": "rm -rf /"}
+        assert payload["tool_name"] == "Bash"
+
+    def test_pascalcase_alias_passes_through(self, copilot):
+        """Copilot accepts the claude-style names at registration and may echo them."""
+        payload = normalize_payload({"hook_event_name": "SessionStart", "session_id": "s"})
+        assert payload["hook_event_name"] == "SessionStart"
+
+    def test_original_event_name_preserved_for_diagnostics(self, copilot):
+        payload = normalize_payload({"hookEventName": "postToolUseFailure"})
+        assert payload["copilot_event_name"] == "postToolUseFailure"
+
+    def test_result_aliases_filled(self, copilot):
+        payload = normalize_payload({"hookEventName": "postToolUse", "toolResult": {"out": 1}})
+        assert payload["tool_response"] == {"out": 1}
+        assert payload["tool_output"] == {"out": 1}
+
+    def test_claude_payload_untouched_under_copilot_is_not_assumed(self, claude):
+        payload = {"hookEventName": "preToolUse", "toolName": "shell"}
+        assert normalize_payload(dict(payload)) == payload
+
+
+class TestCopilotCapabilities:
+    def test_all_three_permission_decisions(self):
+        assert allowed_permission_decisions("copilot") == frozenset({"allow", "deny", "ask"})
+
+    def test_context_channel_open_on_every_event(self):
+        for event in ("PreToolUse", "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"):
+            assert can_inject_context(event, target="copilot") is True
+
+    def test_arg_mutation_copilot_only(self):
+        assert supports_arg_mutation("copilot") is True
+        assert supports_arg_mutation("codex") is False
+        assert supports_arg_mutation("claude") is False
+
+    def test_envelope_block_required_only_for_copilot(self):
+        # Copilot's runtime treats exit 2 as a warning on some events, so a
+        # denial must also be stated in the stdout envelope — on the events
+        # that actually carry a decision field.
+        assert requires_envelope_block("PreToolUse", "copilot") is True
+        assert requires_envelope_block("PermissionRequest", "copilot") is True
+        assert requires_envelope_block("PreToolUse", "codex") is False
+        assert requires_envelope_block("PreToolUse", "claude") is False
+
+    def test_envelope_block_not_emitted_where_there_is_no_decision_field(self):
+        for event in ("SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "Notification"):
+            assert requires_envelope_block(event, "copilot") is False

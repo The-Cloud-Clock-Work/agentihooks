@@ -4,6 +4,98 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **GitHub Copilot CLI is a third install target.** `agentihooks init --target
+  copilot` writes `~/.copilot`: `settings.json` managed keys (command-backed
+  status line, `disableAllHooks` pinned false, trusted-folder seeding),
+  `hooks/agentihooks.json` wiring 12 lifecycle events to a wrapper that sets
+  `AGENTIHOOKS_TARGET=copilot`, `copilot-instructions.md` as the compiled
+  persona, `mcp-config.json` for MCP, agents translated to Copilot's custom-agent
+  registry, and commands translated to skills (Copilot has no prompt-file
+  mechanism). `agentihooks doctor --target copilot` reports install health.
+
+  Copilot's hook surface is wider than codex's: `PreToolUse` carries
+  allow/deny/ask plus `additionalContext` and argument mutation, native
+  `PostToolUseFailure` and `Notification` events remove the need for a
+  `notify` shim, and its MCP client speaks SSE. Its transcript
+  (`session-state/<id>/events.jsonl`) is a third format the unified reader now
+  parses, and unlike codex it states tool success explicitly, so transcript
+  error scanning works there.
+
+  The bundle needs no changes — it ships Claude-shaped content once and each
+  target's adapter re-projects it. See
+  [COPILOT-COMPAT](docs/reference/COPILOT-COMPAT.md).
+
+- **`docs/reference/CODEX-COMPAT.md`** — the codex target's design note,
+  reconstructed from the implementation. Six source comments referenced a path
+  that did not exist on disk; all now resolve.
+
+### Changed
+
+- **Single-envelope stdout is a target capability, not a codex identity check.**
+  The nine `is_codex()` branch sites that meant "this host parses stdout as one
+  JSON object" now call `buffers_single_envelope()`, which is true for codex and
+  copilot. The two sites that genuinely mean *codex the format* still say so.
+
+- **Persona assembly is shared.** `scripts/targets/_common.py` now holds
+  `build_persona()` / `write_persona()` and the identity preamble, used by both
+  the codex and copilot adapters, so the doctrine and the operator-tail
+  preservation rules cannot drift between targets.
+
+### Fixed
+
+- **Copilot event names spelled PascalCase reached no handler at all.** The
+  adapter registers hooks under the PascalCase aliases, but the normalizer's
+  map held only camelCase keys — so a payload echoing the registered spelling
+  fell through to `EVENT_HANDLERS.get("Unknown")`, logged, and exited 0. That is
+  a silent bypass of every guardrail (secrets, branch guard, prod lockdown,
+  kubectl guard) for that event. Both spellings now resolve, `PostToolUseFailure`
+  included, and a test asserts every registered event maps to a real handler.
+
+- **A present-but-empty payload key shadowed the real value.** The camelCase →
+  snake_case fill used `setdefault`, so a copilot payload carrying both
+  `toolArgs` and an empty `tool_input` kept the empty one — the tool call
+  executed normally while every guardrail read blank arguments.
+
+- **`requires_envelope_block()` was declared and never called.** Copilot's
+  runtime calls exit 2 a warning on some events; the mitigation for that was
+  dead code. The block path now also emits a
+  `permissionDecision: "deny"` envelope for copilot on the events that carry a
+  decision field. Codex and claude block paths are unchanged.
+
+- **A translated command could permanently shadow a real skill of the same
+  name.** `~/.agents/skills` is shared: copilot writes translated commands there
+  as real directories, and the skills symlinker correctly refuses to replace a
+  non-symlink — so a name moving from command to skill was stranded, with no
+  automatic recovery. Both adapters now clear a translated command whose name a
+  real skill claims, before symlinking.
+
+- **The hook timeout field was written as `timeoutSec`**, which appears nowhere
+  in the shipped Copilot package; it is now `timeoutSeconds`, the spelling
+  present in both `app.js` and the native engine. The loader tolerates
+  unrecognized keys silently, so the wrong spelling failed open rather than
+  erroring.
+
+- **MCP `tools` entries were written unscanned** on the copilot target — a new
+  write surface with no codex equivalent. Each entry is now secret-scanned like
+  env and header values.
+
+- **A value containing a `${VAR}` reference skipped secret scanning entirely.**
+  Both the codex and copilot MCP writers treated "contains `${`" as "is a bare
+  reference, nothing to scan", so `${SAFE_VAR}-and-<literal token>` reached
+  `config.toml` / `mcp-config.json` unredacted. References are now stripped and
+  the remainder is scanned; a value that is nothing but references still passes
+  through untouched. Found by an adversarial refuter, not by the tests.
+
+### Notes
+
+- Codex support was never changelogged when it shipped; the only prior mention
+  is a bugfix line under 2.1.1. It arrived as the `TargetAdapter` seam that this
+  release's copilot target reuses.
+
 ## [2.1.1] - 2026-08-15
 
 ### Fixed

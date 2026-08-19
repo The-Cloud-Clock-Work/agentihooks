@@ -44,17 +44,40 @@ AgentiHooks is organized around four pillars. When working on this codebase, und
 
 | Pillar | Core files | What it does |
 |--------|-----------|-------------|
-| **Identity** | `scripts/install.py`, `profiles/`, `settings.base.json` | Profile system, chaining, two-axis model, bundle merge |
+| **Identity** | `scripts/install.py`, `profiles/`, `settings.base.json`, `scripts/targets/` | Profile system, chaining, two-axis model, bundle merge, install targets |
 | **Guardrails** | `hooks/secrets.py`, `hooks/context/retry_breaker.py`, `hooks/context/branch_guard.py`, `hooks/context/prod_lockdown.py`, `hooks/context/ci_manifesto.py`, `hooks/context/dep_banner.py`, `hooks/context/_strip.py`, `hooks/context/version_guard.py`, `hooks/context/claude_md_sanity.py` | Two-tier secrets, retry breaker, branch/PR gating, prod lockdown, CI manifesto signal parsing, dep install banner, shared command stripping, version guard, CLAUDE.md bloat guard |
 | **Context Intelligence** | `hooks/context/preprocessor.py`, `hooks/context/brain_adapter.py`, `hooks/context/rules_refresh.py`, `hooks/tool_memory.py` | Token compression, brain injection, one-shot rule refresh to running sessions, tool memory |
 | **Fleet Command** | `hooks/context/broadcast.py`, `hooks/mcp/channels.py`, broadcast sections in `hook_manager.py`, CLI in `install.py` | Real-time messaging with channel-based targeting, brain adapter |
 
 ## Architecture
 
+### Install targets
+
+Three agent CLIs — `claude` (`~/.claude`), `codex` (`~/.codex`), `copilot`
+(`~/.copilot`). `SUPPORTED_TARGETS` in `scripts/targets/__init__.py`; each
+implements the `TargetAdapter` protocol in `scripts/targets/<name>_target.py`.
+`scripts/install.py` is target-agnostic — profile resolution, settings merging
+and MCP dict assembly stay there; anything touching a target-specific path or
+schema goes through the adapter.
+
+At hook runtime `hooks/targets/` decides how to talk back to whichever CLI
+invoked the hook (`AGENTIHOOKS_TARGET`, set by the codex and copilot wrappers;
+claude is the default). Branch on a **capability**, not a target name:
+`buffers_single_envelope()`, `can_inject_context()`,
+`allowed_permission_decisions()`, `supports_arg_mutation()`. An `is_codex()` /
+`is_copilot()` check is only correct when the thing really is that CLI's format.
+
+Adding a fourth target means one adapter plus, if its hook I/O differs from
+Claude's, entries in `hooks/targets/`. `profiles/`, `hooks/mcp/` and the bundle
+repo need no changes — if they do, the seam is broken.
+
+Per-target reference: `docs/reference/CODEX-COMPAT.md`,
+`docs/reference/COPILOT-COMPAT.md`.
+
 ### Entry points
 
 - **`agentihooks` CLI** → `scripts/install.py:main()` — installs hooks/settings/MCPs, manages profiles/bundles, broadcast CLI
-- **Lifecycle hooks** → all 10 hook events point to `python -m hooks` → `hooks/hook_manager.py:main()`
+- **Lifecycle hooks** → all 10 hook events point to `python -m hooks` → `hooks/hook_manager.py:main()` (codex wires 10, copilot 12 — the extras fold onto the same handlers)
 - **StatusLine** → `hooks/statusline.py` — 2-3 line status bar (not a hook event)
 - **MCP tools** → `hooks/mcp/` — separate process registered as `hooks-utils`
 
@@ -97,4 +120,12 @@ File-based pub/sub at `~/.agentihooks/broadcast.json`. Sessions auto-register/de
 
 ### Testing patterns
 
-Tests mock Redis via `patch("hooks._redis.get_redis", return_value=None)`. Pre-existing failures in `TestBranchGuard` and `TestActiveProfileDetection` are known. Use `uv run` for all test/lint commands.
+Tests mock Redis via `patch("hooks._redis.get_redis", return_value=None)`. Use `uv run` for all test/lint commands.
+
+`tests/conftest.py::_isolate_real_user_paths` is autouse and refuses to run if
+any target's config home still resolves under the real `$HOME` — add a new
+target's resolver there or its tests will write into the operator's live
+install. Live-CLI smoke tests (`scripts/codex_smoke.sh`,
+`scripts/copilot_smoke.sh`) are not part of the pytest suite; they need the
+respective CLI installed and authenticated, and assert only hook-attributable,
+session-scoped evidence.

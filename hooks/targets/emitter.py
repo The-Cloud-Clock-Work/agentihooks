@@ -1,12 +1,12 @@
 """Single choke point for context output back to the host CLI.
 
 Claude Code concatenates every raw stdout line into injected context, so
-handlers can print as many times as they like. Codex parses hook stdout as
-ONE JSON object — multiple prints would corrupt it. Under codex, context is
-buffered here across the whole hook process and flushed exactly once, as a
-single ``hookSpecificOutput.additionalContext`` envelope, by ``main()``
-right before exit. Events with no context channel on the target (codex
-PreToolUse) drop the buffer with a log line instead.
+handlers can print as many times as they like. Codex and Copilot parse hook
+stdout as ONE JSON object — multiple prints would corrupt it. Under those
+targets, context is buffered here across the whole hook process and flushed
+exactly once, as a single ``hookSpecificOutput.additionalContext`` envelope,
+by ``main()`` right before exit. Events with no context channel on the target
+(codex PreToolUse) drop the buffer with a log line instead.
 
 Invariant: the module-global buffer never survives past the request it was
 built for. ``flush()`` clears it on the success path; ``drain()`` clears it
@@ -18,14 +18,14 @@ from __future__ import annotations
 
 import json
 
-from hooks.targets import is_codex
+from hooks.targets import buffers_single_envelope
 from hooks.targets.capabilities import can_inject_context
 
 _buffer: list[str] = []
 
 
 def buffer_context(content: str) -> None:
-    """Queue *content* for the single end-of-process flush (codex path)."""
+    """Queue *content* for the single end-of-process flush (envelope targets)."""
     _buffer.append(content)
 
 
@@ -50,7 +50,7 @@ def drain() -> str:
 
 
 def flush(event_name: str) -> None:
-    """Emit the buffered context as one JSON envelope. Codex only; no-op when empty.
+    """Emit the buffered context as one JSON envelope. No-op when empty.
 
     Clears the buffer unconditionally once there is content to flush — see
     the module invariant above.
@@ -59,16 +59,17 @@ def flush(event_name: str) -> None:
         return
     content = "\n".join(_buffer)
     _buffer.clear()
-    if not is_codex():
+    if not buffers_single_envelope():
         # Claude path never buffers; guard against misuse.
         print(content)
         return
     if not can_inject_context(event_name):
         from hooks.common import log
+        from hooks.targets import current_target
 
         log(
-            "emitter: context dropped — no context channel for event on codex",
-            {"event": event_name, "chars": len(content)},
+            "emitter: context dropped — no context channel for event on target",
+            {"event": event_name, "target": current_target(), "chars": len(content)},
         )
         return
     print(

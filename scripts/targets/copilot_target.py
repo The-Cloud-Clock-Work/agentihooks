@@ -1,0 +1,687 @@
+"""GitHub Copilot CLI target adapter.
+
+Writes the Copilot-shaped install surface (docs/reference/COPILOT-COMPAT.md §5):
+
+- ``~/.copilot/settings.json`` — managed keys only; ``config.json`` is
+  machine-managed by the CLI ("User settings belong in settings.json" is its
+  own header comment) and is never written here.
+- ``~/.copilot/hooks/agentihooks.json`` + wrapper script — lifecycle events
+  routed to ``python -m hooks`` with ``AGENTIHOOKS_TARGET=copilot``.
+- ``~/.copilot/copilot-instructions.md`` — persona: bundle CLAUDE.md ⊕
+  profile-chain CLAUDE.mds ⊕ compiled rules ⊕ CI manifesto.
+- ``~/.agents/skills/`` — skills symlinks, plus commands translated to skills
+  (Copilot has no prompt-file/slash-command mechanism).
+- ``~/.copilot/agents/`` — agents translated to Copilot custom agents.
+- ``~/.copilot/mcp-config.json`` — MCP registration (stdio/http/sse).
+
+Copilot facts this file encodes were verified against @github/copilot
+1.0.79-6: the ``HookType`` enum in ``schemas/api.schema.json``, the settings
+catalogue embedded in ``prebuilds/*/runtime.node``, and the config help topic
+in ``app.js`` (docs/reference/COPILOT-COMPAT.md §10 evidence table).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shlex
+import shutil
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+from scripts.targets._common import (
+    TRANSLATED_COMMANDS_MANIFEST,
+    _atomic_write,
+    _command_is_wrapper,
+    _install_module,
+    agents_skills_home,
+    build_persona,
+    load_manifest,
+    reap_translated_commands,
+    scannable,
+    skill_names_in,
+    write_persona,
+)
+
+_MANAGED_HEADER = "<!-- managed-by: agentihooks — regenerate with: agentihooks init --target copilot -->"
+_MANAGED_FOOTER = "<!-- agentihooks:managed-end -->"
+
+# The subset of Copilot's 17-event HookType enum that hook_manager dispatches,
+# spelled exactly as the enum in the shipped schemas/api.schema.json.
+#
+# Copilot's loader accepts the Claude-style PascalCase aliases too — verified
+# against 1.0.80, where a config carrying all twelve PascalCase names drew no
+# complaint while a bogus name in the same file was named in
+# "Ignoring unknown hook event(s)". The enum spellings are used anyway: they are
+# the ones with direct schema evidence, and acceptance by the loader is not by
+# itself proof that an alias reaches the same handler.
+#
+# Two of these are NOT case variants — `agentStop` and `userPromptSubmitted` are
+# different tokens from Claude's `Stop` and `UserPromptSubmit`, so lowercasing a
+# Claude event name would silently produce an event that does not exist.
+# hooks.targets.normalizer maps both spellings back to the dispatch vocabulary.
+COPILOT_HOOK_EVENTS = (
+    "sessionStart",
+    "sessionEnd",
+    "userPromptSubmitted",
+    "preToolUse",
+    "postToolUse",
+    "postToolUseFailure",
+    "agentStop",
+    "subagentStart",
+    "subagentStop",
+    "preCompact",
+    "permissionRequest",
+    "notification",
+)
+
+# A hook that outlives this budget is killed. Copilot fails OPEN on timeout —
+# on every event, PreToolUse included — so a slow hook silently stops guarding
+# rather than blocking the session. Generous enough that only a genuinely hung
+# process hits it.
+#
+# Field name is `timeoutSeconds`: `timeoutSec` (what the public hooks reference
+# documents) appears ZERO times in the shipped 1.0.80 package, while
+# `timeoutSeconds` appears in both app.js and the native engine. The loader
+# tolerates unrecognized keys silently, so a wrong spelling would not error —
+# it would just leave the default in force.
+_HOOK_TIMEOUT_SECONDS = 30
+
+# Claude tool names → Copilot runtime tool names, for custom-agent frontmatter.
+_TOOL_NAMES = {
+    "Read": "view",
+    "Write": "create",
+    "Edit": "edit",
+    "Bash": "shell",
+    "Grep": "grep",
+    "Glob": "glob",
+    "WebFetch": "web_fetch",
+    "WebSearch": "web_search",
+    "Agent": "task",
+    "Task": "task",
+    "TodoWrite": "update_todo",
+    "AskUserQuestion": "ask_user",
+}
+
+# Copilot caps a custom agent body at 30,000 characters.
+_AGENT_BODY_MAX = 30000
+
+
+def copilot_home() -> Path:
+    """Resolve COPILOT_HOME (first entry when the env var is a comma list)."""
+    raw = os.environ.get("COPILOT_HOME", "").split(",")[0].strip()
+    return Path(raw).expanduser() if raw else Path.home() / ".copilot"
+
+
+def _split_frontmatter(text: str) -> tuple[dict, str]:
+    """``(frontmatter, body)`` from a markdown file; ``({}, text)`` when absent."""
+    import yaml
+
+    if not text.startswith("---"):
+        return {}, text
+    parts = text.split("---", 2)
+    if len(parts) != 3:
+        return {}, text
+    try:
+        front = yaml.safe_load(parts[1]) or {}
+    except yaml.YAMLError:
+        front = {}
+    return (front if isinstance(front, dict) else {}), parts[2].lstrip("\n")
+
+
+class CopilotAdapter:
+    name = "copilot"
+
+    def __init__(self) -> None:
+        # Rules collected by install_features("rules", ...) and compiled into
+        # copilot-instructions.md by install_persona — the features loop runs first.
+        self._pending_rules: list[tuple[str, str, str]] = []  # (layer_label, name, text)
+        # Skill names seen in this install, recorded by the skills step so the
+        # later commands step knows which names a real skill already owns. The
+        # driver always runs skills before commands.
+        self._skill_names: set[str] = set()
+
+    def home(self) -> Path:
+        return copilot_home()
+
+    # ------------------------------------------------------------------
+    # settings: settings.json managed keys + hooks/agentihooks.json + wrapper
+    # ------------------------------------------------------------------
+
+    def write_settings(self, rendered: dict) -> Path:
+        _i = _install_module()
+        home = self.home()
+        home.mkdir(parents=True, exist_ok=True)
+
+        settings_path = home / "settings.json"
+        doc = self._load_json(settings_path)
+
+        python_bin = str(_i._detect_venv() or sys.executable)
+
+        # Unlike codex, Copilot drives a status line from a command whose stdin
+        # carries the session state as JSON — the same contract statusline.py
+        # already implements for claude.
+        wanted: dict = {
+            "statusLine": {
+                "type": "command",
+                "command": f"{shlex.quote(python_bin)} -m hooks.statusline",
+            },
+            # Hooks are the entire guardrail layer; an inherited true here
+            # would disable every one of them silently.
+            "disableAllHooks": False,
+        }
+
+        # Managed-key discipline: record what we wrote so a later change can
+        # update it, while a value the operator hand-edited since our last
+        # write is left alone.
+        managed = doc.get("agentihooks")
+        managed = dict(managed) if isinstance(managed, dict) else {}
+        recorded = managed.get("managed")
+        recorded = dict(recorded) if isinstance(recorded, dict) else {}
+
+        for key, value in wanted.items():
+            current = doc.get(key)
+            if current is None or current == recorded.get(key):
+                doc[key] = value
+                recorded[key] = value
+            else:
+                _i._cprint(
+                    f"  [!!] settings.json '{key}' hand-set to {current!r} (managed value would be "
+                    f"{value!r}) — leaving operator value in place"
+                )
+        managed["managed"] = recorded
+        doc["agentihooks"] = managed
+
+        default_mode = (rendered.get("permissions") or {}).get("defaultMode", "")
+        if default_mode == "bypassPermissions":
+            # Copilot has no global bypass switch in settings — trust is
+            # per-directory. The repo root the install ran from is seeded so
+            # the operator is not re-prompted for it; anything else stays a
+            # deliberate /add-dir.
+            #
+            # Deliberately outside the managed-key rule above: trustedFolders
+            # is a set the operator also edits (via /add-dir), so treating a
+            # non-empty list as a hand-edit would mean never seeding the root
+            # on any machine that had ever trusted a directory. Union, never
+            # replace — nothing the operator trusted is dropped.
+            trusted = doc.get("trustedFolders")
+            trusted = list(trusted) if isinstance(trusted, list) else []
+            root = str(_i.AGENTIHOOKS_ROOT)
+            if root not in trusted:
+                trusted.append(root)
+            doc["trustedFolders"] = trusted
+
+        _atomic_write(settings_path, json.dumps(doc, indent=2) + "\n")
+        _i._cprint(f"[OK] Wrote managed keys into {settings_path}")
+
+        self._write_hooks_json(home)
+        return settings_path
+
+    def _write_hooks_json(self, home: Path) -> None:
+        _i = _install_module()
+        wrapper = home / "agentihooks-hook.sh"
+        python_bin = str(_i._detect_venv() or sys.executable)
+        wrapper.parent.mkdir(parents=True, exist_ok=True)
+        wrapper.write_text(
+            "#!/usr/bin/env bash\n"
+            "# managed-by: agentihooks — regenerate with: agentihooks init --target copilot\n"
+            "set -euo pipefail\n"
+            f"cd {shlex.quote(str(_i.AGENTIHOOKS_ROOT))}\n"
+            f"AGENTIHOOKS_TARGET=copilot exec {shlex.quote(python_bin)} -m hooks\n"
+        )
+        wrapper.chmod(0o755)
+
+        # The hooks DIRECTORY, not an inline `hooks` key in settings.json.
+        # Copilot merges both sources, so writing to both fires every hook twice.
+        hooks_dir = home / "hooks"
+        hooks_path = hooks_dir / "agentihooks.json"
+        entry = {
+            "type": "command",
+            "command": str(wrapper),
+            "timeoutSeconds": _HOOK_TIMEOUT_SECONDS,
+        }
+        desired = {e: [entry] for e in COPILOT_HOOK_EVENTS}
+
+        existing: dict = {}
+        if hooks_path.exists():
+            try:
+                existing = json.loads(hooks_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                backup = hooks_path.with_suffix(f".json.bak.{datetime.now(timezone.utc):%Y%m%d%H%M%S}")
+                shutil.copy2(hooks_path, backup)
+                _i._cprint(f"  [!!] Unparseable agentihooks.json backed up → {backup}")
+                existing = {}
+
+        # Preserve foreign entries the operator added to OUR file; other files
+        # under hooks/ are never read or rewritten.
+        merged = existing.get("hooks", {}) if isinstance(existing.get("hooks"), dict) else {}
+        for event, hooks in desired.items():
+            prior = merged.get(event, [])
+            prior = prior if isinstance(prior, list) else []
+            foreign = [h for h in prior if not _command_is_wrapper(h.get("command", ""), wrapper)]
+            merged[event] = foreign + hooks
+        for event in [e for e in merged if e not in desired]:
+            prior = merged[event] if isinstance(merged[event], list) else []
+            foreign = [h for h in prior if not _command_is_wrapper(h.get("command", ""), wrapper)]
+            if foreign:
+                merged[event] = foreign
+            else:
+                del merged[event]
+
+        _atomic_write(hooks_path, json.dumps({"version": 1, "hooks": merged}, indent=2) + "\n")
+        _i._cprint(f"[OK] Wrote {hooks_path} ({len(COPILOT_HOOK_EVENTS)} events)")
+        _i._cprint(
+            "  [!!] Copilot keys hook trust by content hash (`disabledHooks`): editing the "
+            "wrapper invalidates the hash and the hook needs re-approving."
+        )
+
+    # ------------------------------------------------------------------
+    # features: skills / agents / commands / rules
+    # ------------------------------------------------------------------
+
+    def install_features(self, subdir: str, layers: list[tuple[str, Path]], filter_fn) -> None:
+        _i = _install_module()
+        if subdir == "skills":
+            dst = agents_skills_home()
+            self._skill_names = skill_names_in(layers, filter_fn)
+            # A name that used to be a command and is now a real skill still has
+            # our translated directory sitting on it. The symlinker refuses to
+            # replace a non-symlink, so without this the real skill would never
+            # install — and nothing else would ever reap the directory while the
+            # command file still exists. Clear our own artifact first; the
+            # manifest is what proves the directory is ours to remove.
+            reap_translated_commands(self._skill_names, reason="a real skill now owns the name")
+            for label, src in layers:
+                _i._symlink_dir_contents(src, dst, label=f"copilot {label}", filter_fn=filter_fn)
+        elif subdir == "commands":
+            self._translate_commands_to_skills(layers, filter_fn)
+        elif subdir == "agents":
+            self._translate_agents(layers, filter_fn)
+        elif subdir == "rules":
+            # Copilot auto-loads instructions files, not a rules dir — compile
+            # them into copilot-instructions.md.
+            collected: dict[str, tuple[str, str, str]] = {}
+            for label, src in layers:
+                if not src.is_dir():
+                    continue
+                for f in sorted(src.iterdir()):
+                    if filter_fn(f):
+                        try:
+                            collected[f.name] = (label, f.name, f.read_text())
+                        except OSError:
+                            pass
+            self._pending_rules = list(collected.values())
+            _i._cprint(f"  [OK] {len(self._pending_rules)} rule(s) queued for copilot-instructions.md compilation")
+
+    def _translate_commands_to_skills(self, layers: list[tuple[str, Path]], filter_fn) -> None:
+        """commands/*.md → ~/.agents/skills/<name>/SKILL.md.
+
+        Copilot has no prompt-file mechanism (github/copilot-cli#1113), so a
+        command reaches the model as a discoverable skill instead of a slash
+        command. Tracked in a manifest keyed separately from the symlinked
+        skills that share this directory, so a codex re-init cannot reap what
+        this wrote and vice versa.
+        """
+        import yaml
+
+        _i = _install_module()
+        dst_dir = agents_skills_home()
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = dst_dir / TRANSLATED_COMMANDS_MANIFEST
+        previous = load_manifest(manifest_path)
+
+        sources: dict[str, Path] = {}
+        for _label, src in layers:
+            if not src.is_dir():
+                continue
+            for f in sorted(src.iterdir()):
+                if filter_fn(f):
+                    sources[f.name] = f
+
+        written: list[str] = []
+        for name, src in sources.items():
+            stem = Path(name).stem
+            skill_dir = dst_dir / stem
+            # A real skill of the same name outranks a translated command,
+            # whether it is already symlinked or was just installed in this
+            # run's skills step. Recreating our directory here would shadow it
+            # on the next install, when the symlinker refuses to replace a
+            # non-symlink.
+            if stem in self._skill_names or skill_dir.is_symlink():
+                _i._cprint(f"  [!!] skill '{stem}' owns this name — command translation skipped")
+                continue
+            if skill_dir.exists() and stem not in previous:
+                _i._cprint(f"  [!!] {skill_dir} exists and is not agentihooks-managed — skipping (operator file wins)")
+                continue
+            try:
+                front, body = _split_frontmatter(src.read_text())
+            except OSError:
+                continue
+            description = front.get("description") or f"Command '{stem}' from the agentihooks bundle."
+            out_front = {"name": stem, "description": description}
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            _atomic_write(
+                skill_dir / "SKILL.md",
+                "---\n" + yaml.safe_dump(out_front, sort_keys=False).strip() + "\n---\n\n" + body,
+            )
+            written.append(stem)
+
+        reap_translated_commands(set(previous) - set(written), reason="no longer in any source layer")
+        _atomic_write(manifest_path, json.dumps(sorted(written)))
+        _i._cprint(f"  [OK] {len(written)} command(s) translated → skills in {dst_dir}")
+
+    def _translate_agents(self, layers: list[tuple[str, Path]], filter_fn) -> None:
+        """agents/*.md → ~/.copilot/agents/*.md with Copilot frontmatter.
+
+        Real files, not symlinks — the frontmatter schema differs (tool names
+        are Copilot runtime names, ``description`` is required).
+        """
+        import yaml
+
+        _i = _install_module()
+        dst_dir = self.home() / "agents"
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = dst_dir / ".agentihooks-manifest.json"
+        previous = load_manifest(manifest_path)
+
+        sources: dict[str, Path] = {}
+        for _label, src in layers:
+            if not src.is_dir():
+                continue
+            for f in sorted(src.iterdir()):
+                if filter_fn(f):
+                    sources[f.name] = f
+
+        written: list[str] = []
+        for name, src in sources.items():
+            dst_file = dst_dir / name
+            if dst_file.exists() and name not in previous:
+                _i._cprint(f"  [!!] {dst_file} exists and is not agentihooks-managed — skipping (operator file wins)")
+                continue
+            try:
+                front, body = _split_frontmatter(src.read_text())
+            except OSError:
+                continue
+
+            stem = Path(name).stem
+            out_front: dict = {
+                "name": front.get("name") or stem,
+                # Required by Copilot; a missing one makes the agent unloadable.
+                "description": front.get("description") or f"Agent '{stem}' from the agentihooks bundle.",
+            }
+            tools = front.get("tools")
+            if isinstance(tools, str):
+                tools = [t.strip() for t in tools.split(",") if t.strip()]
+            if isinstance(tools, list):
+                mapped = [_TOOL_NAMES.get(t, t) for t in tools if isinstance(t, str)]
+                if mapped:
+                    out_front["tools"] = sorted(set(mapped))
+            if front.get("model"):
+                out_front["model"] = front["model"]
+
+            if len(body) > _AGENT_BODY_MAX:
+                marker = "\n\n<!-- truncated by agentihooks: exceeds Copilot's 30000-char agent body limit -->\n"
+                cut = body.rfind("\n\n", 0, _AGENT_BODY_MAX - len(marker))
+                body = body[: cut if cut > 0 else _AGENT_BODY_MAX - len(marker)] + marker
+                _i._cprint(f"  [!!] agent '{stem}' body exceeded 30000 chars — truncated at a paragraph boundary")
+
+            _atomic_write(
+                dst_file,
+                "---\n" + yaml.safe_dump(out_front, sort_keys=False).strip() + "\n---\n\n" + body,
+            )
+            written.append(name)
+
+        for stale in set(previous) - set(written):
+            (dst_dir / stale).unlink(missing_ok=True)
+        _atomic_write(manifest_path, json.dumps(sorted(written)))
+        _i._cprint(f"  [OK] {len(written)} agent(s) translated → {dst_dir}")
+
+    # ------------------------------------------------------------------
+    # persona: copilot-instructions.md
+    # ------------------------------------------------------------------
+
+    def install_persona(
+        self,
+        profile_dirs: list[tuple[str, Path]],
+        profile_chain: list[str],
+        bundle_dir: Path | None,
+    ) -> None:
+        _i = _install_module()
+        managed_text = build_persona(
+            profile_dirs,
+            profile_chain,
+            bundle_dir,
+            self._pending_rules,
+            _MANAGED_HEADER,
+            _MANAGED_FOOTER,
+        )
+        dst = self.home() / "copilot-instructions.md"
+        text = write_persona(dst, managed_text, _MANAGED_HEADER, _MANAGED_FOOTER)
+        _i._cprint(
+            f"[OK] Wrote {dst} ({len(text.encode())} bytes; {len(profile_chain)} profile(s), "
+            f"{len(self._pending_rules)} rule(s))"
+        )
+
+    # ------------------------------------------------------------------
+    # MCP registration
+    # ------------------------------------------------------------------
+
+    def register_hooks_utils(self, profile_name: str) -> None:
+        _i = _install_module()
+        python_bin = str(_i._detect_venv() or sys.executable)
+        # Same transport resolver as the claude path — it reads
+        # AGENTIHOOKS_MCP_TRANSPORT and ~/.agentihooks/.env, which a bare
+        # os.environ read does not, so the targets cannot disagree about
+        # whether the daemon is in use.
+        transport = _i._resolve_installer_mcp_transport()
+        if transport == "stdio":
+            entry: dict = {"command": python_bin, "args": ["-m", "hooks.mcp"]}
+        else:
+            # Reuse the claude-side builder rather than re-deriving the URL: it
+            # validates MCP_PORT and honours MCP_SCHEME.
+            entry = {
+                "type": "http",
+                "url": _i._build_mcp_config("")["mcpServers"]["hooks-utils"]["url"],
+            }
+        self.register_mcp({"hooks-utils": entry})
+
+    def register_mcp(self, servers: dict) -> None:
+        """Merge a layer of MCP servers into ~/.copilot/mcp-config.json.
+
+        Claude ``.mcp.json`` entries translate almost 1:1. Unlike codex,
+        Copilot has an SSE client, so no transport is dropped. It has no
+        ``bearer_token_env_var`` indirection either — header values are sent as
+        written, so a ``${VAR}`` placeholder would go out literally and is
+        refused rather than leaked as a broken credential.
+        """
+        _i = _install_module()
+        config_path = self.home() / "mcp-config.json"
+        doc = self._load_json(config_path)
+        table = doc.get("mcpServers")
+        table = dict(table) if isinstance(table, dict) else {}
+
+        from hooks.secrets import scan as _scan_secrets
+
+        added: list[str] = []
+        for name, spec in servers.items():
+            spec = dict(spec)
+            stype = spec.get("type") or ("local" if spec.get("command") else "http")
+            if stype == "stdio":
+                stype = "local"
+
+            entry: dict = {"type": stype}
+            if spec.get("command"):
+                entry["command"] = spec["command"]
+                if spec.get("args"):
+                    entry["args"] = list(spec["args"])
+                if spec.get("env"):
+                    clean_env: dict = {}
+                    for ek, ev in dict(spec["env"]).items():
+                        ev_s = scannable(str(ev))
+                        if not ev_s:
+                            # Nothing but ${VAR} references — no literal to scan.
+                            clean_env[ek] = ev
+                            continue
+                        hits = _scan_secrets(ev_s, mode="strict")
+                        if hits:
+                            _i._cprint(
+                                f"  [!!] MCP '{name}' env var '{ek}' looks like a credential "
+                                f"({', '.join(hits)}) — dropped from mcp-config.json. Export it in "
+                                "the shell environment instead of writing it to disk."
+                            )
+                            continue
+                        clean_env[ek] = ev
+                    if clean_env:
+                        entry["env"] = clean_env
+            elif spec.get("url"):
+                entry["url"] = spec["url"]
+                clean_headers: dict = {}
+                for hk, hv in dict(spec.get("headers") or {}).items():
+                    hv_s = str(hv)
+                    if "${" in hv_s:
+                        _i._cprint(
+                            f"  [!!] MCP '{name}' header '{hk}' uses a ${{VAR}} placeholder — "
+                            "Copilot sends header values literally and does not expand these; "
+                            "header dropped. Use a literal value or an env-backed proxy."
+                        )
+                        continue
+                    hits = _scan_secrets(hv_s, mode="strict")
+                    if hits:
+                        _i._cprint(
+                            f"  [!!] MCP '{name}' header '{hk}' looks like a credential "
+                            f"({', '.join(hits)}) — dropped from mcp-config.json."
+                        )
+                        continue
+                    clean_headers[hk] = hv
+                if clean_headers:
+                    entry["headers"] = clean_headers
+            else:
+                continue
+            if spec.get("tools"):
+                clean_tools = []
+                for tool in spec["tools"]:
+                    hits = _scan_secrets(scannable(str(tool)), mode="strict")
+                    if hits:
+                        _i._cprint(
+                            f"  [!!] MCP '{name}' tools entry looks like a credential "
+                            f"({', '.join(hits)}) — dropped from mcp-config.json."
+                        )
+                        continue
+                    clean_tools.append(tool)
+                if clean_tools:
+                    entry["tools"] = clean_tools
+            table[name] = entry
+            added.append(name)
+
+        doc["mcpServers"] = table
+        _atomic_write(config_path, json.dumps(doc, indent=2) + "\n")
+        if added:
+            _i._cprint(f"  [OK] Copilot MCP servers: {', '.join(added)}")
+
+    def post_install_reconcile(self, profile_chain: list[str], persisted_profile: str) -> None:
+        _i = _install_module()
+        _i._cprint("  [--] Copilot install complete. Verify with: agentihooks doctor --target copilot")
+
+    # ------------------------------------------------------------------
+    # doctor
+    # ------------------------------------------------------------------
+
+    def doctor(self) -> int:
+        """Print copilot-install health; return count of failed checks."""
+        home = self.home()
+        checks: list[tuple[bool, str]] = []
+
+        settings_path = home / "settings.json"
+        doc = None
+        if settings_path.exists():
+            try:
+                doc = json.loads(settings_path.read_text())
+                checks.append((True, f"settings.json parses ({settings_path})"))
+            except json.JSONDecodeError as exc:
+                checks.append((False, f"settings.json unparseable: {exc}"))
+        else:
+            checks.append((False, "settings.json missing — run: agentihooks init --target copilot"))
+
+        if isinstance(doc, dict):
+            checks.append((doc.get("disableAllHooks") is not True, "disableAllHooks is not true"))
+            status = doc.get("statusLine")
+            checks.append(
+                (isinstance(status, dict) and status.get("type") == "command", "statusLine wired to a command")
+            )
+
+        mcp_path = home / "mcp-config.json"
+        if mcp_path.exists():
+            try:
+                servers = list((json.loads(mcp_path.read_text()).get("mcpServers") or {}).keys())
+                checks.append((bool(servers), f"mcpServers registered: {', '.join(servers) or 'NONE'}"))
+            except json.JSONDecodeError as exc:
+                checks.append((False, f"mcp-config.json unparseable: {exc}"))
+        else:
+            checks.append((False, "mcp-config.json missing"))
+
+        hooks_path = home / "hooks" / "agentihooks.json"
+        wrapper = home / "agentihooks-hook.sh"
+        if hooks_path.exists():
+            try:
+                hooks_doc = json.loads(hooks_path.read_text())
+                events = hooks_doc.get("hooks", {})
+                ours = sum(
+                    1
+                    for hooks in events.values()
+                    for h in (hooks if isinstance(hooks, list) else [])
+                    if _command_is_wrapper(h.get("command", ""), wrapper)
+                )
+                checks.append(
+                    (
+                        ours >= len(COPILOT_HOOK_EVENTS),
+                        f"agentihooks.json wires {ours} entries across {len(events)} events",
+                    )
+                )
+            except json.JSONDecodeError as exc:
+                checks.append((False, f"agentihooks.json unparseable: {exc}"))
+        else:
+            checks.append((False, f"{hooks_path} missing"))
+        checks.append((wrapper.exists() and os.access(wrapper, os.X_OK), f"hook wrapper executable ({wrapper})"))
+
+        persona = home / "copilot-instructions.md"
+        if persona.exists():
+            text = persona.read_text()
+            checks.append((_MANAGED_HEADER in text, "copilot-instructions.md is agentihooks-managed"))
+            checks.append((_MANAGED_FOOTER in text, "copilot-instructions.md has its managed-end marker"))
+        else:
+            checks.append((False, "copilot-instructions.md missing"))
+
+        skills = agents_skills_home()
+        n_skills = len(list(skills.iterdir())) if skills.is_dir() else 0
+        checks.append((n_skills > 0, f"{n_skills} skill(s) in {skills}"))
+
+        agents_dir = home / "agents"
+        n_agents = len([f for f in agents_dir.glob("*.md")]) if agents_dir.is_dir() else 0
+        checks.append((True, f"{n_agents} custom agent(s) in {agents_dir}"))
+
+        checks.append((shutil.which("copilot") is not None, "`copilot` binary on PATH"))
+
+        failed = 0
+        for ok, msg in checks:
+            print(f"  [{'OK' if ok else '!!'}] {msg}")
+            if not ok:
+                failed += 1
+        return failed
+
+    # ------------------------------------------------------------------
+    # JSON round-trip (operator hand-edits outside managed keys survive)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _load_json(path: Path) -> dict:
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text())
+                if isinstance(loaded, dict):
+                    return loaded
+            except (json.JSONDecodeError, OSError):
+                backup = path.with_suffix(f".json.bak.{datetime.now(timezone.utc):%Y%m%d%H%M%S}")
+                shutil.copy2(path, backup)
+                print(f"  [!!] Unparseable {path.name} backed up → {backup}")
+        return {}
