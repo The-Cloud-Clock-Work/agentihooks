@@ -43,6 +43,7 @@ from scripts.targets._common import (
     load_manifest,
     reap_translated_commands,
     record_managed_mcp,
+    resolve_env_references,
     scannable,
     skill_names_in,
     strip_persona,
@@ -532,9 +533,10 @@ class CopilotAdapter:
 
         Claude ``.mcp.json`` entries translate almost 1:1. Unlike codex,
         Copilot has an SSE client, so no transport is dropped. It has no
-        ``bearer_token_env_var`` indirection either — header values are sent as
-        written, so a ``${VAR}`` placeholder would go out literally and is
-        refused rather than leaked as a broken credential.
+        ``${VAR}`` header expansion either — a header reference is resolved
+        from the install environment and baked to the literal Copilot needs
+        (the same value ``~/.claude.json`` holds); an unset variable keeps the
+        drop-and-warn.
         """
         _i = _install_module()
         config_path = self.home() / "mcp-config.json"
@@ -583,10 +585,20 @@ class CopilotAdapter:
                 for hk, hv in dict(spec.get("headers") or {}).items():
                     hv_s = str(hv)
                     if has_env_reference(hv_s):
+                        resolved, ok = resolve_env_references(hv_s)
+                        if ok:
+                            # Copilot sends headers literally, so a ${VAR} must
+                            # be baked to the value from the operator's own env
+                            # at install time — the same literal ~/.claude.json
+                            # already stores. The scan below is skipped on
+                            # purpose: the resolved token IS the intended
+                            # credential, not an accidental leak.
+                            clean_headers[hk] = resolved
+                            continue
                         _i._cprint(
-                            f"  [!!] MCP '{name}' header '{hk}' uses a ${{VAR}}/$VAR reference — "
+                            f"  [!!] MCP '{name}' header '{hk}' references an unset variable — "
                             "Copilot sends header values literally and does not expand these; "
-                            "header dropped. Use a literal value or an env-backed proxy."
+                            "header dropped. Export the variable before install, or set a literal."
                         )
                         continue
                     hits = _scan_secrets(hv_s, mode="strict")

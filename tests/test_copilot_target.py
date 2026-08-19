@@ -440,14 +440,33 @@ class TestMcp:
         doc = json.loads((copilot_home() / "mcp-config.json").read_text())
         assert doc["mcpServers"]["gw"]["headers"] == {"X-Env": "prod"}
 
-    def test_placeholder_header_dropped(self, adapter, capsys):
-        """Copilot sends header values literally — a ${VAR} would ship broken."""
+    def test_placeholder_header_dropped_when_var_unset(self, adapter, capsys, monkeypatch):
+        """An unset ${VAR} header is dropped — copilot cannot expand it."""
+        monkeypatch.delenv("TOKEN", raising=False)
         adapter.register_mcp(
             {"gw": {"type": "http", "url": "https://gw.example/mcp", "headers": {"Authorization": "Bearer ${TOKEN}"}}}
         )
         doc = json.loads((copilot_home() / "mcp-config.json").read_text())
         assert "headers" not in doc["mcpServers"]["gw"]
-        assert "reference" in capsys.readouterr().out
+        assert "unset" in capsys.readouterr().out
+
+    def test_placeholder_header_resolved_from_env_when_set(self, adapter, monkeypatch):
+        """Copilot sends headers literally, so a ${VAR} whose var IS set at
+        install time is baked to the literal — the value ~/.claude.json holds."""
+        monkeypatch.setenv("TOKEN", "resolved-secret-value")
+        adapter.register_mcp(
+            {"gw": {"type": "http", "url": "https://gw.example/mcp", "headers": {"Authorization": "Bearer ${TOKEN}"}}}
+        )
+        doc = json.loads((copilot_home() / "mcp-config.json").read_text())
+        assert doc["mcpServers"]["gw"]["headers"]["Authorization"] == "Bearer resolved-secret-value"
+
+    def test_unbraced_header_resolved_from_env_when_set(self, adapter, monkeypatch):
+        monkeypatch.setenv("MY_TOKEN", "abc123")
+        adapter.register_mcp(
+            {"gw": {"type": "http", "url": "https://gw.example/mcp", "headers": {"X-Tok": "$MY_TOKEN"}}}
+        )
+        doc = json.loads((copilot_home() / "mcp-config.json").read_text())
+        assert doc["mcpServers"]["gw"]["headers"]["X-Tok"] == "abc123"
 
     def test_literal_credential_in_header_is_dropped(self, adapter, capsys):
         adapter.register_mcp(
@@ -498,13 +517,14 @@ class TestMcp:
         doc = json.loads((copilot_home() / "mcp-config.json").read_text())
         assert set(doc["mcpServers"]) == {"a", "b"}
 
-    def test_unbraced_env_reference_header_dropped(self, adapter, capsys):
+    def test_unbraced_env_reference_header_dropped_when_unset(self, adapter, capsys, monkeypatch):
+        monkeypatch.delenv("MY_TOKEN", raising=False)
         adapter.register_mcp(
             {"gw": {"type": "http", "url": "https://gw.example/mcp", "headers": {"X-Tok": "$MY_TOKEN"}}}
         )
         doc = json.loads((copilot_home() / "mcp-config.json").read_text())
         assert "headers" not in doc["mcpServers"]["gw"]
-        assert "reference" in capsys.readouterr().out
+        assert "unset" in capsys.readouterr().out
 
     def test_credential_in_url_drops_the_whole_server(self, adapter, capsys):
         tok = "ghp_" + "f" * 36

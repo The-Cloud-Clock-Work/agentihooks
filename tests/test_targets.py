@@ -259,6 +259,17 @@ class TestSharedSanitizer:
         assert scannable(url) == url
         assert mcp_spec_credential_hits("s", {"command": "npx", "args": ["-y", url]})
 
+    def test_resolve_env_references(self, monkeypatch):
+        from scripts.targets._common import resolve_env_references
+
+        monkeypatch.setenv("TOK", "sekret")
+        monkeypatch.delenv("MISSING", raising=False)
+        assert resolve_env_references("Bearer ${TOK}") == ("Bearer sekret", True)
+        assert resolve_env_references("$TOK") == ("sekret", True)
+        assert resolve_env_references("${MISSING}") == ("${MISSING}", False)
+        assert resolve_env_references("${MISSING:-fallback}") == ("fallback", True)
+        assert resolve_env_references("no refs here") == ("no refs here", True)
+
     def test_braced_reference_still_stripped(self):
         from scripts.targets._common import mcp_spec_credential_hits
 

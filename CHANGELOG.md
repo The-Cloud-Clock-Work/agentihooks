@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `toolCalls[]` with stringified args and copilot tool names translated onto
   the Claude vocabulary the guardrails read — previously every copilot
   preToolUse guardrail received empty inputs and allowed everything.
+- Copilot http MCP headers with a `${VAR}`/`$VAR` reference now resolve
+  from the install environment and are written as the literal value copilot
+  needs (it has no runtime header expansion) — the same value `~/.claude.json`
+  holds. An unset variable keeps the drop-and-warn. Fixes gateway-tools
+  failing to connect (401) under copilot because its bearer header was dropped.
 - Copilot builtin write tools `apply_patch` and `str_replace_editor` now
   map onto the Write/Edit secrets branch — unmapped they skipped scanning
   entirely (a HARD FLOOR bypass on non-default model backends, caught by an

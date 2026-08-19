@@ -52,6 +52,43 @@ def has_env_reference(value: str) -> bool:
     return bool(_ANY_REFERENCE.search(value))
 
 
+_BRACED = re.compile(r"\$\{(\w+)(?::-([^}]*))?\}")
+_BARE = re.compile(r"\$(\w+)")
+
+
+def resolve_env_references(value: str) -> tuple[str, bool]:
+    """Expand ``${VAR}``/``${VAR:-default}``/``$VAR`` from ``os.environ``.
+
+    Returns ``(expanded, fully_resolved)``. ``fully_resolved`` is False when any
+    reference named a variable that is unset and carried no default — the caller
+    keeps such a value out of a config a CLI would not expand itself, rather
+    than writing a half-broken literal. Targets whose header/arg grammar has no
+    runtime expansion (copilot) call this to bake the operator's own env into
+    the literal the CLI needs, exactly as ``~/.claude.json`` already holds it.
+    """
+    ok = True
+
+    def _braced(m: re.Match) -> str:
+        nonlocal ok
+        var, default = m.group(1), m.group(2)
+        if var in os.environ:
+            return os.environ[var]
+        if default is not None:
+            return default
+        ok = False
+        return m.group(0)
+
+    def _bare(m: re.Match) -> str:
+        nonlocal ok
+        var = m.group(1)
+        if var in os.environ:
+            return os.environ[var]
+        ok = False
+        return m.group(0)
+
+    return _BARE.sub(_bare, _BRACED.sub(_braced, value)), ok
+
+
 def mcp_spec_credential_hits(name: str, spec: dict) -> list[str]:
     """Credential findings in the fields no adapter used to scan.
 
