@@ -1,13 +1,15 @@
 """Install-target abstraction — which agent CLI agentihooks installs into.
 
 A *target* is the agent CLI whose config surface ``agentihooks init`` writes:
-``claude`` (Claude Code, ``~/.claude``) or ``codex`` (OpenAI Codex CLI,
-``~/.codex``). Profile resolution, bundle linking, settings merging and MCP
-server-dict assembly are target-agnostic and stay in ``scripts.install``;
-everything that touches a target-specific path or schema goes through the
-adapter returned by :func:`get_adapter`.
+``claude`` (Claude Code, ``~/.claude``), ``codex`` (OpenAI Codex CLI,
+``~/.codex``) or ``copilot`` (GitHub Copilot CLI, ``~/.copilot``). Profile
+resolution, bundle linking, settings merging and MCP server-dict assembly are
+target-agnostic and stay in ``scripts.install``; everything that touches a
+target-specific path or schema goes through the adapter returned by
+:func:`get_adapter`.
 
-Design doc: ``~/dev/tcc-ecosystem/CODEX-COMPAT.md`` (§4).
+Design docs: ``docs/reference/CODEX-COMPAT.md`` (§4),
+``docs/reference/COPILOT-COMPAT.md`` (§4).
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Protocol, Sequence
 
-SUPPORTED_TARGETS = ("claude", "codex")
+SUPPORTED_TARGETS = ("claude", "codex", "copilot")
 DEFAULT_TARGET = "claude"
 
 
@@ -87,7 +89,7 @@ class TargetAdapter(Protocol):
     name: str
 
     def home(self) -> Path:
-        """Config root this target reads (``~/.claude`` / ``~/.codex``)."""
+        """Config root this target reads (``~/.claude`` / ``~/.codex`` / ``~/.copilot``)."""
         ...
 
     def write_settings(self, rendered: dict) -> Path:
@@ -98,7 +100,10 @@ class TargetAdapter(Protocol):
         """Install one feature kind (skills/agents/commands/rules) from its
         resolved source layers. Claude symlinks all four into ``~/.claude``;
         codex symlinks skills to ``~/.agents/skills``, translates commands to
-        ``~/.codex/prompts``, compiles rules into AGENTS.md, and skips agents."""
+        ``~/.codex/prompts``, compiles rules into AGENTS.md, and skips agents;
+        copilot symlinks skills to ``~/.agents/skills``, translates commands
+        into skills there, translates agents to ``~/.copilot/agents``, and
+        compiles rules into copilot-instructions.md."""
         ...
 
     def install_persona(
@@ -119,6 +124,15 @@ class TargetAdapter(Protocol):
         """Target-specific end-of-install bookkeeping (ledgers, snapshots)."""
         ...
 
+    def teardown(self) -> None:
+        """Remove every artifact this adapter wrote, preserving operator content.
+
+        Claude's teardown lives in ``uninstall_global`` (it predates the
+        adapter seam); the non-claude adapters implement it here so a full
+        uninstall reaches all installed targets. Must be idempotent — running
+        against a clean home is a no-op, never an error."""
+        ...
+
 
 def get_adapter(target: str) -> TargetAdapter:
     if target == "claude":
@@ -129,4 +143,8 @@ def get_adapter(target: str) -> TargetAdapter:
         from scripts.targets.codex_target import CodexAdapter
 
         return CodexAdapter()
+    if target == "copilot":
+        from scripts.targets.copilot_target import CopilotAdapter
+
+        return CopilotAdapter()
     raise ValueError(f"Unknown target: {target}")

@@ -233,13 +233,15 @@ def _extract_input_summary(tool_input):
 
 
 def _scan_transcript_for_errors(transcript_path, session_id=""):
-    """Scan a transcript (claude or codex) for tool errors via the unified
-    record stream. Correlates tool_call → tool_result by tool_use_id.
+    """Scan a transcript (claude, codex or copilot) for tool errors via the
+    unified record stream. Correlates tool_call → tool_result by tool_use_id.
 
     Only the explicit is_error flag is trusted — string pattern matching
     produces too many false positives on successful JSON responses that
     contain words like "error". Codex rollout outputs carry no error flag,
-    so codex sessions rely on the live PostToolUse recording path instead.
+    so codex sessions rely on the live PostToolUse recording path instead;
+    copilot states success explicitly on tool.execution_complete, so its
+    transcripts do yield errors here.
     """
     from datetime import datetime, timezone
 

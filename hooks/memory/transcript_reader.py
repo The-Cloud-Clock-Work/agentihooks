@@ -46,13 +46,33 @@ class TranscriptRecord(TypedDict, total=False):
 
 _CODEX_TYPES = ("session_meta", "response_item", "event_msg", "turn_context", "world_state")
 
+# Copilot session events are ``{id, timestamp, parentId, type, data}`` where
+# ``type`` is a dotted namespace string ("user.message", "tool.execution_start").
+# Neither claude nor codex ever writes a dotted type, so the prefix alone is a
+# sound discriminator.
+_COPILOT_TYPE_PREFIXES = (
+    "session.",
+    "user.",
+    "assistant.",
+    "tool.",
+    "system.",
+    "hook.",
+    "subagent.",
+    "mcp.",
+    "permission.",
+)
+
+
+def _is_copilot_type(value: object) -> bool:
+    return isinstance(value, str) and value.startswith(_COPILOT_TYPE_PREFIXES)
+
 
 def detect_transcript_format(path: str | Path) -> str:
-    """Return ``"codex"`` or ``"claude"`` by peeking at the first parseable records.
+    """Return ``"codex"``, ``"copilot"`` or ``"claude"`` by peeking at the first records.
 
-    A single corrupt line (e.g. a codex rollout read mid-write) must not
-    misdetect the whole file as claude — scan up to the first 5 lines that
-    actually parse as JSON before giving up.
+    A single corrupt line (e.g. a rollout read mid-write) must not misdetect
+    the whole file as claude — scan up to the first 5 lines that actually
+    parse as JSON before giving up.
     """
     p = Path(path)
     try:
@@ -71,6 +91,8 @@ def detect_transcript_format(path: str | Path) -> str:
                 checked += 1
                 if first.get("type") in _CODEX_TYPES:
                     return "codex"
+                if _is_copilot_type(first.get("type")):
+                    return "copilot"
                 if checked >= 5:
                     break
     except OSError:
@@ -213,8 +235,95 @@ def _iter_codex_records(entries: list[dict]) -> Iterator[TranscriptRecord]:
             yield {"kind": "meta", "raw": entry}
 
 
+def _copilot_result_text(result: object) -> object:
+    """Pull the model-facing text out of a copilot tool result, else pass through."""
+    if not isinstance(result, dict):
+        return result
+    for key in ("content", "detailedContent"):
+        value = result.get(key)
+        if isinstance(value, str) and value:
+            return value
+    blocks = result.get("contents")
+    if isinstance(blocks, list):
+        texts = [b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("text")]
+        if texts:
+            return "\n".join(texts)
+    return result
+
+
+def _iter_copilot_records(entries: list[dict]) -> Iterator[TranscriptRecord]:
+    # Same turn-boundary rule as the codex reader: session.task_complete
+    # repeats the turn's summary, so it is only emitted as turn_complete when
+    # the turn produced no assistant.message (a log truncated mid-turn).
+    # Ephemeral events are streaming deltas and re-renders, never durable
+    # content — including them would multiply-count every reply.
+    assistant_seen_this_turn = False
+    for entry in entries:
+        etype = entry.get("type")
+        if not _is_copilot_type(etype):
+            continue
+        if entry.get("ephemeral") and etype != "assistant.usage":
+            continue
+        data = entry.get("data")
+        if not isinstance(data, dict):
+            continue
+        if etype == "user.message":
+            text = data.get("content", "")
+            # Hook-injected context rides in as a user.message with
+            # source="system" (observed live, v1.0.80) — counting it as a
+            # user turn would charge every additionalContext injection as a
+            # turn of its own.
+            if data.get("source") == "system":
+                if text:
+                    yield {"kind": "system_text", "text": text, "raw": entry}
+                continue
+            assistant_seen_this_turn = False
+            if text:
+                yield {"kind": "user_text", "text": text, "raw": entry}
+        elif etype == "assistant.message":
+            text = data.get("content", "")
+            if text:
+                assistant_seen_this_turn = True
+                yield {"kind": "assistant_text", "text": text, "raw": entry}
+        elif etype == "system.message":
+            text = data.get("content", "")
+            if text:
+                yield {"kind": "system_text", "text": text, "raw": entry}
+        elif etype == "tool.execution_start":
+            yield {
+                "kind": "tool_call",
+                "tool_name": data.get("toolName", ""),
+                "tool_input": data.get("arguments"),
+                "tool_use_id": data.get("toolCallId", ""),
+                "raw": entry,
+            }
+        elif etype == "tool.execution_complete":
+            # Unlike codex, copilot states success explicitly, so error
+            # scanning does not have to pattern-match the result content.
+            failed = not data.get("success", True)
+            error = data.get("error")
+            result = data.get("result")
+            yield {
+                "kind": "tool_result",
+                "tool_result": (
+                    error.get("message", "") if failed and isinstance(error, dict) else _copilot_result_text(result)
+                ),
+                "tool_use_id": data.get("toolCallId", ""),
+                "is_error": failed,
+                "raw": entry,
+            }
+        elif etype == "assistant.usage":
+            yield {"kind": "token_usage", "raw": entry}
+        elif etype == "session.task_complete":
+            if not assistant_seen_this_turn:
+                yield {"kind": "turn_complete", "text": data.get("summary") or "", "raw": entry}
+            assistant_seen_this_turn = False
+        elif etype == "session.start":
+            yield {"kind": "meta", "raw": entry}
+
+
 def iter_transcript_records(path: str | Path) -> Iterator[TranscriptRecord]:
-    """Yield unified records from a Claude transcript or a Codex rollout."""
+    """Yield unified records from a Claude, Codex or Copilot transcript."""
     p = Path(path)
     if not p.exists():
         return
@@ -224,6 +333,8 @@ def iter_transcript_records(path: str | Path) -> Iterator[TranscriptRecord]:
     fmt = detect_transcript_format(p)
     if fmt == "codex":
         yield from _iter_codex_records(entries)
+    elif fmt == "copilot":
+        yield from _iter_copilot_records(entries)
     else:
         yield from _iter_claude_records(entries)
 

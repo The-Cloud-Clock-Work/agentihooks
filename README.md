@@ -165,13 +165,13 @@ agentihooks bundle link ~/dev/my-tools       # link a bundle
 agentihooks bundle pull                      # update linked bundle
 
 # Link an external profile dir into the chain.
-# Chain edits span EVERY installed target (claude + codex) so the two cannot
-# silently diverge; --for-target narrows to one. unlink is always global —
+# Chain edits span EVERY installed target (claude + codex + copilot) so they
+# cannot silently diverge; --for-target narrows to one. unlink is always global —
 # it de-registers the profile, so leaving another target naming it would
 # make that chain unresolvable.
 agentihooks link-profile link ~/dev/brain-profile     # auto-appends to chain + re-installs
 agentihooks link-profile link ~/dev/brain --name br   # disambiguate name on collision
-agentihooks link-profile link ~/dev/x --for-target codex   # codex's chain only
+agentihooks link-profile link ~/dev/x --for-target copilot  # copilot's chain only
 agentihooks link-profile list                         # show all linked external profiles
 agentihooks link-profile unlink brain-profile         # remove from chain + sweep symlinks
 
@@ -261,8 +261,38 @@ agentihooks settings-profile --clear         # revert
 ```
 
 Codex has no `settings.json`, but the same rendered settings dict drives its
-`config.toml` permission posture — so the settings layer is meaningful on both
-targets and `settings-profile` applies to both by default.
+`config.toml` permission posture; Copilot has one, and the same dict drives its
+status line and trusted-folder posture. The settings layer is meaningful on all
+three targets, so `settings-profile` applies to all of them by default.
+
+## Install Targets
+
+AgentiHooks installs into three agent CLIs. One bundle, three projections:
+
+```bash
+agentihooks init --profile anton --target claude    # ~/.claude   (default)
+agentihooks init --profile anton --target codex     # ~/.codex
+agentihooks init --profile anton --target copilot   # ~/.copilot
+agentihooks doctor --target copilot                 # per-target health check
+```
+
+| | Claude Code | Codex CLI | Copilot CLI |
+|---|---|---|---|
+| Config home | `~/.claude` | `~/.codex` | `~/.copilot` |
+| Settings | `settings.json` | `config.toml` | `settings.json` |
+| Persona | `CLAUDE.md` | `AGENTS.md` | `copilot-instructions.md` |
+| Skills | `~/.claude/skills` | `~/.agents/skills` | `~/.agents/skills` |
+| Agents | native | not supported | `~/.copilot/agents` |
+| Commands | native | `~/.codex/prompts` | translated to skills |
+| MCP | `.mcp.json` | `[mcp_servers.*]` | `mcp-config.json` |
+| MCP over SSE | yes | no | yes |
+| Status line | command | built-in items only | command |
+
+The bundle only ever ships Claude-shaped content; each target's adapter
+(`scripts/targets/<name>_target.py`) re-projects it. Details, including each
+CLI's hook contract and the evidence behind it:
+[CODEX-COMPAT](docs/reference/CODEX-COMPAT.md),
+[COPILOT-COMPAT](docs/reference/COPILOT-COMPAT.md).
 
 ## Hook Events
 

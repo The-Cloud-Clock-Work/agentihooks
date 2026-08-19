@@ -1,4 +1,4 @@
-"""Tests for the unified transcript-record API (claude transcripts + codex rollouts)."""
+"""Tests for the unified transcript-record API (claude / codex / copilot)."""
 
 from pathlib import Path
 
@@ -7,12 +7,14 @@ from hooks.memory.transcript_reader import detect_transcript_format, iter_transc
 FIXTURES = Path(__file__).parent / "fixtures"
 CLAUDE = FIXTURES / "claude_transcript_sample.jsonl"
 CODEX = FIXTURES / "codex_rollout_sample.jsonl"
+COPILOT = FIXTURES / "copilot_events_sample.jsonl"
 
 
 class TestDetection:
     def test_formats_detected(self):
         assert detect_transcript_format(CLAUDE) == "claude"
         assert detect_transcript_format(CODEX) == "codex"
+        assert detect_transcript_format(COPILOT) == "copilot"
 
     def test_missing_file_yields_nothing(self, tmp_path):
         assert list(iter_transcript_records(tmp_path / "nope.jsonl")) == []
@@ -155,3 +157,85 @@ class TestConsumers:
             entries = _read_transcript(fixture)
             types = {e["type"] for e in entries}
             assert {"user", "assistant"} <= types, fixture.name
+
+
+class TestCopilotRecords:
+    """Fixture is derived from the shipped session-events.schema.json, not from
+    a captured session — copilot only writes events.jsonl on an authenticated
+    turn. Replace it with a captured log when one exists (COPILOT-COMPAT §6)."""
+
+    def _records(self):
+        return list(iter_transcript_records(COPILOT))
+
+    def test_user_and_assistant_text_extracted(self):
+        recs = self._records()
+        assert [r["text"] for r in recs if r["kind"] == "user_text"] == ["list the files", "thanks"]
+        assert [r["text"] for r in recs if r["kind"] == "assistant_text"] == ["I'll list them."]
+
+    def test_tool_call_and_result_correlate_by_id(self):
+        recs = self._records()
+        calls = {r["tool_use_id"]: r for r in recs if r["kind"] == "tool_call"}
+        results = {r["tool_use_id"]: r for r in recs if r["kind"] == "tool_result"}
+        assert calls["call_1"]["tool_name"] == "shell"
+        assert set(calls) == set(results)
+
+    def test_failed_tool_flagged_with_message(self):
+        """Copilot states success explicitly — unlike codex, errors are visible."""
+        recs = self._records()
+        failed = [r for r in recs if r["kind"] == "tool_result" and r["is_error"]]
+        assert len(failed) == 1
+        assert "ENOENT" in failed[0]["tool_result"]
+
+    def test_ephemeral_streaming_deltas_excluded(self):
+        """Counting deltas would multiply every reply by its chunk count."""
+        recs = self._records()
+        assert not any("partial text" in str(r.get("text", "")) for r in recs)
+
+    def test_task_complete_only_fills_a_turn_with_no_assistant_message(self):
+        recs = self._records()
+        completes = [r for r in recs if r["kind"] == "turn_complete"]
+        assert [r["text"] for r in completes] == ["Acknowledged."]
+
+    def test_usage_event_yields_token_record(self):
+        assert any(r["kind"] == "token_usage" for r in self._records())
+
+    def test_session_metrics_count_copilot_turns(self):
+        from hooks.hook_manager import parse_transcript_metrics
+
+        metrics = parse_transcript_metrics(str(COPILOT))
+        assert metrics["num_turns"] == 2
+        assert metrics["last_response"] == "Acknowledged."
+
+
+COPILOT_REAL = FIXTURES / "copilot_events_real.jsonl"
+
+
+class TestCopilotRealCapture:
+    """Captured from a live authenticated copilot v1.0.80 session (2026-08-19),
+    with the system prompt elided and the synthetic test key scrubbed. This is
+    the ground-truth counterpart to the schema-derived sample fixture."""
+
+    def _records(self):
+        return list(iter_transcript_records(COPILOT_REAL))
+
+    def test_format_detected(self):
+        assert detect_transcript_format(COPILOT_REAL) == "copilot"
+
+    def test_tool_calls_carry_copilot_names(self):
+        names = {r["tool_name"] for r in self._records() if r["kind"] == "tool_call"}
+        assert {"glob", "bash", "edit"} <= names
+
+    def test_hook_injected_context_is_not_a_user_turn(self):
+        recs = self._records()
+        user_texts = [r["text"] for r in recs if r["kind"] == "user_text"]
+        assert len(user_texts) == 1, "source=system user.message entries must not count as user turns"
+        assert any(r["kind"] == "system_text" and "preToolUse hook" in r["text"] for r in recs), (
+            "injected context should surface as system_text, not vanish"
+        )
+
+    def test_session_metrics_on_real_capture(self):
+        from hooks.hook_manager import parse_transcript_metrics
+
+        metrics = parse_transcript_metrics(str(COPILOT_REAL))
+        assert metrics["num_turns"] == 1
+        assert metrics["last_response"] == "DONE"

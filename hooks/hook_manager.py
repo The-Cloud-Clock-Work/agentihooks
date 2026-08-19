@@ -104,10 +104,10 @@ def parse_transcript_metrics(transcript_path: str) -> dict:
 
         from hooks.memory.transcript_reader import detect_transcript_format
 
-        if detect_transcript_format(path) == "codex":
-            # Codex rollout: derive turn count / last response from the
-            # unified record stream (the claude-shaped scan below would
-            # return all-None on a rollout file).
+        if detect_transcript_format(path) in ("codex", "copilot"):
+            # Codex rollout / copilot session-events log: derive turn count and
+            # last response from the unified record stream (the claude-shaped
+            # scan below would return all-None on either file).
             from hooks.memory.transcript_reader import iter_transcript_records
 
             user_turns = 0
@@ -338,7 +338,7 @@ def on_session_start(payload: dict) -> None:
         from hooks.common import inject_context as _inject_sid
         from hooks.targets import current_target as _sid_target
 
-        _host = "Codex" if _sid_target() == "codex" else "Claude Code"
+        _host = {"codex": "Codex", "copilot": "Copilot CLI"}.get(_sid_target(), "Claude Code")
         _inject_sid(
             f"Your {_host} session_id is `{session_id}`. Pass it as the "
             "`session_id` argument to the hooks-utils tools that need caller "
@@ -1387,9 +1387,9 @@ def on_post_tool_use(payload: dict) -> None:
                                 filtered = preprocess(filtered, level)
                     except Exception:
                         pass
-                    from hooks.targets import is_codex
+                    from hooks.targets import buffers_single_envelope
 
-                    if is_codex():
+                    if buffers_single_envelope():
                         # One-JSON-object rule: joins the single end-of-process
                         # flush instead of printing its own object.
                         from hooks.targets import emitter
@@ -1858,7 +1858,26 @@ def emit_permission_decision(event_name: str, decision: str, reason: str = "") -
         )
         return
 
-    output: dict[str, Any] = {
+    # Copilot's COMMAND-hook stdout deny shape is a top-level
+    # {"decision": "block", "reason": ...} (proven live, v1.0.80) — the only
+    # channel that blocks userPromptSubmitted, ignored (harmlessly) on
+    # preToolUse where exit 2 already denies. The runtime's native hook-result
+    # union does carry hookSpecificOutput/permissionDecision, but the command
+    # transport does not honor them, so they are not emitted here.
+    if target == "copilot":
+        if decision != "deny":
+            log(
+                "permission decision dropped — copilot has no channel for it",
+                {"target": target, "event": event_name, "decision": decision},
+            )
+            return
+        output: dict[str, Any] = {"decision": "block"}
+        if reason:
+            output["reason"] = reason
+        print(json.dumps(output))
+        return
+
+    output = {
         "hookSpecificOutput": {
             "hookEventName": event_name,
             "permissionDecision": decision,
@@ -1901,38 +1920,56 @@ def main() -> None:
     flushed by the handlers (stderr for banners, log() files), so skipping
     atexit handlers is safe.
     """
+    # Bound before the try so the outer BlockAction handler can name the event
+    # even when the block fires before dispatch resolved one.
+    _blocked_event = "Unknown"
     try:
-        # Read payload from stdin
-        payload: dict[str, Any] = json.load(sys.stdin)
+        # Read payload from stdin. Raw text is kept for the parse-failure path:
+        # fail-open is the rule (a hook must never crash the host), but a
+        # garbled payload that visibly names a tool-permission event gets
+        # deny-on-doubt instead — exiting 0 there reads as "allowed" on hosts
+        # whose tool gate is fail-closed on non-zero (copilot preToolUse), so
+        # fail-open on those events is the one direction that loses a guardrail.
+        _raw_stdin = sys.stdin.read()
+        payload: dict[str, Any] = json.loads(_raw_stdin)
 
-        # Codex payloads get alias-filled into the internal shape; claude
-        # payloads pass through untouched (hooks/targets/normalizer.py).
+        # Codex and Copilot payloads get alias-filled into the internal shape;
+        # claude payloads pass through untouched (hooks/targets/normalizer.py).
         from hooks.targets.normalizer import normalize_payload
 
         payload = normalize_payload(payload)
 
         # Get event name from payload
         event_name = payload.get("hook_event_name", "Unknown")
+        _blocked_event = event_name
 
         # Route to handler
         handler = EVENT_HANDLERS.get(event_name)
 
-        from hooks.targets import emitter, is_codex
+        from hooks.targets import buffers_single_envelope, emitter
 
         try:
             if handler:
                 handler(payload)
+                # Copilot batches parallel tool calls into ONE preToolUse
+                # payload; every remaining call runs the same pipeline. A
+                # BlockAction from any call denies the whole batch via exit 2 —
+                # the safe over-block. Per-call stdout denial exists in the
+                # wire format but the command-hook shape was not confirmed
+                # live, so batch-wide deny is the conservative choice.
+                for _call in payload.get("copilot_extra_tool_calls") or []:
+                    handler({**payload, **_call})
             else:
                 log(f"Unknown event: {event_name}", payload)
 
-            # Codex parses hook stdout as ONE JSON object — everything the
-            # handlers injected was buffered and is flushed here as a single
-            # envelope. No-op on the claude target (nothing buffers there).
+            # Codex and Copilot parse hook stdout as ONE JSON object —
+            # everything the handlers injected was buffered and is flushed here
+            # as a single envelope. No-op on claude (nothing buffers there).
             emitter.flush(event_name)
 
         except BlockAction as e:
-            # A BlockAction skips the flush above, so on codex any context a
-            # handler buffered before the block (e.g. an inline-secret NOTE
+            # A BlockAction skips the flush above, so on an envelope target any
+            # context a handler buffered before the block (an inline-secret NOTE
             # buffered ahead of branch_guard's raise) would otherwise be
             # silently lost — stdout carries nothing on the block path.
             # Fold it into the stderr message instead, which is freeform and
@@ -1940,7 +1977,7 @@ def main() -> None:
             # (every call site there prints immediately), so this is a no-op
             # on that target and the message is unchanged.
             reason = str(e)
-            if is_codex():
+            if buffers_single_envelope():
                 drained = emitter.drain()
                 if drained:
                     reason = f"{reason}\n\n{drained}"
@@ -1952,11 +1989,51 @@ def main() -> None:
             emitter.drain()
 
     except BlockAction as e:
+        # Some hosts treat exit 2 as advisory on events other than their
+        # tool-permission one. Where that is a live risk, state the denial in
+        # the stdout envelope as well — belt and braces, one JSON object.
+        try:
+            from hooks.targets.capabilities import requires_envelope_block
+
+            if requires_envelope_block(_blocked_event):
+                emit_permission_decision(_blocked_event, "deny", str(e))
+        except Exception:  # NOSONAR — a block must never be weakened by this
+            pass
         print(str(e), file=sys.stderr, flush=True)  # Claude Code reads stderr for hook messages
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(2)  # blocks the action — skip Python shutdown (OTEL threads)
     except json.JSONDecodeError:
+        import re as _re
+
+        # Search only the head of the payload: the event name is among the
+        # first keys in every real payload shape, and an unanchored search over
+        # the whole stream lets a marker EMBEDDED in a garbled non-tool event
+        # (a raw nested object in a debug field) deny a SessionStart. The
+        # design-target case — a huge tool_input truncated at the END — keeps
+        # its event name well inside this window.
+        # Copilot stdin carries no event-name field — its wrapper passes the
+        # registered event via AGENTIHOOKS_COPILOT_EVENT instead, so the env
+        # var is the marker to sniff on that target. Gate it on the copilot
+        # target: the var can be inherited by a nested claude/codex hook
+        # spawned from within a copilot hook, and trusting it there would deny
+        # an unrelated garbled-stdin claude event that names no tool at all.
+        from hooks.targets import is_copilot
+
+        _env_event = os.environ.get("AGENTIHOOKS_COPILOT_EVENT", "") if is_copilot() else ""
+        if _env_event in ("preToolUse", "preMcpToolCall", "permissionRequest") or _re.search(
+            r'"(?:hook_?[eE]vent_?[nN]ame|hook_?[tT]ype)"\s*:\s*"(?:[pP]reToolUse|'
+            r'[pP]reMcpToolCall|[pP]ermissionRequest)"',
+            _raw_stdin[:512],
+        ):
+            log("Unparseable payload names a tool-permission event — denying", {"bytes": len(_raw_stdin)})
+            print(
+                "BLOCKED: hook payload was not valid JSON but names a tool-permission "
+                "event — denying rather than silently allowing an unscanned tool call.",
+                file=sys.stderr,
+                flush=True,
+            )
+            os._exit(2)
         log("Failed to parse JSON payload")
     except KeyboardInterrupt:
         # Operator pressed Ctrl+C mid-hook (most common during SessionEnd

@@ -33,6 +33,24 @@ class TestResolveTarget:
         monkeypatch.delenv("AGENTIHOOKS_TARGET", raising=False)
         assert resolve_target(None, "", ("codex",), interactive_ok=False) == "codex"
 
+    def test_copilot_only_installed_recalls_copilot(self, monkeypatch):
+        monkeypatch.delenv("AGENTIHOOKS_TARGET", raising=False)
+        assert resolve_target(None, "", ("copilot",), interactive_ok=False) == "copilot"
+
+    def test_three_installed_targets_warn_names_all_and_default(self, monkeypatch, capsys):
+        monkeypatch.delenv("AGENTIHOOKS_TARGET", raising=False)
+        assert resolve_target(None, "", ("claude", "codex", "copilot"), interactive_ok=False) == DEFAULT_TARGET
+        err = capsys.readouterr().err
+        for name in ("claude", "codex", "copilot"):
+            assert name in err
+        assert "--target" in err
+
+    def test_copilot_via_cli_flag_and_env(self, monkeypatch):
+        monkeypatch.delenv("AGENTIHOOKS_TARGET", raising=False)
+        assert resolve_target("copilot", "claude", interactive_ok=False) == "copilot"
+        monkeypatch.setenv("AGENTIHOOKS_TARGET", "copilot")
+        assert resolve_target(None, "claude", interactive_ok=False) == "copilot"
+
     def test_multiple_installed_targets_warn_and_default_noninteractive(self, monkeypatch, capsys):
         monkeypatch.delenv("AGENTIHOOKS_TARGET", raising=False)
         result = resolve_target(None, "codex", ("claude", "codex"), interactive_ok=False)
@@ -120,6 +138,22 @@ class TestGlobalRecord:
         rec["profile"] = "anton"
         assert state["targets"]["global"]["claude"]["profile"] == "anton"
 
+    def test_copilot_record_isolated_from_siblings(self):
+        state = {
+            "targets": {
+                "global": {
+                    "claude": {"profile": "anton"},
+                    "codex": {"profile": "smith"},
+                    "copilot": {"profile": "agenticore"},
+                }
+            }
+        }
+        assert install._global_record(state, "copilot")["profile"] == "agenticore"
+        assert install._global_record(state, "claude")["profile"] == "anton"
+        from hooks.targets import split_global
+
+        assert set(split_global(state["targets"]["global"])) == {"claude", "codex", "copilot"}
+
     def test_per_target_isolation(self):
         state: dict = {}
         install._global_record(state, "claude", create=True)["profile"] = "anton"
@@ -202,11 +236,134 @@ class TestGetAdapter:
         assert adapter.name == "codex"
         assert adapter.home().name == ".codex"
 
+    def test_copilot_adapter_resolves(self):
+        adapter = get_adapter("copilot")
+        assert adapter.name == "copilot"
+        assert adapter.home().name == ".copilot"
+
+    def test_every_supported_target_has_an_adapter(self):
+        """A name in SUPPORTED_TARGETS with no adapter fails only at install time."""
+        from scripts.targets import SUPPORTED_TARGETS
+
+        for target in SUPPORTED_TARGETS:
+            assert get_adapter(target).name == target
+
+
+class TestSharedSanitizer:
+    def test_dollar_containing_literal_credential_is_not_split(self):
+        """Stripping unbraced $VAR ate the tail of `pa$sword`-style literals,
+        pushing them below the patterns' minimum lengths — a scan bypass."""
+        from scripts.targets._common import mcp_spec_credential_hits, scannable
+
+        url = "postgres://user:pa$ssword123@db.internal:5432/app"
+        assert scannable(url) == url
+        assert mcp_spec_credential_hits("s", {"command": "npx", "args": ["-y", url]})
+
+    def test_resolve_env_references(self, monkeypatch):
+        from scripts.targets._common import resolve_env_references
+
+        monkeypatch.setenv("TOK", "sekret")
+        monkeypatch.delenv("MISSING", raising=False)
+        assert resolve_env_references("Bearer ${TOK}") == ("Bearer sekret", True)
+        assert resolve_env_references("$TOK") == ("sekret", True)
+        assert resolve_env_references("${MISSING}") == ("${MISSING}", False)
+        assert resolve_env_references("${MISSING:-fallback}") == ("fallback", True)
+        assert resolve_env_references("no refs here") == ("no refs here", True)
+
+    def test_braced_reference_still_stripped(self):
+        from scripts.targets._common import mcp_spec_credential_hits
+
+        assert mcp_spec_credential_hits("s", {"url": "postgres://user:${DB_PASS}@host/db"}) == []
+
+    def test_reference_default_text_is_scanned_as_literal(self):
+        """`${T:-<token>}` must not hide the token; a fallback IS a literal."""
+        from hooks.secrets import scan
+        from scripts.targets._common import scannable
+
+        assert scan(scannable("x=${T:-ghp_" + "a" * 36 + "}"), mode="strict")
+        assert scan(scannable("x=${T}"), mode="strict") == []
+
+    def test_claude_merge_sanitizes_env_and_headers(self, capsys):
+        import json
+
+        install._merge_mcp_to_user_scope(
+            {
+                "srv": {
+                    "command": "npx",
+                    "env": {"GH_TOKEN": "ghp_" + "b" * 36, "SAFE": "${REF}", "PLAIN": "hello"},
+                    "headers": {"Authorization": "Bearer ghp_" + "c" * 36, "X-Env": "prod"},
+                }
+            }
+        )
+        doc = json.loads(install._CLAUDE_JSON.read_text())
+        spec = doc["mcpServers"]["srv"]
+        assert sorted(spec["env"]) == ["PLAIN", "SAFE"]
+        assert list(spec["headers"]) == ["X-Env"]
+        assert "credential" in capsys.readouterr().out
+
+
+class TestSharedSkillsSweep:
+    def test_ledger_only_sweep_spares_operator_link_into_our_sources(self, tmp_path):
+        """~/.agents/skills is a shared cross-tool dir: destination alone must
+        not claim an operator's hand-made symlink into our source tree."""
+        from pathlib import Path
+
+        from scripts.targets._common import agents_skills_home
+
+        skills = agents_skills_home()
+        skills.mkdir(parents=True, exist_ok=True)
+        real = tmp_path / "real-skill"
+        real.mkdir()
+        ledgered = skills / "ledgered"
+        ledgered.symlink_to(real)
+        install._state_record_link(ledgered, real, "skill")
+        operator = skills / "operator-link"
+        operator.symlink_to(Path(install.AGENTIHOOKS_ROOT))
+
+        n = install._remove_agentihooks_symlinks(skills, "skill", ledger_only=True)
+        assert n == 1
+        assert not ledgered.is_symlink()
+        assert operator.is_symlink()
+
+
+class TestClaudeSettingsEnvScan:
+    def test_credential_shaped_env_value_dropped(self, capsys):
+        adapter = get_adapter("claude")
+        tok = "ghp_" + "k" * 36
+        adapter.write_settings({"env": {"LEAKED": tok, "SAFE_REF": "${MY_TOKEN}", "PLAIN": "hello"}})
+        import json
+
+        doc = json.loads((install.CLAUDE_HOME / "settings.json").read_text())
+        assert "LEAKED" not in doc["env"]
+        assert doc["env"]["SAFE_REF"] == "${MY_TOKEN}"
+        assert doc["env"]["PLAIN"] == "hello"
+        assert "credential" in capsys.readouterr().out
+
+    def test_env_block_all_credentials_removed_entirely(self):
+        adapter = get_adapter("claude")
+        adapter.write_settings({"env": {"LEAKED": "ghp_" + "m" * 36}})
+        import json
+
+        doc = json.loads((install.CLAUDE_HOME / "settings.json").read_text())
+        assert "env" not in doc
+
 
 class TestInstalledTargets:
     def test_lists_every_record_in_supported_order(self):
         state = {"targets": {"global": {"codex": {"profile": "a"}, "claude": {"profile": "b"}}}}
         assert install._installed_targets(state) == ("claude", "codex")
+
+    def test_three_installed_targets_listed_in_supported_order(self):
+        state = {
+            "targets": {
+                "global": {
+                    "copilot": {"profile": "c"},
+                    "codex": {"profile": "a"},
+                    "claude": {"profile": "b"},
+                }
+            }
+        }
+        assert install._installed_targets(state) == ("claude", "codex", "copilot")
 
     def test_empty_state_defaults_to_claude(self):
         assert install._installed_targets({}) == ("claude",)

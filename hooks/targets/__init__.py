@@ -1,7 +1,7 @@
 """Hook-runtime target detection.
 
 Which agent CLI invoked this hook process. Claude Code is the default; the
-Codex hooks.json writer sets ``AGENTIHOOKS_TARGET=codex`` in every hook
+Codex and Copilot hook writers set ``AGENTIHOOKS_TARGET`` in every hook
 command, so detection is a deterministic env read — no payload sniffing.
 Read per-call (not bound at import) so tests and long-lived processes see
 the live value.
@@ -20,6 +20,20 @@ def current_target() -> str:
 
 def is_codex() -> bool:
     return current_target() == "codex"
+
+
+def is_copilot() -> bool:
+    return current_target() == "copilot"
+
+
+# Targets whose host parses hook stdout as exactly one JSON object, so context
+# must be buffered across the whole process and flushed once. Claude Code
+# concatenates every raw print instead and needs no buffering.
+_SINGLE_ENVELOPE_TARGETS = frozenset({"codex", "copilot"})
+
+
+def buffers_single_envelope(target: str | None = None) -> bool:
+    return (target or current_target()) in _SINGLE_ENVELOPE_TARGETS
 
 
 def split_global(g: object) -> dict[str, dict]:

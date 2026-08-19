@@ -34,6 +34,7 @@ def _isolate_real_user_paths(tmp_path, monkeypatch):
     (fake_home / ".claude").mkdir(parents=True)
     (fake_home / ".agentihooks").mkdir(parents=True)
     (fake_home / ".codex").mkdir(parents=True)
+    (fake_home / ".copilot").mkdir(parents=True)
     (fake_home / ".agents" / "skills").mkdir(parents=True)
 
     monkeypatch.setenv("HOME", str(fake_home))
@@ -44,6 +45,8 @@ def _isolate_real_user_paths(tmp_path, monkeypatch):
     # installer supports a comma list) would have the whole suite writing into
     # their real codex install.
     monkeypatch.delenv("CODEX_HOME", raising=False)
+    # Same for COPILOT_HOME, read first by targets.copilot_target.copilot_home.
+    monkeypatch.delenv("COPILOT_HOME", raising=False)
 
     try:
         import install
@@ -74,14 +77,20 @@ def _isolate_real_user_paths(tmp_path, monkeypatch):
         )
     assert Path.home() != real_home, "Path.home() still returns the real home — refusing to run"
 
-    # Codex writes through its own resolvers, not install.py globals, so the
-    # loop above cannot see them. Assert the same refusal bar.
+    # Codex and copilot write through their own resolvers, not install.py
+    # globals, so the loop above cannot see them. Assert the same refusal bar.
     try:
-        from targets.codex_target import agents_skills_home, codex_home
+        from targets._common import agents_skills_home
+        from targets.codex_target import codex_home
+        from targets.copilot_target import copilot_home
     except Exception:
         yield
         return
-    for label, value in (("codex_home", codex_home()), ("agents_skills_home", agents_skills_home())):
+    for label, value in (
+        ("codex_home", codex_home()),
+        ("copilot_home", copilot_home()),
+        ("agents_skills_home", agents_skills_home()),
+    ):
         assert real_home not in value.parents and value != real_home, (
             f"{label}() still resolves under the real home ({value}) — refusing to run"
         )

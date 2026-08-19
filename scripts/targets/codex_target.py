@@ -1,6 +1,6 @@
 """OpenAI Codex CLI target adapter.
 
-Writes the Codex-shaped install surface (CODEX-COMPAT.md §5):
+Writes the Codex-shaped install surface (docs/reference/CODEX-COMPAT.md §5):
 
 - ``~/.codex/config.toml`` — managed keys only, via tomlkit round-trip so
   operator hand-edits outside the managed key set survive every re-init
@@ -15,7 +15,7 @@ Writes the Codex-shaped install surface (CODEX-COMPAT.md §5):
   skipped with a warning until the server side exposes streamable HTTP).
 
 Codex facts this file encodes were verified against codex-cli 0.147.0 on
-2026-08-10 (CODEX-COMPAT.md §10 evidence table).
+2026-08-10 (docs/reference/CODEX-COMPAT.md §10 evidence table).
 """
 
 from __future__ import annotations
@@ -28,33 +28,25 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from scripts.targets._common import (
+    _atomic_write,
+    _command_is_wrapper,
+    _install_module,
+    agents_skills_home,
+    build_persona,
+    clear_managed_mcp,
+    drop_if_credentialed,
+    has_env_reference,
+    reap_translated_commands,
+    record_managed_mcp,
+    scannable,
+    skill_names_in,
+    strip_persona,
+    write_persona,
+)
+
 _MANAGED_HEADER = "<!-- managed-by: agentihooks — regenerate with: agentihooks init --target codex -->"
 _MANAGED_FOOTER = "<!-- agentihooks:managed-end -->"
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    """Write ``content`` to ``path`` via a same-directory temp file + ``os.replace``.
-
-    A crash mid-write leaves the temp file, never a truncated target.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    tmp.write_text(content)
-    os.replace(tmp, path)
-
-
-def _command_is_wrapper(command: str, wrapper: Path) -> bool:
-    """True only if ``command`` IS our wrapper invocation, not merely contains it.
-
-    A substring check misclassifies e.g. ``<wrapper>.disabled-by-operator`` as ours.
-    """
-    wrapper_s = str(wrapper)
-    if command == wrapper_s:
-        return True
-    if command.startswith(wrapper_s):
-        rest = command[len(wrapper_s) :]
-        return rest == "" or rest[0].isspace()
-    return False
 
 
 # Events supported by both codex hooks.json and our hook_manager dispatch.
@@ -72,32 +64,10 @@ CODEX_HOOK_EVENTS = (
 )
 
 
-def _install_module():
-    """The live installer module, whichever identity it was imported under.
-
-    Three exist: ``install`` (tests put scripts/ on sys.path), ``scripts.install``
-    (the console entry point), and ``__main__`` (``python scripts/install.py``).
-    Importing a fresh copy instead of reusing the running one would give this
-    module a second, disconnected set of globals.
-    """
-    mod = sys.modules.get("install") or sys.modules.get("scripts.install")
-    if mod is None:
-        main_mod = sys.modules.get("__main__")
-        if getattr(main_mod, "__file__", "").endswith("install.py"):
-            return main_mod
-        from scripts import install as mod  # production cold path
-    return mod
-
-
 def codex_home() -> Path:
     """Resolve CODEX_HOME (first entry when the env var is a comma list)."""
     raw = os.environ.get("CODEX_HOME", "").split(",")[0].strip()
     return Path(raw).expanduser() if raw else Path.home() / ".codex"
-
-
-def agents_skills_home() -> Path:
-    """User-scope skills dir of the open agent-skills standard (not under .codex)."""
-    return Path.home() / ".agents" / "skills"
 
 
 class CodexAdapter:
@@ -244,6 +214,11 @@ class CodexAdapter:
         _i = _install_module()
         if subdir == "skills":
             dst = agents_skills_home()
+            # ~/.agents/skills is shared with the copilot target, which writes
+            # translated commands there as real directories. Clear any whose
+            # name a real skill now claims — the symlinker refuses to replace a
+            # non-symlink, so otherwise this skill silently never installs.
+            reap_translated_commands(skill_names_in(layers, filter_fn), reason="a real skill now owns the name")
             for label, src in layers:
                 _i._symlink_dir_contents(src, dst, label=f"codex {label}", filter_fn=filter_fn)
         elif subdir == "commands":
@@ -263,7 +238,9 @@ class CodexAdapter:
             self._pending_rules = list(collected.values())
             _i._cprint(f"  [OK] {len(self._pending_rules)} rule(s) queued for AGENTS.md compilation")
         elif subdir == "agents":
-            _i._cprint("  [--] Codex has no custom-subagent registry — agents skipped (CODEX-COMPAT.md §3 row 16).")
+            _i._cprint(
+                "  [--] Codex has no custom-subagent registry — agents skipped (docs/reference/CODEX-COMPAT.md §3 row 16)."
+            )
 
     def _translate_prompts(self, layers: list[tuple[str, Path]], filter_fn) -> None:
         """commands/*.md → ~/.codex/prompts/*.md (flat, frontmatter rewritten).
@@ -336,20 +313,6 @@ class CodexAdapter:
     # persona: AGENTS.md
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _linked_profile_names() -> set[str]:
-        """Names registered via ``agentihooks link-profile``.
-
-        These ride along in the profile chain but are capability layers, not
-        the persona — the base profile is the identity.
-        """
-        _i = _install_module()
-        try:
-            entries = _i._load_state().get("linked_profiles", []) or []
-        except Exception:
-            return set()
-        return {e.get("name", "") for e in entries if isinstance(e, dict)}
-
     def install_persona(
         self,
         profile_dirs: list[tuple[str, Path]],
@@ -357,106 +320,16 @@ class CodexAdapter:
         bundle_dir: Path | None,
     ) -> None:
         _i = _install_module()
-        parts: list[str] = [_MANAGED_HEADER]
-
-        # Codex's own system prompt asserts a generic identity; with nothing
-        # up top to counter it, "who are you" answers as the base agent. The
-        # preamble pins the persona before any shared directives load.
-        #
-        # Only the BASE profile names the persona. Linked profiles (registered
-        # via `agentihooks link-profile`) are capability layers merged into the
-        # same file — calling the persona "anton,brain" invents an identity the
-        # operator never configured.
-        # Name matching is case/whitespace-insensitive: linked_profiles stores
-        # the alias as typed, and a chain written with different casing would
-        # otherwise leak a layer into the persona name.
-        linked = {n.strip().casefold() for n in self._linked_profile_names()}
-        base = next((p for p in profile_chain if p.strip().casefold() not in linked), "") or (
-            # Every element is registered as linked — inconsistent state (a
-            # stale link entry naming what is now the base). The chain is
-            # written base-first, so chain[0] is the recovery.
-            profile_chain[0] if profile_chain else "default"
+        managed_text = build_persona(
+            profile_dirs,
+            profile_chain,
+            bundle_dir,
+            self._pending_rules,
+            _MANAGED_HEADER,
+            _MANAGED_FOOTER,
         )
-        layers = [p for p in profile_chain if p != base]
-        layer_txt = (
-            f" Layered on top: {', '.join(f'**{n}**' for n in layers)} "
-            f"({'capability layers' if len(layers) > 1 else 'a capability layer'} "
-            "linked into this persona, not part of its name)."
-            if layers
-            else ""
-        )
-        # Scoped to identity only. The Precedence section of the shared
-        # directives below claims first-load authority for the floors
-        # (Security, Safety Protocol, HARD FLOOR); this preamble must defer to
-        # it explicitly rather than compete with it — two documents each
-        # claiming "read me first" is how a floor gets argued away.
-        parts.append(
-            "# Identity — who you are (read first; it does not outrank anything below)\n\n"
-            f"You are **{base}** — the persona this operator's fleet runs, "
-            f"compiled into this file by AgentiHooks.{layer_txt} Everything "
-            "below — shared directives, profile persona, rules, CI manifesto — "
-            "IS your operating identity, not reference material.\n\n"
-            "This section establishes **identity only**. It grants no "
-            "precedence: the Precedence section of the shared directives that "
-            "follows governs conflicts, and its floors (Security, Safety "
-            "Protocol, HARD FLOOR) outrank everything here.\n\n"
-            f"When asked who you are, answer as **{base}**: your response "
-            "template, your doctrine, and your agentihooks toolbelt "
-            "(lifecycle-hook guardrails, the brain memory system, "
-            "`hooks-utils` MCP tools, the installed skills) — not a generic "
-            "description of the underlying coding agent, and never by reciting "
-            "the raw profile chain as if it were a name."
-        )
-
-        if bundle_dir:
-            bundle_md = bundle_dir / ".claude" / "CLAUDE.md"
-            if not bundle_md.exists():
-                bundle_md = bundle_dir / "CLAUDE.md"
-            if bundle_md.exists():
-                content = bundle_md.read_text().strip()
-                if content:
-                    parts.append(f"<!-- bundle shared directives -->\n{content}")
-
-        for pname, pdir in profile_dirs:
-            src = pdir / "CLAUDE.md"
-            if src.exists():
-                content = src.read_text().strip()
-                if content:
-                    parts.append(f"<!-- profile: {pname} -->\n{content}")
-
-        if self._pending_rules:
-            rule_parts = [
-                f"<!-- rule: {name} ({label}) -->\n{text.strip()}" for label, name, text in self._pending_rules
-            ]
-            parts.append("# Rules\n\n" + "\n\n---\n\n".join(rule_parts))
-
-        manifesto_text = self._read_manifesto()
-        if manifesto_text:
-            parts.append(f"<!-- ci-manifesto -->\n{manifesto_text.strip()}")
-
-        managed_text = "\n\n---\n\n".join(parts) + f"\n\n{_MANAGED_FOOTER}\n"
         dst = self.home() / "AGENTS.md"
-        dst.parent.mkdir(parents=True, exist_ok=True)
-
-        operator_tail = ""
-        if dst.exists():
-            existing = dst.read_text()
-            if _MANAGED_HEADER in existing:
-                if _MANAGED_FOOTER in existing:
-                    # Preserve whatever the operator appended after our managed region.
-                    operator_tail = existing.split(_MANAGED_FOOTER, 1)[1]
-                else:
-                    # Legacy managed file predating the footer marker — one-time backup.
-                    backup = dst.with_suffix(f".md.bak.{datetime.now(timezone.utc):%Y%m%d%H%M%S}")
-                    shutil.copy2(dst, backup)
-                    _i._cprint(f"  [!!] Legacy AGENTS.md (no managed-end marker) backed up → {backup}")
-            else:
-                backup = dst.with_suffix(f".md.bak.{datetime.now(timezone.utc):%Y%m%d%H%M%S}")
-                shutil.copy2(dst, backup)
-                _i._cprint(f"  [!!] Pre-existing AGENTS.md backed up → {backup}")
-
-        text = managed_text + operator_tail
-        _atomic_write(dst, text)
+        text = write_persona(dst, managed_text, _MANAGED_HEADER, _MANAGED_FOOTER)
 
         # Codex caps the combined instruction doc (project_doc_max_bytes,
         # default 32 KiB). v0.147.0 loaded a 415 KB global AGENTS.md in full,
@@ -472,17 +345,6 @@ class CodexAdapter:
             f"[OK] Wrote {dst} ({size} bytes; {len(profile_chain)} profile(s), "
             f"{len(self._pending_rules)} rule(s); project_doc_max_bytes={ceiling})"
         )
-
-    def _read_manifesto(self) -> str:
-        try:
-            from hooks.config import _resolve_manifesto_path
-
-            path = _resolve_manifesto_path()
-            if path and Path(path).exists():
-                return Path(path).read_text()
-        except Exception:
-            pass
-        return ""
 
     # ------------------------------------------------------------------
     # MCP registration
@@ -513,7 +375,7 @@ class CodexAdapter:
         """Merge a layer of MCP servers into [mcp_servers.*] in config.toml.
 
         Claude ``.mcp.json`` entries translate almost 1:1; SSE transports are
-        skipped with a warning — codex has no SSE client (CODEX-COMPAT.md §7).
+        skipped with a warning — codex has no SSE client (docs/reference/CODEX-COMPAT.md §7).
         """
         _i = _install_module()
         config_path = self.home() / "config.toml"
@@ -522,6 +384,8 @@ class CodexAdapter:
         added: list[str] = []
         for name, spec in servers.items():
             spec = dict(spec)
+            if drop_if_credentialed(name, spec, "config.toml"):
+                continue
             stype = spec.get("type", "stdio" if spec.get("command") else "http")
             if stype == "sse":
                 _i._cprint(
@@ -539,9 +403,9 @@ class CodexAdapter:
                 if spec.get("env"):
                     clean_env: dict = {}
                     for ek, ev in dict(spec["env"]).items():
-                        ev_s = str(ev)
-                        if "${" in ev_s:
-                            # Reference, not a literal value — nothing to scan.
+                        ev_s = scannable(str(ev))
+                        if not ev_s:
+                            # Nothing but ${VAR} references — no literal to scan.
                             clean_env[ek] = ev
                             continue
                         hits = _scan_secrets(ev_s, mode="strict")
@@ -567,12 +431,14 @@ class CodexAdapter:
                 clean_headers: dict = {}
                 for hk, hv in dict(spec.get("headers") or {}).items():
                     hv_s = str(hv)
-                    bearer = _re.fullmatch(r"Bearer\s+\$\{(\w+)\}", hv_s)
+                    # Braced or unbraced — codex expands neither, so both map
+                    # to its native env indirection or get dropped.
+                    bearer = _re.fullmatch(r"Bearer\s+\$\{?(\w+)\}?", hv_s)
                     if hk.lower() == "authorization" and bearer:
                         entry["bearer_token_env_var"] = bearer.group(1)
-                    elif "${" in hv_s:
+                    elif has_env_reference(hv_s):
                         _i._cprint(
-                            f"  [!!] MCP '{name}' header '{hk}' uses a ${{VAR}} placeholder — "
+                            f"  [!!] MCP '{name}' header '{hk}' uses a ${{VAR}}/$VAR reference — "
                             "codex does not expand these; header dropped. Use a literal value "
                             "or an Authorization Bearer ${VAR} (mapped to bearer_token_env_var)."
                         )
@@ -595,7 +461,122 @@ class CodexAdapter:
             added.append(name)
         self._dump_toml(config_path, doc)
         if added:
+            record_managed_mcp(self.name, added)
             _i._cprint(f"  [OK] Codex MCP servers: {', '.join(added)}")
+
+    def teardown(self) -> None:
+        _i = _install_module()
+        home = self.home()
+        wrapper = home / "agentihooks-hook.sh"
+
+        # hooks.json: strip our groups per event; foreign groups survive.
+        hooks_path = home / "hooks.json"
+        if hooks_path.exists():
+            try:
+                doc = json.loads(hooks_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                # Unparseable file may hold operator hooks mid-edit — preserve
+                # it rather than treating it as empty and deleting it.
+                backup = hooks_path.with_suffix(f".json.bak.{datetime.now(timezone.utc):%Y%m%d%H%M%S}")
+                shutil.move(str(hooks_path), str(backup))
+                _i._cprint(f"  [!!] {hooks_path.name} unparseable — preserved at {backup.name}")
+                doc = None
+            merged = doc.get("hooks", {}) if isinstance(doc, dict) and isinstance(doc.get("hooks"), dict) else {}
+            foreign_left = {}
+            for event, groups in merged.items():
+                groups = groups if isinstance(groups, list) else []
+                foreign = [
+                    g
+                    for g in groups
+                    if not any(_command_is_wrapper(h.get("command", ""), wrapper) for h in g.get("hooks", []))
+                ]
+                if foreign:
+                    foreign_left[event] = foreign
+            if foreign_left:
+                _atomic_write(hooks_path, json.dumps({"hooks": foreign_left}, indent=2))
+                _i._cprint(f"  [RM] Removed agentihooks entries from {hooks_path} (operator hooks kept)")
+            elif doc is not None:
+                hooks_path.unlink()
+                _i._cprint(f"  [RM] Removed {hooks_path}")
+        wrapper.unlink(missing_ok=True)
+
+        # config.toml: keys still holding our recorded value are withdrawn; a
+        # hand-edited key is the operator's and stays. `notify` goes only if it
+        # still points at our shim. [features].hooks is left as-is — true with
+        # no hooks configured is inert, and the operator may run their own.
+        config_path = home / "config.toml"
+        if config_path.exists():
+            doc = self._load_toml(config_path)
+            agentihooks_tbl = doc.get("agentihooks")
+            managed = agentihooks_tbl.get("managed", {}) if isinstance(agentihooks_tbl, dict) else {}
+            removed_keys = []
+            for key in list(managed.keys() if hasattr(managed, "keys") else []):
+                if doc.get(key) == managed.get(key):
+                    doc.pop(key, None)
+                    removed_keys.append(key)
+            if not managed and any(k in doc for k in ("approval_policy", "sandbox_mode")):
+                # No record (legacy install / hand-deleted table). These values
+                # carry no agentihooks fingerprint, so removing by name could
+                # revert a deliberate operator choice — warn instead, loudly:
+                # danger-full-access left behind is worth the operator's look.
+                _i._cprint(
+                    "  [!!] no [agentihooks].managed record — approval_policy/sandbox_mode "
+                    "left as-is; review them (a torn-down bypass install would have set "
+                    '"never"/"danger-full-access").'
+                )
+            if "agentihooks" in doc:
+                doc.pop("agentihooks", None)
+            notify = doc.get("notify")
+            if isinstance(notify, list) and any("notify_shim" in str(part) for part in notify):
+                doc.pop("notify", None)
+            # Ours by construction (install_persona sets it on every run).
+            doc.pop("project_doc_max_bytes", None)
+            table = doc.get("mcp_servers")
+            from scripts.targets._common import managed_mcp_names
+
+            recorded_names = managed_mcp_names(self.name)
+            removed = []
+            if table is not None:
+                for n in recorded_names:
+                    if table.pop(n, None) is not None:
+                        removed.append(n)
+                if not recorded_names and "hooks-utils" in table:
+                    # No record: remove hooks-utils only when its content proves
+                    # it is ours — a name collision with the operator's own
+                    # server must not delete their entry.
+                    import tomlkit as _tomlkit
+
+                    entry_text = _tomlkit.dumps({"e": table["hooks-utils"]})
+                    if "hooks.mcp" in entry_text:
+                        table.pop("hooks-utils")
+                        removed.append("hooks-utils")
+                    else:
+                        _i._cprint(
+                            "  [!!] 'hooks-utils' in config.toml has no install record and "
+                            "does not look agentihooks-managed — left in place; review it."
+                        )
+                if not len(table):
+                    doc.pop("mcp_servers", None)
+            self._dump_toml(config_path, doc)
+            if removed_keys or removed:
+                _i._cprint(
+                    f"  [RM] Removed from {config_path}: " + ", ".join(removed_keys + [f"mcp:{n}" for n in removed])
+                )
+        clear_managed_mcp(self.name)
+
+        strip_persona(home / "AGENTS.md", _MANAGED_HEADER, _MANAGED_FOOTER)
+
+        # Translated prompts: reap everything the manifest owns.
+        prompts_dir = home / "prompts"
+        manifest_path = prompts_dir / ".agentihooks-manifest.json"
+        if manifest_path.exists():
+            try:
+                for name in json.loads(manifest_path.read_text()):
+                    (prompts_dir / name).unlink(missing_ok=True)
+            except (json.JSONDecodeError, OSError):
+                pass
+            manifest_path.unlink(missing_ok=True)
+            _i._cprint(f"  [RM] Removed translated prompts from {prompts_dir}")
 
     def post_install_reconcile(self, profile_chain: list[str], persisted_profile: str) -> None:
         _i = _install_module()

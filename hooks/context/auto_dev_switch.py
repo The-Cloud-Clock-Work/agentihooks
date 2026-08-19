@@ -102,11 +102,11 @@ def inject_on_session_start(cwd: str) -> None:
             return
         content = f"[auto-dev-switch] {msg}"
 
-        from hooks.targets import is_codex
+        from hooks.targets import buffers_single_envelope
 
-        if is_codex():
-            # Codex parses hook stdout as ONE JSON object — queue for the
-            # single end-of-process flush instead of printing our own.
+        if buffers_single_envelope():
+            # Codex and Copilot parse hook stdout as ONE JSON object — queue
+            # for the single end-of-process flush instead of printing our own.
             from hooks.targets import emitter
 
             emitter.buffer_context(content)
