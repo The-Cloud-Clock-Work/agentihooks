@@ -17,6 +17,7 @@ byte-identical.
 from __future__ import annotations
 
 import glob
+import json
 import os
 import re
 from pathlib import Path
@@ -156,6 +157,90 @@ _COPILOT_EVENTS.update({v: v for v in list(_COPILOT_EVENTS.values())})
 _COPILOT_EVENTS["PostToolUseFailure"] = "PostToolUse"
 
 
+# Copilot's hook-boundary tool names → the Claude names every guardrail
+# switches on (observed live, v1.0.80: `bash`, `view`, `create`, `edit`,
+# `glob`). An unmapped name (an MCP tool) passes through unchanged. `shell`
+# is the docs' name for the shell tool; the hook boundary says `bash` — both
+# kept so a rename in either direction cannot unmap the one tool the
+# mutation guards care about.
+_COPILOT_TOOL_NAMES = {
+    "bash": "Bash",
+    "shell": "Bash",
+    "view": "Read",
+    "create": "Write",
+    "edit": "Edit",
+    "grep": "Grep",
+    "glob": "Glob",
+    "web_fetch": "WebFetch",
+    "web_search": "WebSearch",
+    "task": "Agent",
+    # Two Rust-backed builtin write tools the v1.0.80 binary dispatches that
+    # are NOT single verbs: `apply_patch` carries a whole patch body in
+    # {patch: ...}; `str_replace_editor` is a dispatcher whose real verb is a
+    # nested `command` field. Both are in copilot's own write-tool set
+    # (`new Set(["apply_patch","create","edit","str_replace"])`), so a model
+    # backend that emits them (OpenAI/Anthropic tool conventions) would slip a
+    # write past the Write/Edit secrets branch unless it maps to one. Handled
+    # by name below AND by unpacking their args into a field the scan reads.
+    "apply_patch": "Edit",
+    "str_replace_editor": "Edit",
+}
+
+# str_replace_editor's nested command → the Claude tool it really is.
+_COPILOT_STR_REPLACE_VERBS = {
+    "create": "Write",
+    "str_replace": "Edit",
+    "insert": "Edit",
+    "view": "Read",
+    "undo_edit": "Edit",
+}
+
+# Copilot arg keys → the Claude spellings the scanners read
+# (`create` sends {path, file_text}; `edit` sends {path, old_str, new_str}).
+# Filled alongside the originals, never replacing them.
+_COPILOT_ARG_ALIASES = (
+    ("path", "file_path"),
+    ("file_text", "content"),
+    ("old_str", "old_string"),
+    ("new_str", "new_string"),
+)
+
+
+def _copilot_tool_call(name: str, args: Any) -> tuple[str, dict[str, Any]]:
+    """Map one copilot tool call onto the (tool_name, tool_input) handlers read.
+
+    ``args`` arrives as a JSON STRING at the hook boundary. If it does not
+    parse, the raw text is placed under both ``command`` and ``content`` so
+    the secrets scan still sees it — parse failure must never hide a payload
+    from the HARD FLOOR.
+    """
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except json.JSONDecodeError:
+            args = {"command": args, "content": args}
+    if not isinstance(args, dict):
+        args = {}
+
+    # apply_patch's entire diff lives in {patch: "..."} — alias it into
+    # `content` so the Write/Edit secrets branch, which reads content, sees
+    # the whole body (a secret anywhere in the patch is caught).
+    if name == "apply_patch" and args.get("patch") and not args.get("content"):
+        args["content"] = args["patch"]
+
+    # str_replace_editor is a dispatcher; its real verb is args["command"].
+    # Resolve the mapped tool from that (create→Write, str_replace→Edit, …)
+    # so the right secrets branch fires, not the top-level name alone.
+    mapped = _COPILOT_TOOL_NAMES.get(name, name)
+    if name == "str_replace_editor":
+        mapped = _COPILOT_STR_REPLACE_VERBS.get(str(args.get("command", "")), "Edit")
+
+    for src, dst in _COPILOT_ARG_ALIASES:
+        if src in args and not args.get(dst):
+            args[dst] = args[src]
+    return mapped, args
+
+
 # Copilot hook payload keys → the snake_case spelling handlers read.
 _COPILOT_ALIASES = (
     ("sessionId", "session_id"),
@@ -168,11 +253,41 @@ _COPILOT_ALIASES = (
 
 
 def _normalize_copilot(payload: dict[str, Any]) -> dict[str, Any]:
-    raw_event = payload.get("hookEventName") or payload.get("hook_event_name") or ""
+    # Real copilot payloads carry no event-name field at all — stdin is the
+    # event's input object alone (observed live, v1.0.80). The adapter
+    # registers each event with its name as argv[1] and the wrapper exports it
+    # as AGENTIHOOKS_COPILOT_EVENT; payload spellings still win if a future
+    # copilot starts sending one.
+    raw_event = (
+        payload.get("hookEventName")
+        or payload.get("hook_event_name")
+        or os.environ.get("AGENTIHOOKS_COPILOT_EVENT", "")
+    )
     mapped = _COPILOT_EVENTS.get(raw_event)
     if mapped:
         payload["hook_event_name"] = mapped
         payload.setdefault("copilot_event_name", raw_event)
+
+    # preToolUse carries a toolCalls ARRAY (batched parallel calls), each
+    # with a stringified args field — not toolName/toolArgs (observed live,
+    # v1.0.80). The first call folds into tool_name/tool_input; the rest ride
+    # along for hook_manager to run through the same pipeline, since exit
+    # codes can only deny the batch as a whole.
+    calls = payload.get("toolCalls")
+    if isinstance(calls, list) and calls:
+        normalized = []
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            name, args = _copilot_tool_call(str(call.get("name", "")), call.get("args"))
+            normalized.append({"tool_name": name, "tool_input": args})
+        if normalized:
+            if not payload.get("tool_name"):
+                payload["tool_name"] = normalized[0]["tool_name"]
+            if not payload.get("tool_input"):
+                payload["tool_input"] = normalized[0]["tool_input"]
+            if len(normalized) > 1:
+                payload["copilot_extra_tool_calls"] = normalized[1:]
 
     # Not setdefault: a destination key that is PRESENT but empty ({} / "" /
     # None) would win over the real value and hand every guardrail blank
@@ -185,6 +300,15 @@ def _normalize_copilot(payload: dict[str, Any]) -> dict[str, Any]:
                 payload[snake] = value
         elif payload.get(snake):
             payload[camel] = payload[snake]
+
+    # postToolUse sends singular toolName/toolArgs, args stringified and the
+    # tool named in copilot's vocabulary — same translation as toolCalls so
+    # pre/post pairs (retry breaker, tool memory) agree on the name.
+    if payload.get("tool_name"):
+        name, args = _copilot_tool_call(str(payload["tool_name"]), payload.get("tool_input"))
+        payload["tool_name"] = name
+        if args:
+            payload["tool_input"] = args
 
     resp = payload.get("tool_response")
     if resp is not None:

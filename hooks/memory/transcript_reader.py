@@ -268,8 +268,16 @@ def _iter_copilot_records(entries: list[dict]) -> Iterator[TranscriptRecord]:
         if not isinstance(data, dict):
             continue
         if etype == "user.message":
-            assistant_seen_this_turn = False
             text = data.get("content", "")
+            # Hook-injected context rides in as a user.message with
+            # source="system" (observed live, v1.0.80) — counting it as a
+            # user turn would charge every additionalContext injection as a
+            # turn of its own.
+            if data.get("source") == "system":
+                if text:
+                    yield {"kind": "system_text", "text": text, "raw": entry}
+                continue
+            assistant_seen_this_turn = False
             if text:
                 yield {"kind": "user_text", "text": text, "raw": entry}
         elif etype == "assistant.message":

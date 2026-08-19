@@ -150,6 +150,10 @@ class CopilotAdapter:
     def home(self) -> Path:
         return copilot_home()
 
+    @staticmethod
+    def _managed_sidecar(home: Path) -> Path:
+        return home / ".agentihooks-managed.json"
+
     # ------------------------------------------------------------------
     # settings: settings.json managed keys + hooks/agentihooks.json + wrapper
     # ------------------------------------------------------------------
@@ -179,15 +183,24 @@ class CopilotAdapter:
 
         # Managed-key discipline: record what we wrote so a later change can
         # update it, while a value the operator hand-edited since our last
-        # write is left alone.
-        managed = doc.get("agentihooks")
-        managed = dict(managed) if isinstance(managed, dict) else {}
-        recorded = managed.get("managed")
+        # write is left alone. The record lives in a sidecar file — copilot
+        # warns about unknown top-level settings keys on every launch, so an
+        # in-file `agentihooks` key is per-launch noise (observed v1.0.80).
+        recorded = self._load_json(self._managed_sidecar(home))
+        legacy = doc.pop("agentihooks", None)
+        if not recorded and isinstance(legacy, dict) and isinstance(legacy.get("managed"), dict):
+            recorded = legacy["managed"]
         recorded = dict(recorded) if isinstance(recorded, dict) else {}
 
         for key, value in wanted.items():
             current = doc.get(key)
-            if current is None or current == recorded.get(key):
+            # `current == value`: the on-disk value already equals what we
+            # would write, so it is ours (or an operator edit identical to
+            # ours — indistinguishable and immaterial). Recording it heals a
+            # lost/deleted sidecar; without it, a sidecar-less install with our
+            # value intact would misread every key as a hand-edit forever and
+            # never auto-apply a future change.
+            if current is None or current == recorded.get(key) or current == value:
                 doc[key] = value
                 recorded[key] = value
             else:
@@ -195,8 +208,7 @@ class CopilotAdapter:
                     f"  [!!] settings.json '{key}' hand-set to {current!r} (managed value would be "
                     f"{value!r}) — leaving operator value in place"
                 )
-        managed["managed"] = recorded
-        doc["agentihooks"] = managed
+        _atomic_write(self._managed_sidecar(home), json.dumps(recorded, indent=2) + "\n")
 
         default_mode = (rendered.get("permissions") or {}).get("defaultMode", "")
         if default_mode == "bypassPermissions":
@@ -233,7 +245,8 @@ class CopilotAdapter:
             "# managed-by: agentihooks — regenerate with: agentihooks init --target copilot\n"
             "set -euo pipefail\n"
             f"cd {shlex.quote(str(_i.AGENTIHOOKS_ROOT))}\n"
-            f"AGENTIHOOKS_TARGET=copilot exec {shlex.quote(python_bin)} -m hooks\n"
+            f'AGENTIHOOKS_COPILOT_EVENT="${{1:-}}" AGENTIHOOKS_TARGET=copilot '
+            f"exec {shlex.quote(python_bin)} -m hooks\n"
         )
         wrapper.chmod(0o755)
 
@@ -241,12 +254,23 @@ class CopilotAdapter:
         # Copilot merges both sources, so writing to both fires every hook twice.
         hooks_dir = home / "hooks"
         hooks_path = hooks_dir / "agentihooks.json"
-        entry = {
-            "type": "command",
-            "command": str(wrapper),
-            "timeoutSeconds": _HOOK_TIMEOUT_SECONDS,
+        # Copilot's hook stdin is the event's input object alone — no
+        # hookEventName/hookType field (observed live, v1.0.80: a dispatched
+        # sessionEnd carried only reason/sessionId/timestamp/cwd). The
+        # registration is the event's identity, so each entry passes its event
+        # name as argv[1]; the wrapper exports it as AGENTIHOOKS_COPILOT_EVENT
+        # for the normalizer. Commands run via /bin/sh, so the argument
+        # survives the spawn.
+        desired = {
+            e: [
+                {
+                    "type": "command",
+                    "command": f"{wrapper} {e}",
+                    "timeoutSeconds": _HOOK_TIMEOUT_SECONDS,
+                }
+            ]
+            for e in COPILOT_HOOK_EVENTS
         }
-        desired = {e: [entry] for e in COPILOT_HOOK_EVENTS}
 
         existing: dict = {}
         if hooks_path.exists():
@@ -419,11 +443,23 @@ class CopilotAdapter:
             if isinstance(tools, str):
                 tools = [t.strip() for t in tools.split(",") if t.strip()]
             if isinstance(tools, list):
-                mapped = [_TOOL_NAMES.get(t, t) for t in tools if isinstance(t, str)]
+                # Claude scoped grants ("Bash(git diff*)") reduce to the bare
+                # tool — copilot's grammar has no scoping, so the scope is
+                # dropped and the agent body's own discipline is what remains
+                # of the restriction.
+                mapped = [
+                    _TOOL_NAMES.get(base, base)
+                    for t in tools
+                    if isinstance(t, str)
+                    for base in (t.split("(", 1)[0].strip(),)
+                    if base
+                ]
                 if mapped:
                     out_front["tools"] = sorted(set(mapped))
-            if front.get("model"):
-                out_front["model"] = front["model"]
+            # Claude model aliases ("haiku", "sonnet") are not copilot model
+            # ids — copilot warns "model X is not available" on every agent
+            # invocation and falls back to auto. Dropping the field IS the
+            # auto fallback, without the per-run warning.
 
             if len(body) > _AGENT_BODY_MAX:
                 marker = "\n\n<!-- truncated by agentihooks: exceeds Copilot's 30000-char agent body limit -->\n"
@@ -629,8 +665,10 @@ class CopilotAdapter:
         settings_path = home / "settings.json"
         if settings_path.exists():
             doc = self._load_json(settings_path)
-            managed = doc.get("agentihooks")
-            recorded = managed.get("managed", {}) if isinstance(managed, dict) else {}
+            recorded = self._load_json(self._managed_sidecar(home))
+            if not recorded:
+                legacy = doc.get("agentihooks")
+                recorded = legacy.get("managed", {}) if isinstance(legacy, dict) else {}
             removed_keys = []
             for key, value in list(recorded.items() if isinstance(recorded, dict) else []):
                 if doc.get(key) == value:
@@ -654,6 +692,7 @@ class CopilotAdapter:
             _atomic_write(settings_path, json.dumps(doc, indent=2) + "\n")
             if removed_keys:
                 _i._cprint(f"  [RM] Removed managed keys from {settings_path}: {', '.join(removed_keys)}")
+        self._managed_sidecar(home).unlink(missing_ok=True)
 
         strip_persona(home / "copilot-instructions.md", _MANAGED_HEADER, _MANAGED_FOOTER)
 

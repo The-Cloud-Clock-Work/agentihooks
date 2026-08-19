@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Copilot hook dispatch against the REAL v1.0.80 stdin contract, settled from
+  live authenticated sessions: no event-name field on stdin (event now passed
+  as wrapper argv → `AGENTIHOOKS_COPILOT_EVENT`), preToolUse's batched
+  `toolCalls[]` with stringified args and copilot tool names translated onto
+  the Claude vocabulary the guardrails read — previously every copilot
+  preToolUse guardrail received empty inputs and allowed everything.
+- Copilot builtin write tools `apply_patch` and `str_replace_editor` now
+  map onto the Write/Edit secrets branch — unmapped they skipped scanning
+  entirely (a HARD FLOOR bypass on non-default model backends, caught by an
+  adversarial refuter against the shipped binary's write-tool set).
+- Copilot block channels per live semantics: exit 2 denies preToolUse only;
+  `{"decision":"block","reason"}` on stdout is the sole userPromptSubmitted
+  block channel and is now emitted on the BlockAction path.
+- Copilot context injection: flush as top-level `additionalContext` — the
+  nested claude envelope is silently ignored by copilot's parser.
+- Copilot settings managed-key record moved to a `.agentihooks-managed.json`
+  sidecar (in-file key triggered a per-launch "unknown top-level key" warning);
+  legacy in-file records migrate on init.
+- Copilot agent translation: scoped Claude grants (`Bash(git diff*)`) reduce to
+  the bare mapped tool; claude model aliases dropped (per-run "model not
+  available" warning otherwise).
+- Copilot transcript reader: hook-injected context (`user.message` with
+  `source:"system"`) no longer counts as a user turn.
+
+
 ### Added
 
 - **Teardown never destroys operator content it cannot attribute.** Findings

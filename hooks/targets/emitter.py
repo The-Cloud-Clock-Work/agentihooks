@@ -72,6 +72,15 @@ def flush(event_name: str) -> None:
             {"event": event_name, "target": current_target(), "chars": len(content)},
         )
         return
+    from hooks.targets import current_target
+
+    # Copilot reads TOP-LEVEL ``additionalContext`` only — the nested claude
+    # shape is silently ignored (proven live on v1.0.80: a top-level canary
+    # reached the model, a hookSpecificOutput-nested one did not). Codex
+    # clones claude's nested contract.
+    if current_target() == "copilot":
+        print(json.dumps({"additionalContext": content}))
+        return
     print(
         json.dumps(
             {

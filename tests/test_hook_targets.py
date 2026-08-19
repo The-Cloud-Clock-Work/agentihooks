@@ -460,7 +460,7 @@ class TestCopilotNormalizer:
         )
         assert payload["hook_event_name"] == "PreToolUse"
         assert payload["session_id"] == "s1"
-        assert payload["tool_name"] == "shell"
+        assert payload["tool_name"] == "Bash", "copilot tool names map onto the guardrail vocabulary"
         assert payload["tool_input"] == {"command": "ls"}
 
     def test_event_names_map_to_dispatch_vocabulary(self, copilot):
@@ -548,14 +548,34 @@ class TestCopilotCapabilities:
         assert supports_arg_mutation("claude") is False
 
     def test_envelope_block_required_only_for_copilot(self):
-        # Copilot's runtime treats exit 2 as a warning on some events, so a
-        # denial must also be stated in the stdout envelope — on the events
-        # that actually carry a decision field.
+        # Settled live on v1.0.80: preToolUse denies on exit 2 alone;
+        # userPromptSubmitted blocks ONLY via a stdout {"decision": "block"}.
         assert requires_envelope_block("PreToolUse", "copilot") is True
         assert requires_envelope_block("PermissionRequest", "copilot") is True
+        assert requires_envelope_block("UserPromptSubmit", "copilot") is True
         assert requires_envelope_block("PreToolUse", "codex") is False
         assert requires_envelope_block("PreToolUse", "claude") is False
 
     def test_envelope_block_not_emitted_where_there_is_no_decision_field(self):
-        for event in ("SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "Notification"):
+        for event in ("SessionStart", "SessionEnd", "Stop", "Notification"):
             assert requires_envelope_block(event, "copilot") is False
+
+
+class TestCopilotBuiltinWriteToolMapping:
+    def test_apply_patch_maps_to_edit_with_patch_in_content(self, copilot):
+        payload = normalize_payload(
+            {"toolCalls": [{"id": "a", "name": "apply_patch", "args": '{"patch": "diff body"}'}]}
+        )
+        assert payload["tool_name"] == "Edit"
+        assert payload["tool_input"]["content"] == "diff body"
+
+    def test_str_replace_editor_maps_by_nested_command(self, copilot):
+        for cmd, expected in (("create", "Write"), ("str_replace", "Edit"), ("insert", "Edit"), ("view", "Read")):
+            payload = normalize_payload(
+                {
+                    "toolCalls": [
+                        {"id": "a", "name": "str_replace_editor", "args": f'{{"command": "{cmd}", "path": "/x"}}'}
+                    ]
+                }
+            )
+            assert payload["tool_name"] == expected, f"{cmd} should map to {expected}"

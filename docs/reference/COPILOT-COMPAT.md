@@ -117,46 +117,87 @@ the default rather than to a block.
 `allowedEnvVars`, neither of which the adapter sets — unused capability, not a
 gap.
 
-### §2.3 stdout contract
+### §2.3 stdin contract — SETTLED LIVE (v1.0.80, 2026-08-19)
 
-Copilot parses hook stdout as exactly one JSON object, same as codex. Handlers
-buffer through `hooks/targets/emitter.py` and flush once at process exit. The
-predicate is `buffers_single_envelope()`, not `is_codex()` — the property is a
-target capability, not a target identity.
+Real payloads, captured from authenticated sessions (`session-state/<sid>/
+events.jsonl`, `hook.start` records):
 
-### §2.4 Permission channel
+- **No event-name field at all.** Stdin is the event's input object alone —
+  no `hookEventName`, no `hookType`. The registration is the event's
+  identity, so the adapter registers each event with its name as argv[1]
+  (`agentihooks-hook.sh preToolUse`); the wrapper exports it as
+  `AGENTIHOOKS_COPILOT_EVENT` and the normalizer falls back to it. Hook
+  commands run through `/bin/sh` (binary: "`/bin/sh` on Unix-like systems,
+  `cmd.exe` on Windows"), so the argument survives the spawn.
+- **preToolUse** sends a batched array, args stringified:
+  `{"sessionId", "cwd", "toolCalls": [{"id", "name", "args": "<json string>"}]}`.
+  NOT `toolName`/`toolArgs`. Tool names are copilot's runtime vocabulary at
+  the hook boundary: `bash` (not `shell`), `view`, `create`, `edit`, `grep`,
+  `glob`. Arg keys: `path`, `file_text` (create), `old_str`/`new_str` (edit),
+  `command` (bash). Two more builtin WRITE tools exist that are NOT single
+  verbs and were a HARD FLOOR bypass until mapped: `apply_patch` carries a
+  whole diff in `{patch}` (aliased into `content` so the scan reads it), and
+  `str_replace_editor` is a dispatcher whose real verb is a nested `command`
+  (`create`→Write, `str_replace`/`insert`→Edit, `view`→Read). Both are in
+  copilot's own write set `new Set(["apply_patch","create","edit","str_replace"])`.
+  The normalizer maps names and arg keys onto the Claude
+  spellings the guardrails read, and `hook_manager` runs every batched call
+  through the PreToolUse pipeline — a deny from any call denies the whole
+  batch via exit 2 (the safe over-block; per-call stdout denial exists in the
+  wire format but the command-hook shape was not confirmed live).
+- **postToolUse** sends singular `toolName` + `toolArgs` (STILL a JSON
+  string) + `toolResult: {resultType, textResultForLlm, ...}`.
+- Other observed fields: `timestamp` (ms epoch), `cwd`; `agentStop` carries
+  `transcriptPath` (the events.jsonl) and snake_case `stop_hook_active`;
+  `sessionEnd` carries `reason`.
 
-`PreToolUse` on Copilot is a **superset** of Claude's and far wider than codex's:
+### §2.4 stdout contract — SETTLED LIVE
 
-| | claude | codex | copilot |
-|---|---|---|---|
-| `permissionDecision` | allow/deny/ask | deny only | allow/deny/ask |
-| `additionalContext` on PreToolUse | yes | no | yes |
-| `modifiedArgs` (rewrite tool args) | no | no | yes |
+One JSON object, top-level fields only — established by LIVE probe, which is
+what governs here. The field names `hookSpecificOutput`, `permissionDecision`,
+`permissionDecisionReason`, `modifiedArgs`, `updatedInput` DO appear in
+`runtime.node` (in one `HookConfig` internally-tagged-enum string pool
+alongside `allowedEnvVars`/`vsCodeCompat`/`suppressOutput`), and `app.js`'s
+`hookProcessorPreToolUse` consumes `argMutations`/`additionalContexts`/
+`denials`/`askRequests` per tool-call. So the *native/aggregated* hook-result
+shape is richer than what a command hook can drive. But for the **command**
+transport this integration uses, the live v1.0.80 binary honored only the
+top-level shape: a nested `hookSpecificOutput.additionalContext` canary never
+reached the model while a top-level `additionalContext` did, and a preToolUse
+`{"decision":"block"}` on stdout did not deny (the tool ran) while exit 2 did.
+Treat the struct pool as the union across transports, not as the command-hook
+stdout contract.
 
-Encoded in `hooks/targets/capabilities.py`. `supports_arg_mutation()` is the
-declared seam for `modifiedArgs`; nothing consumes it yet.
+| Field | Effect |
+|---|---|
+| `additionalContext` (top-level string) | injected into model context (arrives as a `user.message` with `source: "system"`) |
+| `{"decision": "block", "reason": ...}` | blocks `userPromptSubmitted` ("Prompt blocked by hook: <reason>", zero model credits). Ignored on `preToolUse`. |
 
-### §2.5 Exit-code semantics — the open hazard
+`emitter.flush()` emits the top-level shape on copilot; `emit_permission_decision`
+emits `{"decision": "block", "reason"}` there. Codex/claude keep the nested
+`hookSpecificOutput` shapes. `modifiedArgs`/allow/ask are in the runtime's
+result union but were not driven from a command hook's stdout in the live
+probe; `supports_arg_mutation()` stays a declared, unconsumed seam. A
+consequence for batching: this integration denies via exit 2, which denies the
+whole preToolUse batch — the safe over-block. The wire format's per-tool-call
+`denials[{toolCallId}]` could deny one call and pass the rest, but the
+command-hook stdout shape that populates it was not confirmed live, so the
+conservative batch-wide deny stands.
 
-Two sources disagree and this matters for every guardrail:
+### §2.5 Exit-code semantics — SETTLED LIVE
 
-- GitHub's hooks reference states `preToolUse` command hooks are **fail-closed**:
-  any non-zero exit denies the tool call.
-- The shipped runtime carries the literal string
-  `Hook command exited with code 2 (warning)`, implying exit 2 is a **warning**
-  on at least some events.
+| Event | exit 2 | stdout `{"decision":"block"}` |
+|---|---|---|
+| `preToolUse` | **denies** ("Denied by preToolUse hook: hook exited with code 2") | ignored (tool ran) |
+| `userPromptSubmitted` | advisory (turn ran to completion) | **blocks** (no model call) |
 
-AgentiHooks blocks via `BlockAction` → exit 2 + stderr. Rather than bet on which
-source is authoritative, `hook_manager.main()` consults
-`requires_envelope_block(event)` on the block path and, for copilot on the events
-that carry a decision field (`PreToolUse`, `PermissionRequest`), also emits
-`hookSpecificOutput.permissionDecision: "deny"` on stdout — one JSON object,
-alongside the exit code. Codex and claude are unaffected; their block path emits
-nothing on stdout, as before.
+Both cells were asserted against the live binary — the probes are automated in
+`scripts/copilot_smoke.sh` §[8]. Consequence: `requires_envelope_block()`
+returns true for copilot on `PreToolUse`, `PermissionRequest` AND
+`UserPromptSubmit` — on the last one the envelope is the ONLY block channel.
 
 **Timeouts always fail OPEN**, on every event including `preToolUse`. A hung
-hook does not block — it stops guarding. This is why `timeoutSec` is set
+hook does not block — it stops guarding. This is why `timeoutSeconds` is set
 generously (30s) rather than tightly.
 
 ## §3 Surface map
@@ -228,24 +269,44 @@ over a translated command.
 names: `Read`→`view`, `Write`→`create`, `Edit`→`edit`, `Bash`→`shell`,
 `Grep`→`grep`, `Glob`→`glob`, `WebFetch`→`web_fetch`, `WebSearch`→`web_search`,
 `Agent`/`Task`→`task`, `TodoWrite`→`update_todo`,
-`AskUserQuestion`→`ask_user`. `description` is required by Copilot and is
-synthesized when the source omits it, or the agent is unloadable. Bodies over
-30,000 characters are truncated at a paragraph boundary with a marker.
+`AskUserQuestion`→`ask_user`. Scoped grants (`Bash(git diff*)`) reduce to the
+bare mapped tool — copilot's grammar has no scoping. A claude `model` alias
+(`haiku`, `sonnet`) is dropped: it is not a copilot model id and produces a
+per-invocation "model not available" warning before falling back to auto,
+which dropping the field does silently. `description` is required by Copilot
+and is synthesized when the source omits it, or the agent is unloadable.
+Bodies over 30,000 characters are truncated at a paragraph boundary with a
+marker. Note the naming split: `shell` is the frontmatter grant name (accepted
+without warnings, grants applied — verified live via `copilot --agent`), while
+the hook boundary reports the same tool as `bash`.
+
+**Settings managed-key record.** Lives in the `~/.copilot/.agentihooks-managed.json`
+sidecar, NOT in settings.json — copilot warns "Ignoring unknown top-level
+key(s)" on every launch for any key it does not recognize. Legacy in-file
+`agentihooks` keys migrate to the sidecar on the next init.
+
+**Auth portability.** Credentials ride in `~/.copilot/config.json`: copying
+that file into a scratch `COPILOT_HOME` authenticates it (proven live; the
+smoke script's live tier uses exactly this, never reading the file).
 
 ## §6 Transcript format
 
 `~/.copilot/session-state/<session-id>/events.jsonl`.
 
-⚠️ The `session-state/<session-id>/` directory layout is **observed** (an
-unauthenticated 1.0.80 run creates it, alongside `workspace.yaml`,
-`checkpoints/`, `rewind-file-snapshots/`, `research/`, `files/`). The
-`events.jsonl` filename and its contents are **not** — the file only
-materializes on an authenticated turn, and this integration has not yet had
-one. The per-line shape below is derived from the shipped
-`session-events.schema.json`, which is authoritative for the event union but
-does not name the file. Re-verify after the first authenticated session; the
-fixture (`tests/fixtures/copilot_events_sample.jsonl`) is schema-derived and
-should be replaced with a captured one.
+VERIFIED against live captures (2026-08-19, v1.0.80, authenticated
+sessions): the filename, the dotted-type union, `hook.start`/`hook.end`
+records (which carry the `hookType` and the exact stdin `input` object — the
+source of every §2.3 fact), and the reader's output (tool call/result
+correlation, metrics). `tests/fixtures/copilot_events_real.jsonl` is one such
+capture, with the system prompt elided and the synthetic test key scrubbed;
+`copilot_events_sample.jsonl` remains the schema-derived edge-case fixture
+(it exercises a failed tool, which the capture lacks).
+
+One capture-only fact the schema does not state: hook-injected
+`additionalContext` arrives back as a `user.message` with `source: "system"`.
+The reader classifies those as `system_text`, not `user_text` — counting them
+as user turns would charge every injection as a turn (observed: 4 turns
+instead of 1).
 
 Each line is
 `{id, timestamp, parentId, type, data}` where `type` is a dotted namespace
@@ -295,19 +356,18 @@ session id for the transcript-driven events only.
 
 ## §8 Known gaps
 
-- **Uninstall.** `uninstall_global()` removes Claude artifacts only — codex has
-  the same gap, and copilot inherits it. Tracked in the defer log.
 - **Slash commands.** No prompt-file support upstream; commands are reachable as
   skills, not as `/name`.
-- **Exit-code semantics.** §2.5 — needs an authenticated live turn to settle;
-  `scripts/copilot_smoke.sh` [8] is the assertion and currently skips.
-- **`events.jsonl` unobserved.** §6 — filename and contents are schema-derived
-  until an authenticated session produces one.
-- **MCP `url` / `command` / `args` are not secret-scanned** on any target — only
-  `env` values, header values and `tools` entries are. A credential embedded in
-  a server URL reaches disk. Pre-existing across claude, codex and copilot;
-  tracked in the defer log rather than changed here, because tightening what
-  gets dropped would alter existing installs on the next `init`.
+- **`allow`/`ask`/`modifiedArgs` on preToolUse.** Documented upstream, not
+  observed in the v1.0.80 binary (§2.4). If a later release ships them,
+  `supports_arg_mutation()` and `allowed_permission_decisions()` are the seams.
+- **`postResult` / `prePRDescription` / `userPromptTransformed`** hook events
+  exist upstream; the adapter does not register the first two (folding them
+  onto Stop would re-run session-end work) and only maps the third.
+
+Closed since first written: uninstall (`teardown()` parity, all targets), MCP
+url/command/args secret-scanning (`mcp_spec_credential_hits`), exit-code
+semantics (§2.5, settled live), `events.jsonl` (§6, captured live).
 
 ## §9 Verification
 
@@ -338,3 +398,17 @@ alone. Reproduce with:
 
 Cross-checked against `docs.github.com/en/copilot/reference/hooks-reference`,
 `.../custom-agents-configuration`, and the MCP/instructions how-to pages.
+
+Live-session evidence (2026-08-19, v1.0.80, authenticated):
+
+| Claim | How it was established |
+|---|---|
+| stdin has no event-name field; preToolUse sends `toolCalls[]` with stringified `args` | `hook.start` records in `session-state/<sid>/events.jsonl` (the `input` object IS the stdin) |
+| exit 2 denies preToolUse; ignored on userPromptSubmitted | probe hooks in a scratch `COPILOT_HOME` — automated in `scripts/copilot_smoke.sh` §[8] |
+| `{"decision":"block","reason"}` blocks userPromptSubmitted; ignored on preToolUse | same probes; block path in app.js: `Ywr(on)` → `Prompt blocked by hook` |
+| only top-level `additionalContext` reaches the model | two-canary probe (top-level word echoed, nested word invisible) |
+| command-hook stdout honors top-level `additionalContext` / `decision`, not the nested `hookSpecificOutput` shape | live canary probe (nested invisible, top-level reached the model); the struct field names exist in the runtime union but do not govern the command transport |
+| injected context arrives as `user.message` with `source:"system"` | captured events.jsonl (`tests/fixtures/copilot_events_real.jsonl`) |
+| auth rides in `config.json` | copy into scratch home → authenticated turn |
+| hook commands run via `/bin/sh` | binary string: "`/bin/sh` on Unix-like systems, `cmd.exe` on Windows" |
+| `shell` valid as agent grant name; hook boundary reports `bash` | `copilot --agent` run + captured `toolCalls` |

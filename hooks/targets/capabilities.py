@@ -55,19 +55,20 @@ def supports_arg_mutation(target: str | None = None) -> bool:
     return (target or current_target()) in _ARG_MUTATION_TARGETS
 
 
-# Events where a stdout ``permissionDecision`` envelope is meaningful. Emitting
-# one on, say, SessionEnd would be noise the host has no field for.
+# Events where a stdout decision envelope is meaningful. Emitting one on,
+# say, SessionEnd would be noise the host has no field for.
 _DECISION_EVENTS = frozenset({"PreToolUse", "PermissionRequest"})
+
+# Copilot v1.0.80, settled live: preToolUse is fail-closed on any non-zero
+# exit and IGNORES stdout envelopes; userPromptSubmitted is the inverse —
+# exit code advisory, blocked only by a stdout {"decision": "block"} object.
+# The envelope is therefore emitted on both kinds of event: belt-and-braces
+# where exit 2 already denies, the ONLY block channel on UserPromptSubmit.
+_COPILOT_BLOCKABLE_EVENTS = _DECISION_EVENTS | {"UserPromptSubmit"}
 
 
 def requires_envelope_block(event: str, target: str | None = None) -> bool:
-    """Whether a denial must ALSO be stated in stdout JSON, not just via exit 2.
-
-    Copilot's runtime carries the string "Hook command exited with code 2
-    (warning)" while its docs describe ``preToolUse`` as fail-closed on any
-    non-zero exit. Rather than bet on which is authoritative, the deny is
-    stated in both channels on the events that have a decision field.
-    """
-    if event not in _DECISION_EVENTS:
+    """Whether a denial must ALSO be stated in stdout JSON, not just via exit 2."""
+    if (target or current_target()) not in _ENVELOPE_BLOCK_TARGETS:
         return False
-    return (target or current_target()) in _ENVELOPE_BLOCK_TARGETS
+    return event in _COPILOT_BLOCKABLE_EVENTS

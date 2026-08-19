@@ -100,12 +100,13 @@ class TestHooksJson:
         doc = json.loads((copilot_home() / "hooks" / "agentihooks.json").read_text())
         assert doc["version"] == 1
         assert set(doc["hooks"].keys()) == set(COPILOT_HOOK_EVENTS)
-        for hooks in doc["hooks"].values():
-            assert hooks[-1]["command"].endswith("agentihooks-hook.sh")
+        for event, hooks in doc["hooks"].items():
+            assert hooks[-1]["command"].endswith(f"agentihooks-hook.sh {event}")
             assert hooks[-1]["type"] == "command"
             assert hooks[-1]["timeoutSeconds"] > 0
         wrapper = (copilot_home() / "agentihooks-hook.sh").read_text()
         assert "AGENTIHOOKS_TARGET=copilot" in wrapper
+        assert 'AGENTIHOOKS_COPILOT_EVENT="${1:-}"' in wrapper
 
     def test_hooks_are_not_also_inlined_in_settings(self, adapter):
         """Copilot merges hooks/ and the inline settings key — both fires twice."""
@@ -122,13 +123,13 @@ class TestHooksJson:
         doc = json.loads((home / "hooks" / "agentihooks.json").read_text())
         cmds = _hook_cmds(doc, "preToolUse")
         assert "/usr/bin/audit-hook" in cmds
-        assert any(c.endswith("agentihooks-hook.sh") for c in cmds)
+        assert any("agentihooks-hook.sh" in c for c in cmds)
 
     def test_rerun_does_not_stack_own_entries(self, adapter):
         adapter.write_settings({})
         adapter.write_settings({})
         doc = json.loads((copilot_home() / "hooks" / "agentihooks.json").read_text())
-        own = [c for c in _hook_cmds(doc, "sessionStart") if c.endswith("agentihooks-hook.sh")]
+        own = [c for c in _hook_cmds(doc, "sessionStart") if "agentihooks-hook.sh" in c]
         assert len(own) == 1
 
     def test_disabled_foreign_hook_with_wrapper_suffix_preserved(self, adapter):
@@ -143,7 +144,7 @@ class TestHooksJson:
         doc = json.loads((home / "hooks" / "agentihooks.json").read_text())
         cmds = _hook_cmds(doc, "preToolUse")
         assert disabled_cmd in cmds
-        assert str(wrapper_path) in cmds
+        assert f"{wrapper_path} preToolUse" in cmds
 
     def test_stale_own_entry_under_unwired_event_reaped(self, adapter):
         home = copilot_home()
@@ -259,6 +260,34 @@ class TestAgents:
             assert copilot_name in out
         for claude_name in ("Read,", "Grep,", "Bash\n"):
             assert claude_name not in out.split("---")[1]
+
+    def test_scoped_grants_reduce_to_bare_mapped_tools(self, adapter, tmp_path):
+        """Claude scoped grants like Bash(git diff*) are not copilot grammar --
+        untranslated they load an agent with no usable tools. The scope is
+        dropped and the bare tool mapped (observed live)."""
+        layers = self._layer(
+            tmp_path,
+            "scout.md",
+            "---\ndescription: scoped\ntools:\n- Bash(git diff*)\n- Bash(git log*)\n- Read\n---\n\nbody\n",
+        )
+        adapter.install_features("agents", layers, lambda p: p.suffix == ".md")
+        out = (copilot_home() / "agents" / "scout.md").read_text()
+        front = out.split("---")[1]
+        assert "shell" in front
+        assert "view" in front
+        assert "(" not in front
+
+    def test_claude_model_alias_dropped(self, adapter, tmp_path):
+        """`model: haiku` is not a copilot model id -- copilot warns and
+        falls back to auto per invocation; dropping the field IS that fallback."""
+        layers = self._layer(
+            tmp_path,
+            "fast.md",
+            "---\ndescription: fast\nmodel: haiku\n---\n\nbody\n",
+        )
+        adapter.install_features("agents", layers, lambda p: p.suffix == ".md")
+        out = (copilot_home() / "agents" / "fast.md").read_text()
+        assert "model:" not in out.split("---")[1]
 
     def test_description_synthesized_when_missing(self, adapter, tmp_path):
         """Copilot refuses to load an agent with no description."""
@@ -665,3 +694,70 @@ class TestTeardownDestructiveEdges:
         assert not (home / "hooks" / "agentihooks.json").exists()
         baks = list((home / "hooks").glob("agentihooks*.bak*"))
         assert baks and any("operator_hook" in b.read_text() for b in baks)
+
+
+class TestManagedSidecar:
+    """The managed-key record lives in .agentihooks-managed.json — an in-file
+    `agentihooks` key makes copilot warn about unknown settings keys on every
+    launch (observed v1.0.80)."""
+
+    def test_settings_json_carries_no_agentihooks_key(self, adapter):
+        adapter.write_settings({})
+        doc = json.loads((copilot_home() / "settings.json").read_text())
+        assert "agentihooks" not in doc
+        sidecar = json.loads((copilot_home() / ".agentihooks-managed.json").read_text())
+        assert "statusLine" in sidecar
+
+    def test_legacy_infile_record_migrates_and_key_is_removed(self, adapter):
+        home = copilot_home()
+        home.mkdir(parents=True, exist_ok=True)
+        old_status = {"type": "command", "command": "/old/python -m hooks.statusline"}
+        (home / "settings.json").write_text(
+            json.dumps({"agentihooks": {"managed": {"statusLine": old_status}}, "statusLine": old_status})
+        )
+        adapter.write_settings({})
+        doc = json.loads((home / "settings.json").read_text())
+        assert "agentihooks" not in doc
+        assert "hooks.statusline" in doc["statusLine"]["command"], "recorded value must still count as ours"
+
+    def test_teardown_reads_sidecar_and_removes_it(self, adapter):
+        adapter.write_settings({})
+        adapter.teardown()
+        home = copilot_home()
+        assert not (home / ".agentihooks-managed.json").exists()
+        doc = json.loads((home / "settings.json").read_text())
+        assert "statusLine" not in doc
+
+
+class TestSidecarSelfHeal:
+    """A lost/deleted .agentihooks-managed.json with settings.json still
+    holding our values must not brand every managed key a permanent hand-edit."""
+
+    def test_sidecar_loss_reheals_and_does_not_warn(self, adapter, capsys):
+        adapter.write_settings({})
+        home = copilot_home()
+        sidecar = adapter._managed_sidecar(home)
+        assert sidecar.exists()
+        sidecar.unlink()
+        capsys.readouterr()
+
+        adapter.write_settings({})
+        out = capsys.readouterr().out
+        assert "hand-set" not in out, "sidecar loss with our value intact must not read as a hand-edit"
+        healed = json.loads(sidecar.read_text())
+        assert "statusLine" in healed and "disableAllHooks" in healed, "sidecar must re-heal all managed keys"
+
+    def test_genuine_hand_edit_still_detected_after_sidecar_loss(self, adapter, capsys):
+        adapter.write_settings({})
+        home = copilot_home()
+        doc = json.loads((home / "settings.json").read_text())
+        doc["statusLine"] = {"type": "command", "command": "/usr/local/bin/mine"}
+        (home / "settings.json").write_text(json.dumps(doc))
+        adapter._managed_sidecar(home).unlink()
+        capsys.readouterr()
+
+        adapter.write_settings({})
+        out = capsys.readouterr().out
+        assert "hand-set" in out, "a real hand-edit that differs from our value must still be respected"
+        doc = json.loads((home / "settings.json").read_text())
+        assert doc["statusLine"]["command"] == "/usr/local/bin/mine"

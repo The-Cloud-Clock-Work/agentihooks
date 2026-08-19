@@ -1858,7 +1858,26 @@ def emit_permission_decision(event_name: str, decision: str, reason: str = "") -
         )
         return
 
-    output: dict[str, Any] = {
+    # Copilot's COMMAND-hook stdout deny shape is a top-level
+    # {"decision": "block", "reason": ...} (proven live, v1.0.80) — the only
+    # channel that blocks userPromptSubmitted, ignored (harmlessly) on
+    # preToolUse where exit 2 already denies. The runtime's native hook-result
+    # union does carry hookSpecificOutput/permissionDecision, but the command
+    # transport does not honor them, so they are not emitted here.
+    if target == "copilot":
+        if decision != "deny":
+            log(
+                "permission decision dropped — copilot has no channel for it",
+                {"target": target, "event": event_name, "decision": decision},
+            )
+            return
+        output: dict[str, Any] = {"decision": "block"}
+        if reason:
+            output["reason"] = reason
+        print(json.dumps(output))
+        return
+
+    output = {
         "hookSpecificOutput": {
             "hookEventName": event_name,
             "permissionDecision": decision,
@@ -1932,6 +1951,14 @@ def main() -> None:
         try:
             if handler:
                 handler(payload)
+                # Copilot batches parallel tool calls into ONE preToolUse
+                # payload; every remaining call runs the same pipeline. A
+                # BlockAction from any call denies the whole batch via exit 2 —
+                # the safe over-block. Per-call stdout denial exists in the
+                # wire format but the command-hook shape was not confirmed
+                # live, so batch-wide deny is the conservative choice.
+                for _call in payload.get("copilot_extra_tool_calls") or []:
+                    handler({**payload, **_call})
             else:
                 log(f"Unknown event: {event_name}", payload)
 
@@ -1985,7 +2012,16 @@ def main() -> None:
         # (a raw nested object in a debug field) deny a SessionStart. The
         # design-target case — a huge tool_input truncated at the END — keeps
         # its event name well inside this window.
-        if _re.search(
+        # Copilot stdin carries no event-name field — its wrapper passes the
+        # registered event via AGENTIHOOKS_COPILOT_EVENT instead, so the env
+        # var is the marker to sniff on that target. Gate it on the copilot
+        # target: the var can be inherited by a nested claude/codex hook
+        # spawned from within a copilot hook, and trusting it there would deny
+        # an unrelated garbled-stdin claude event that names no tool at all.
+        from hooks.targets import is_copilot
+
+        _env_event = os.environ.get("AGENTIHOOKS_COPILOT_EVENT", "") if is_copilot() else ""
+        if _env_event in ("preToolUse", "preMcpToolCall", "permissionRequest") or _re.search(
             r'"(?:hook_?[eE]vent_?[nN]ame|hook_?[tT]ype)"\s*:\s*"(?:[pP]reToolUse|'
             r'[pP]reMcpToolCall|[pP]ermissionRequest)"',
             _raw_stdin[:512],

@@ -205,3 +205,37 @@ class TestCopilotRecords:
         metrics = parse_transcript_metrics(str(COPILOT))
         assert metrics["num_turns"] == 2
         assert metrics["last_response"] == "Acknowledged."
+
+
+COPILOT_REAL = FIXTURES / "copilot_events_real.jsonl"
+
+
+class TestCopilotRealCapture:
+    """Captured from a live authenticated copilot v1.0.80 session (2026-08-19),
+    with the system prompt elided and the synthetic test key scrubbed. This is
+    the ground-truth counterpart to the schema-derived sample fixture."""
+
+    def _records(self):
+        return list(iter_transcript_records(COPILOT_REAL))
+
+    def test_format_detected(self):
+        assert detect_transcript_format(COPILOT_REAL) == "copilot"
+
+    def test_tool_calls_carry_copilot_names(self):
+        names = {r["tool_name"] for r in self._records() if r["kind"] == "tool_call"}
+        assert {"glob", "bash", "edit"} <= names
+
+    def test_hook_injected_context_is_not_a_user_turn(self):
+        recs = self._records()
+        user_texts = [r["text"] for r in recs if r["kind"] == "user_text"]
+        assert len(user_texts) == 1, "source=system user.message entries must not count as user turns"
+        assert any(r["kind"] == "system_text" and "preToolUse hook" in r["text"] for r in recs), (
+            "injected context should surface as system_text, not vanish"
+        )
+
+    def test_session_metrics_on_real_capture(self):
+        from hooks.hook_manager import parse_transcript_metrics
+
+        metrics = parse_transcript_metrics(str(COPILOT_REAL))
+        assert metrics["num_turns"] == 1
+        assert metrics["last_response"] == "DONE"

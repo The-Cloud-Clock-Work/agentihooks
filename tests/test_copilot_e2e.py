@@ -85,6 +85,20 @@ class TestCopilotSessionStartSingleEnvelope:
         assert result.returncode == 0, result.stderr
         _assert_stdout_is_empty_or_one_json(result.stdout)
 
+    def test_envelope_context_is_top_level_additional_context(self, tmp_path):
+        """Copilot reads TOP-LEVEL additionalContext only — the nested claude
+        shape is silently ignored by its parser (proven live, v1.0.80)."""
+        result = _run(
+            {"hook_event_name": "SessionStart", "session_id": "copilot-sid-1c", "cwd": str(self._repo)},
+            _env(tmp_path),
+        )
+        assert result.returncode == 0, result.stderr
+        stripped = result.stdout.strip()
+        if stripped:
+            envelope = json.loads(stripped)
+            assert "additionalContext" in envelope, f"context not top-level: {stripped[:200]}"
+            assert "hookSpecificOutput" not in envelope
+
     def test_camelcase_payload_with_copilot_event_name_dispatches(self, tmp_path):
         """Copilot's own vocabulary must reach the same handler as the alias."""
         result = _run(
@@ -206,8 +220,8 @@ class TestCopilotRegisteredSpellingsAllBlock:
         assert result.returncode == 2
         _assert_stdout_is_empty_or_one_json(result.stdout)
         envelope = json.loads(result.stdout.strip())
-        assert envelope["hookSpecificOutput"]["permissionDecision"] == "deny"
-        assert "BLOCKED" in envelope["hookSpecificOutput"]["permissionDecisionReason"]
+        assert envelope["decision"] == "block", "copilot parses only the top-level decision shape"
+        assert "BLOCKED" in envelope["reason"]
 
     def test_codex_block_path_emits_no_envelope(self, tmp_path):
         """Unchanged behaviour on codex — exit 2 + stderr only."""
@@ -325,3 +339,205 @@ class TestGarbledStdin:
                 env=_env(tmp_path),
             )
             assert result.returncode == 0, f"{raw!r} wrongly blocked a non-tool event"
+
+
+class TestRealPayloadContract:
+    """Live v1.0.80 stdin is the event's input object alone — no
+    hookEventName/hookType field (observed: a dispatched sessionEnd carried
+    only reason/sessionId/timestamp/cwd). The wrapper passes the registered
+    event as argv[1] and exports AGENTIHOOKS_COPILOT_EVENT; dispatch and the
+    HARD FLOOR must work from the env var alone."""
+
+    def test_secret_blocks_with_env_event_and_nameless_payload(self, tmp_path):
+        key = "AKIA" + "TESTDUMMY0000000"
+        payload = {
+            "toolName": "Write",
+            "toolArgs": {"file_path": "/tmp/test.py", "content": f"my_key = '{key}'"},
+            "sessionId": "copilot-sid-real-1",
+            "timestamp": 1787163790624,
+            "cwd": "/tmp",
+        }
+        result = _run(payload, _env(tmp_path, AGENTIHOOKS_COPILOT_EVENT="preToolUse"))
+        assert result.returncode == 2, (
+            f"nameless real-shaped payload did not block via env event: {result.stdout!r} {result.stderr!r}"
+        )
+        assert result.stderr.strip() != ""
+
+    def test_nameless_non_tool_payload_without_env_fails_open(self, tmp_path):
+        payload = {"reason": "complete", "sessionId": "sid", "timestamp": 1, "cwd": "/tmp"}
+        result = _run(payload, _env(tmp_path))
+        assert result.returncode == 0
+
+    def test_payload_spelling_wins_over_env(self, tmp_path):
+        payload = {"hookEventName": "sessionEnd", "sessionId": "sid", "reason": "complete"}
+        result = _run(payload, _env(tmp_path, AGENTIHOOKS_COPILOT_EVENT="preToolUse"))
+        assert result.returncode == 0, "a payload-named non-tool event must not inherit the env's deny path"
+
+    def test_garbled_stdin_with_env_pretooluse_denies(self, tmp_path):
+        result = subprocess.run(
+            [sys.executable, "-m", "hooks"],
+            input="not json {{{ no event marker anywhere",
+            capture_output=True,
+            text=True,
+            cwd=_PROJECT_ROOT,
+            env=_env(tmp_path, AGENTIHOOKS_COPILOT_EVENT="preToolUse"),
+        )
+        assert result.returncode == 2, "garbled stdin under an env-named tool event must deny"
+        assert "BLOCKED" in result.stderr
+
+    def test_garbled_stdin_with_env_non_tool_event_fails_open(self, tmp_path):
+        result = subprocess.run(
+            [sys.executable, "-m", "hooks"],
+            input="not json {{{",
+            capture_output=True,
+            text=True,
+            cwd=_PROJECT_ROOT,
+            env=_env(tmp_path, AGENTIHOOKS_COPILOT_EVENT="sessionEnd"),
+        )
+        assert result.returncode == 0
+
+
+class TestToolCallsBatchContract:
+    """Live v1.0.80 preToolUse stdin: {"sessionId", "cwd", "toolCalls":
+    [{"id", "name", "args": "<json string>"}]} with copilot tool names
+    (`create`, `bash`, `edit`, `view`) — no toolName/toolArgs. This shape let
+    a secret Write through unscanned before the translation existed."""
+
+    def test_secret_in_toolcalls_create_blocks(self, tmp_path):
+        key = "AKIA" + "TESTDUMMY0000000"
+        payload = {
+            "sessionId": "copilot-batch-1",
+            "cwd": "/tmp",
+            "toolCalls": [
+                {
+                    "id": "toolu_x1",
+                    "name": "create",
+                    "args": json.dumps({"path": "/tmp/creds.py", "file_text": f"aws_key = '{key}'\n"}),
+                }
+            ],
+        }
+        result = _run(payload, _env(tmp_path, AGENTIHOOKS_COPILOT_EVENT="preToolUse"))
+        assert result.returncode == 2, (
+            f"real-shaped toolCalls create with a secret was not denied: {result.stdout!r} {result.stderr!r}"
+        )
+        assert "BLOCKED" in result.stderr
+
+    def test_secret_in_second_batched_call_blocks(self, tmp_path):
+        key = "AKIA" + "TESTDUMMY0000000"
+        payload = {
+            "sessionId": "copilot-batch-2",
+            "cwd": "/tmp",
+            "toolCalls": [
+                {"id": "a", "name": "view", "args": json.dumps({"path": "/tmp/ok.txt"})},
+                {
+                    "id": "b",
+                    "name": "create",
+                    "args": json.dumps({"path": "/tmp/creds.py", "file_text": f"k = '{key}'"}),
+                },
+            ],
+        }
+        result = _run(payload, _env(tmp_path, AGENTIHOOKS_COPILOT_EVENT="preToolUse"))
+        assert result.returncode == 2, "a secret in the SECOND batched call must deny the batch"
+
+    def test_unparseable_args_still_reach_the_scanner(self, tmp_path):
+        key = "AKIA" + "TESTDUMMY0000000"
+        payload = {
+            "sessionId": "copilot-batch-3",
+            "cwd": "/tmp",
+            "toolCalls": [{"id": "c", "name": "create", "args": f"not-json k='{key}'"}],
+        }
+        result = _run(payload, _env(tmp_path, AGENTIHOOKS_COPILOT_EVENT="preToolUse"))
+        assert result.returncode == 2, "parse failure must not hide content from the HARD FLOOR"
+
+    def test_bash_name_maps_to_bash_guardrails(self, tmp_path):
+        payload = {
+            "sessionId": "copilot-batch-4",
+            "cwd": "/tmp",
+            "toolCalls": [
+                {
+                    "id": "d",
+                    "name": "bash",
+                    "args": json.dumps({"command": "git push origin " + "main"}),
+                }
+            ],
+        }
+        result = _run(payload, _env(tmp_path, AGENTIHOOKS_COPILOT_EVENT="preToolUse"))
+        assert result.returncode == 2, "copilot `bash` tool must hit the Bash branch guards"
+
+
+class TestBuiltinWriteToolNames:
+    """apply_patch and str_replace_editor are Rust-backed builtin WRITE tools
+    in the v1.0.80 binary (copilot's own write set:
+    new Set(["apply_patch","create","edit","str_replace"])). Unmapped, their
+    tool_name stayed foreign and skipped the Write/Edit secrets branch — a
+    confirmed HARD FLOOR bypass on a non-default model backend."""
+
+    def _pre(self, tmp_path, name, args):
+        return _run(
+            {"sessionId": "b", "cwd": "/tmp", "toolCalls": [{"id": "c1", "name": name, "args": json.dumps(args)}]},
+            _env(tmp_path, AGENTIHOOKS_COPILOT_EVENT="preToolUse"),
+        )
+
+    def test_apply_patch_secret_in_patch_body_blocks(self, tmp_path):
+        key = "AKIA" + "TESTDUMMY0000000"
+        r = self._pre(tmp_path, "apply_patch", {"patch": f"@@ creds.py @@\n+AWS = {key}\n"})
+        assert r.returncode == 2, f"apply_patch write of a secret was not denied: {r.stdout!r} {r.stderr!r}"
+
+    def test_str_replace_editor_str_replace_secret_blocks(self, tmp_path):
+        key = "AKIA" + "TESTDUMMY0000000"
+        r = self._pre(
+            tmp_path,
+            "str_replace_editor",
+            {"command": "str_replace", "path": "/tmp/creds.py", "old_str": "OLD", "new_str": f"AWS = {key}"},
+        )
+        assert r.returncode == 2, "str_replace_editor str_replace of a secret was not denied"
+
+    def test_str_replace_editor_create_secret_blocks(self, tmp_path):
+        key = "AKIA" + "TESTDUMMY0000000"
+        r = self._pre(
+            tmp_path,
+            "str_replace_editor",
+            {"command": "create", "path": "/tmp/creds.py", "file_text": f"AWS = {key}\n"},
+        )
+        assert r.returncode == 2, "str_replace_editor create of a secret was not denied"
+
+
+class TestEnvEventGatedOnTarget:
+    """AGENTIHOOKS_COPILOT_EVENT drives the garbled-stdin deny-on-doubt sniff,
+    but the var can be inherited by a nested claude/codex hook spawned from
+    within a copilot hook. Trusting it off-target would deny an unrelated
+    garbled-stdin claude/codex event that names no tool at all."""
+
+    def _garbled(self, tmp_path, target, **extra):
+        env = {
+            **os.environ,
+            "AGENTIHOOKS_HOME": str(tmp_path / "ah"),
+            "AGENTIHOOKS_DISABLE_BYPASS_LOOKUP": "1",
+            "AGENTIHOOKS_SECRETS_MODE": "standard",
+            "AGENTIHOOKS_COPILOT_EVENT": "permissionRequest",
+            **extra,
+        }
+        if target is None:
+            env.pop("AGENTIHOOKS_TARGET", None)
+        else:
+            env["AGENTIHOOKS_TARGET"] = target
+        return subprocess.run(
+            [sys.executable, "-m", "hooks"],
+            input="{garbled no event marker",
+            capture_output=True,
+            text=True,
+            cwd=_PROJECT_ROOT,
+            env=env,
+        )
+
+    def test_inherited_env_does_not_deny_a_claude_garbled_event(self, tmp_path):
+        r = self._garbled(tmp_path, None)
+        assert r.returncode == 0, f"claude garbled stdin wrongly denied via inherited copilot env: {r.stderr!r}"
+
+    def test_inherited_env_does_not_deny_a_codex_garbled_event(self, tmp_path):
+        r = self._garbled(tmp_path, "codex")
+        assert r.returncode == 0, f"codex garbled stdin wrongly denied via inherited copilot env: {r.stderr!r}"
+
+    def test_copilot_still_denies_on_its_env_event(self, tmp_path):
+        r = self._garbled(tmp_path, "copilot")
+        assert r.returncode == 2, "copilot must still deny a garbled tool-permission event named by its env var"
