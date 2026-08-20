@@ -138,6 +138,10 @@ def _split_frontmatter(text: str) -> tuple[dict, str]:
 
 _MCP_ALWAYS_ENABLED = ("hooks-utils",)
 
+# WSL: hands the URL to the Windows default browser, which holds the sessions the
+# distro's own browser does not. Always present; needs nothing installed.
+_WSL_BROWSER_LAUNCHER = "explorer.exe"
+
 _OAUTH_URL_FILE = "$HOME/.copilot/pending-oauth-urls.txt"
 _OAUTH_URL_SINK = f'mkdir -p "$HOME/.copilot" && printf "%s\\n" "$1" >> "{_OAUTH_URL_FILE}"'
 
@@ -164,6 +168,50 @@ class CopilotAdapter:
     @staticmethod
     def _bypass_env_file() -> Path:
         return _install_module().AGENTIHOOKS_STATE_DIR / "copilot.env"
+
+    @staticmethod
+    def _running_under_wsl() -> bool:
+        if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+            return True
+        try:
+            return "microsoft" in Path("/proc/version").read_text().lower()
+        except OSError:
+            return False
+
+    def _resolve_browser_command(self, browser) -> list[str] | None:
+        """Resolve ``_agentihooks.browserCommand`` against the machine being installed on.
+
+        A bundle profile is installed on more than one machine, so a launcher
+        naming ``explorer.exe`` is right under WSL and absent on macOS or native
+        Linux. Copilot reports only a *spawn* failure to its debug log, so an
+        unresolvable launcher would silently open nothing — worse than the
+        platform default it replaced. Anything that does not resolve here is
+        dropped with a warning, leaving Copilot's own default in place.
+
+        ``"auto"`` asks for the right answer per platform: the Windows default
+        browser under WSL, and Copilot's own default everywhere else, which is
+        already the operator's chosen browser.
+        """
+        _i = _install_module()
+        if isinstance(browser, str) and browser.strip().lower() == "auto":
+            if not self._running_under_wsl():
+                return None
+            browser = [_WSL_BROWSER_LAUNCHER]
+        if isinstance(browser, str):
+            browser = shlex.split(browser)
+        if not browser:
+            return None
+
+        launcher = [str(part) for part in browser]
+        head = launcher[0]
+        found = Path(head).exists() if os.sep in head else shutil.which(head)
+        if not found:
+            _i._cprint(
+                f"  [!!] browserCommand '{head}' not found on this machine — dropped. "
+                'Copilot keeps its own per-platform browser; use "auto" for a portable profile.'
+            )
+            return None
+        return launcher
 
     def _write_managed_env(self, directives: dict) -> None:
         """Render the ``_agentihooks`` directives Copilot exposes only as env vars.
@@ -201,11 +249,9 @@ class CopilotAdapter:
             lines.append("# native _agentihooks.allowAll → Copilot allow-all-tools\n")
             lines.append("COPILOT_ALLOW_ALL=1\n")
 
-        browser = directives.get("browserCommand")
-        if isinstance(browser, str):
-            browser = shlex.split(browser)
+        browser = self._resolve_browser_command(directives.get("browserCommand"))
         if browser:
-            launcher = [str(part) for part in browser]
+            launcher = browser
             launcher_note = f"opens {launcher[0]}"
             lines.append("# native _agentihooks.browserCommand → OAuth browser launcher\n")
         elif directives.get("suppressBrowserLaunch"):

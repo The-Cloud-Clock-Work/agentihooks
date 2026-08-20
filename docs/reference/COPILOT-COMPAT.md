@@ -558,6 +558,20 @@ pins one browser. Verified from WSL: `chrome.exe <url>` and `wslview <url>` both
 exit 0, `explorer.exe <url>` opens the URL and exits 1 — harmless, since Copilot
 only reports a *spawn* failure, not a non-zero exit.
 
-On macOS and native Linux the key should be absent — Copilot's own default is
-already the operator's chosen browser. `suppressBrowserLaunch` (§11.3) is the
-same mechanism pointed at a sink; `browserCommand` wins if both are set.
+A bundle profile is installed on more than one machine, so the value resolves at
+install time rather than being written through blindly:
+
+| value | WSL | macOS / native Linux |
+|---|---|---|
+| `"auto"` | `explorer.exe` | nothing written — Copilot's `open` / `xdg-open` |
+| explicit command | written if it resolves | dropped with a warning if it does not |
+| absent | nothing written | nothing written |
+
+`"auto"` is the portable form: the OAuth URL reaches the Windows default browser
+under WSL and the operator's own default browser everywhere else. An explicit
+command that does not exist on the machine is dropped rather than written —
+Copilot reports only a *spawn* failure to its debug log, so an unresolvable
+launcher would silently open nothing, which is worse than the default it replaced.
+
+`suppressBrowserLaunch` (§11.3) is the same mechanism pointed at a sink;
+`browserCommand` wins if both are set.

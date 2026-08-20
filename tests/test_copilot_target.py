@@ -3,6 +3,7 @@
 import json
 import os
 import shlex
+import shutil
 import subprocess
 
 import install  # binds the installer identity conftest patches; also used directly below
@@ -980,29 +981,53 @@ class TestBrowserCommand:
         return json.loads(line.split("=", 1)[1].strip("'"))
 
     def test_array_form_is_written_verbatim(self, adapter):
-        adapter.write_settings({"_agentihooks": {"browserCommand": ["explorer.exe"]}})
-        assert self._launcher(adapter) == ["explorer.exe"]
+        adapter.write_settings({"_agentihooks": {"browserCommand": ["/bin/sh"]}})
+        assert self._launcher(adapter) == ["/bin/sh"]
 
     def test_string_form_is_shell_split(self, adapter):
-        adapter.write_settings(
-            {
-                "_agentihooks": {
-                    "browserCommand": '"/mnt/c/Program Files/Google/Chrome/Application/chrome.exe" --new-tab'
-                }
-            }
-        )
-        assert self._launcher(adapter) == [
-            "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe",
-            "--new-tab",
-        ]
+        adapter.write_settings({"_agentihooks": {"browserCommand": '"/bin/sh" --new-tab'}})
+        assert self._launcher(adapter) == ["/bin/sh", "--new-tab"]
 
     def test_browser_command_wins_over_the_sink(self, adapter):
-        adapter.write_settings({"_agentihooks": {"browserCommand": ["explorer.exe"], "suppressBrowserLaunch": True}})
-        assert self._launcher(adapter) == ["explorer.exe"]
+        adapter.write_settings({"_agentihooks": {"browserCommand": ["/bin/sh"], "suppressBrowserLaunch": True}})
+        assert self._launcher(adapter) == ["/bin/sh"]
 
     def test_absent_leaves_copilot_default_untouched(self, adapter):
         adapter.write_settings({"_agentihooks": {"allowAll": True}})
         assert "COPILOT_DEBUG_BROWSER" not in adapter._bypass_env_file().read_text()
+
+    def test_unresolvable_command_is_dropped_not_written(self, adapter, capsys):
+        """A bundle profile lands on more than one machine; copilot only debug-logs
+        a failed spawn, so an absent launcher would silently open nothing."""
+        adapter.write_settings(
+            {
+                "_agentihooks": {"browserCommand": ["explorer.exe"], "allowAll": True},
+            }
+        )
+        out = capsys.readouterr().out
+        text = adapter._bypass_env_file().read_text()
+        if shutil.which("explorer.exe"):
+            assert "COPILOT_DEBUG_BROWSER" in text
+        else:
+            assert "COPILOT_DEBUG_BROWSER" not in text
+            assert "not found on this machine" in out
+
+    def test_auto_follows_the_platform(self, adapter):
+        adapter.write_settings({"_agentihooks": {"browserCommand": "auto", "allowAll": True}})
+        text = adapter._bypass_env_file().read_text()
+        wsl = adapter._running_under_wsl() and bool(shutil.which("explorer.exe"))
+        assert ("COPILOT_DEBUG_BROWSER" in text) is wsl
+
+    def test_auto_off_wsl_writes_nothing(self, adapter, monkeypatch):
+        monkeypatch.setattr(type(adapter), "_running_under_wsl", staticmethod(lambda: False))
+        adapter.write_settings({"_agentihooks": {"browserCommand": "auto", "allowAll": True}})
+        assert "COPILOT_DEBUG_BROWSER" not in adapter._bypass_env_file().read_text()
+
+    def test_auto_on_wsl_uses_the_windows_default_browser(self, adapter, monkeypatch):
+        monkeypatch.setattr(type(adapter), "_running_under_wsl", staticmethod(lambda: True))
+        monkeypatch.setattr(shutil, "which", lambda c: "/mnt/c/WINDOWS/explorer.exe")
+        adapter.write_settings({"_agentihooks": {"browserCommand": "auto"}})
+        assert self._launcher(adapter) == ["explorer.exe"]
 
     def test_launcher_receives_the_url_as_its_last_argument(self, adapter, tmp_path):
         """Copilot spawns spec[0] with the rest of the array plus the URL."""
