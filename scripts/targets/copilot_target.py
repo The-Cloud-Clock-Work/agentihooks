@@ -138,9 +138,21 @@ def _split_frontmatter(text: str) -> tuple[dict, str]:
 
 _MCP_ALWAYS_ENABLED = ("hooks-utils",)
 
-# WSL: hands the URL to the Windows default browser, which holds the sessions the
-# distro's own browser does not. Always present; needs nothing installed.
-_WSL_BROWSER_LAUNCHER = "explorer.exe"
+# WSL: reach a Windows browser, which holds the sessions the distro's own browser
+# does not. Tried in order; the first that resolves wins.
+#
+# `explorer.exe` is deliberately absent. It is the obvious choice and it is wrong:
+# spawned with a Linux working directory — Copilot's normal condition — it ignores
+# the URL and opens a File Explorer window on Documents. Every launcher here takes
+# the URL as argv, so a query string full of `&` survives; anything routed through
+# `cmd /c start` would not.
+_WSL_BROWSER_CANDIDATES = (
+    "wslview",
+    "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe",
+    "/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+    "/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+    "/mnt/c/Program Files/Microsoft/Edge/Application/msedge.exe",
+)
 
 _OAUTH_URL_FILE = "$HOME/.copilot/pending-oauth-urls.txt"
 _OAUTH_URL_SINK = f'mkdir -p "$HOME/.copilot" && printf "%s\\n" "$1" >> "{_OAUTH_URL_FILE}"'
@@ -178,25 +190,40 @@ class CopilotAdapter:
         except OSError:
             return False
 
+    @staticmethod
+    def _resolves(command: str) -> bool:
+        return bool(Path(command).exists() if os.sep in command else shutil.which(command))
+
     def _resolve_browser_command(self, browser) -> list[str] | None:
         """Resolve ``_agentihooks.browserCommand`` against the machine being installed on.
 
         A bundle profile is installed on more than one machine, so a launcher
-        naming ``explorer.exe`` is right under WSL and absent on macOS or native
+        naming a Windows browser is right under WSL and absent on macOS or native
         Linux. Copilot reports only a *spawn* failure to its debug log, so an
         unresolvable launcher would silently open nothing — worse than the
         platform default it replaced. Anything that does not resolve here is
         dropped with a warning, leaving Copilot's own default in place.
 
-        ``"auto"`` asks for the right answer per platform: the Windows default
-        browser under WSL, and Copilot's own default everywhere else, which is
-        already the operator's chosen browser.
+        ``"auto"`` asks for the right answer per platform: the first resolvable
+        entry of ``_WSL_BROWSER_CANDIDATES`` under WSL, and Copilot's own default
+        everywhere else, which is already the operator's chosen browser.
         """
         _i = _install_module()
         if isinstance(browser, str) and browser.strip().lower() == "auto":
             if not self._running_under_wsl():
                 return None
-            browser = [_WSL_BROWSER_LAUNCHER]
+            browser = next(
+                ([c] for c in _WSL_BROWSER_CANDIDATES if self._resolves(c)),
+                None,
+            )
+            if not browser:
+                _i._cprint(
+                    "  [!!] browserCommand 'auto': no Windows browser found from WSL — "
+                    "copilot keeps xdg-open, which reaches a browser inside the distro "
+                    "carrying none of your Windows sessions. Install wslu, or name a "
+                    "browser path in browserCommand."
+                )
+                return None
         if isinstance(browser, str):
             browser = shlex.split(browser)
         if not browser:
@@ -204,8 +231,7 @@ class CopilotAdapter:
 
         launcher = [str(part) for part in browser]
         head = launcher[0]
-        found = Path(head).exists() if os.sep in head else shutil.which(head)
-        if not found:
+        if not self._resolves(head):
             _i._cprint(
                 f"  [!!] browserCommand '{head}' not found on this machine — dropped. "
                 'Copilot keeps its own per-platform browser; use "auto" for a portable profile.'

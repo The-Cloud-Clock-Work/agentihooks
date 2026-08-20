@@ -548,22 +548,32 @@ plus the URL appended. `_agentihooks.browserCommand` renders into it and accepts
 either form:
 
 ```json
-"browserCommand": ["explorer.exe"]
+"browserCommand": "auto"
 "browserCommand": "\"/mnt/c/Program Files/Google/Chrome/Application/chrome.exe\" --new-tab"
 ```
 
-A string is shell-split; an array is passed through. `explorer.exe` hands the URL
-to the Windows default browser and needs nothing installed; an explicit path
-pins one browser. Verified from WSL: `chrome.exe <url>` and `wslview <url>` both
-exit 0, `explorer.exe <url>` opens the URL and exits 1 — harmless, since Copilot
-only reports a *spawn* failure, not a non-zero exit.
+A string is shell-split; an array is passed through. Every launcher receives the
+URL as argv, which matters: an authorization URL is full of `&`, so anything
+routed through `cmd /c start` would be truncated at the first one.
+
+**`explorer.exe` is the obvious choice and it is wrong.** Copilot spawns the
+launcher with its own working directory, which under WSL is a Linux path;
+explorer.exe cannot resolve one, ignores the URL, and opens a File Explorer
+window on Documents instead. Observed live. It exits 1 while doing so, and
+Copilot reports only a *spawn* failure, so nothing surfaces the misfire.
+
+`auto` therefore probes, in order: `wslview`, Windows Chrome (both Program Files
+locations), Windows Edge. Verified from a Linux cwd with a `&`-bearing URL:
+`wslview` exits 0 and opens the URL; `explorer.exe` exits 1 and opens Documents.
+If none resolve, nothing is written and the install warns — `wslu` supplies
+`wslview` and is the smallest fix.
 
 A bundle profile is installed on more than one machine, so the value resolves at
 install time rather than being written through blindly:
 
 | value | WSL | macOS / native Linux |
 |---|---|---|
-| `"auto"` | `explorer.exe` | nothing written — Copilot's `open` / `xdg-open` |
+| `"auto"` | first of `wslview`, Chrome, Edge that resolves | nothing written — Copilot's `open` / `xdg-open` |
 | explicit command | written if it resolves | dropped with a warning if it does not |
 | absent | nothing written | nothing written |
 

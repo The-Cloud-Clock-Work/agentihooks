@@ -3,7 +3,6 @@
 import json
 import os
 import shlex
-import shutil
 import subprocess
 
 import install  # binds the installer identity conftest patches; also used directly below
@@ -999,23 +998,16 @@ class TestBrowserCommand:
     def test_unresolvable_command_is_dropped_not_written(self, adapter, capsys):
         """A bundle profile lands on more than one machine; copilot only debug-logs
         a failed spawn, so an absent launcher would silently open nothing."""
-        adapter.write_settings(
-            {
-                "_agentihooks": {"browserCommand": ["explorer.exe"], "allowAll": True},
-            }
-        )
-        out = capsys.readouterr().out
-        text = adapter._bypass_env_file().read_text()
-        if shutil.which("explorer.exe"):
-            assert "COPILOT_DEBUG_BROWSER" in text
-        else:
-            assert "COPILOT_DEBUG_BROWSER" not in text
-            assert "not found on this machine" in out
+        adapter.write_settings({"_agentihooks": {"browserCommand": ["/no/such/browser"], "allowAll": True}})
+        assert "COPILOT_DEBUG_BROWSER" not in adapter._bypass_env_file().read_text()
+        assert "not found on this machine" in capsys.readouterr().out
 
     def test_auto_follows_the_platform(self, adapter):
+        from scripts.targets import copilot_target
+
         adapter.write_settings({"_agentihooks": {"browserCommand": "auto", "allowAll": True}})
         text = adapter._bypass_env_file().read_text()
-        wsl = adapter._running_under_wsl() and bool(shutil.which("explorer.exe"))
+        wsl = adapter._running_under_wsl() and any(adapter._resolves(c) for c in copilot_target._WSL_BROWSER_CANDIDATES)
         assert ("COPILOT_DEBUG_BROWSER" in text) is wsl
 
     def test_auto_off_wsl_writes_nothing(self, adapter, monkeypatch):
@@ -1023,11 +1015,28 @@ class TestBrowserCommand:
         adapter.write_settings({"_agentihooks": {"browserCommand": "auto", "allowAll": True}})
         assert "COPILOT_DEBUG_BROWSER" not in adapter._bypass_env_file().read_text()
 
-    def test_auto_on_wsl_uses_the_windows_default_browser(self, adapter, monkeypatch):
+    def test_auto_on_wsl_picks_the_first_resolvable_candidate(self, adapter, monkeypatch):
+        from scripts.targets import copilot_target
+
         monkeypatch.setattr(type(adapter), "_running_under_wsl", staticmethod(lambda: True))
-        monkeypatch.setattr(shutil, "which", lambda c: "/mnt/c/WINDOWS/explorer.exe")
+        chrome = copilot_target._WSL_BROWSER_CANDIDATES[1]
+        monkeypatch.setattr(type(adapter), "_resolves", staticmethod(lambda c: c == chrome))
         adapter.write_settings({"_agentihooks": {"browserCommand": "auto"}})
-        assert self._launcher(adapter) == ["explorer.exe"]
+        assert self._launcher(adapter) == [chrome]
+
+    def test_auto_never_uses_explorer_exe(self, adapter):
+        """Spawned with a Linux working directory — copilot's normal condition —
+        explorer.exe ignores the URL and opens a File Explorer window."""
+        from scripts.targets import copilot_target
+
+        assert not any("explorer.exe" in c for c in copilot_target._WSL_BROWSER_CANDIDATES)
+
+    def test_auto_on_wsl_with_no_windows_browser_warns_and_writes_nothing(self, adapter, monkeypatch, capsys):
+        monkeypatch.setattr(type(adapter), "_running_under_wsl", staticmethod(lambda: True))
+        monkeypatch.setattr(type(adapter), "_resolves", staticmethod(lambda c: False))
+        adapter.write_settings({"_agentihooks": {"browserCommand": "auto", "allowAll": True}})
+        assert "COPILOT_DEBUG_BROWSER" not in adapter._bypass_env_file().read_text()
+        assert "no Windows browser found from WSL" in capsys.readouterr().out
 
     def test_launcher_receives_the_url_as_its_last_argument(self, adapter, tmp_path):
         """Copilot spawns spec[0] with the rest of the array plus the URL."""
