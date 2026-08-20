@@ -211,7 +211,7 @@ agentihooks uninstall [--yes]                # remove everything
 ## What `init` Does
 
 1. Links bundle (if `--bundle` provided)
-2. Merges settings: `settings.base.json` -> profile overrides -> settings-profile overlay -> OTEL config
+2. Merges settings **in the target's own format**: `_base/<target base>` -> bundle overrides -> profile overrides -> settings-profile overlay
 3. Symlinks skills, agents, commands, and rules (3-layer merge, additive across chain)
 4. Writes `CLAUDE.md` to `~/.claude/CLAUDE.md`
 5. Installs MCP servers (hooks-utils + bundle + profile)
@@ -236,13 +236,23 @@ Profiles mirror the Claude Code project structure:
 ```
 profiles/<name>/
 |-- CLAUDE.md                    # system prompt (-> ~/.claude/CLAUDE.md)
-+-- .claude/
-    |-- settings.overrides.json  # merged into ~/.claude/settings.json
-    |-- .mcp.json                # profile MCP servers
-    |-- skills/                  # -> ~/.claude/skills/
-    |-- agents/                  # -> ~/.claude/agents/
-    |-- commands/                # -> ~/.claude/commands/
-    +-- rules/                   # -> ~/.claude/rules/
+|-- .claude/
+|   |-- settings.overrides.json  # merged into ~/.claude/settings.json
+|   |-- .mcp.json                # profile MCP servers
+|   |-- skills/                  # -> ~/.claude/skills/
+|   |-- agents/                  # -> ~/.claude/agents/
+|   |-- commands/                # -> ~/.claude/commands/
+|   +-- rules/                   # -> ~/.claude/rules/
+|-- .codex/                      # optional, codex-native
+|   +-- config.overrides.toml    # merged into ~/.codex/config.toml
++-- .copilot/                    # optional, copilot-native
+    |-- settings.overrides.json  # merged into ~/.copilot/settings.json
+    +-- mcp-config.overrides.json
+
+Content (skills/agents/commands/rules/CLAUDE.md) is authored once in `.claude/`
+and re-projected to every target. SETTINGS and MCP are authored per target, in
+that target's own file format — a profile ships only the target dirs it cares
+about.
 ```
 
 Built-in profiles: `default` (auto), `coding` (acceptEdits), `admin` (bypassPermissions). Bundle profiles are discovered automatically.
@@ -260,9 +270,13 @@ agentihooks settings-profile admin --for-target codex   # one target only
 agentihooks settings-profile --clear         # revert
 ```
 
-Codex has no `settings.json`, but the same rendered settings dict drives its
-`config.toml` permission posture; Copilot has one, and the same dict drives its
-status line and trusted-folder posture. The settings layer is meaningful on all
+Each target reads settings authored in its OWN format: claude
+`settings.overrides.json`, codex `config.overrides.toml`, copilot
+`settings.overrides.json` (plus `mcp-config.overrides.json`). An earlier design
+translated one Claude document into each target, but that could carry only
+`permissions.defaultMode` and left every target-native capability — codex's
+`model_reasoning_effort`, copilot's `effortLevel` and per-server MCP tool
+allowlists — unreachable from a bundle. The settings layer is meaningful on all
 three targets, so `settings-profile` applies to all of them by default.
 
 ## Install Targets

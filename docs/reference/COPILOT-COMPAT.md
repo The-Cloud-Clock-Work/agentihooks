@@ -412,3 +412,69 @@ Live-session evidence (2026-08-19, v1.0.80, authenticated):
 | auth rides in `config.json` | copy into scratch home → authenticated turn |
 | hook commands run via `/bin/sh` | binary string: "`/bin/sh` on Unix-like systems, `cmd.exe` on Windows" |
 | `shell` valid as agent grant name; hook boundary reports `bash` | `copilot --agent` run + captured `toolCalls` |
+
+## §11 Native settings authoring (v2.3+)
+
+Profiles author copilot settings in Copilot's own format at
+`<profile>/.copilot/settings.overrides.json`, merged over
+`profiles/_base/settings.base.copilot.json`. MCP is authored separately at
+`<profile>/.copilot/mcp-config.overrides.json`. Nothing is translated from
+Claude settings any more.
+
+**`_agentihooks` is a reserved block, not a Copilot setting.** Copilot warns
+about unknown top-level keys on every launch, so the installer consumes this
+block and never writes it to disk. It carries directives Copilot has no settings
+key for:
+
+| directive | effect |
+|---|---|
+| `allowAll: true` | writes `COPILOT_ALLOW_ALL=1` to `~/.agentihooks/copilot.env`, which the installer's `agentienv` shell block auto-exports |
+
+**Never declare a `hooks` key.** Copilot merges an inline settings `hooks` with
+the `hooks/` directory, so declaring both fires every hook twice. The adapter
+drops it with a warning. Hooks are written to `hooks/agentihooks.json`.
+
+### §11.1 `permissions.*` is enterprise-only — do not author it here
+
+The settings catalogue describes `permissions.allow/ask/deny` as
+*"Enterprise-managed permission rules"*, and that is literal: rules written into
+**user** settings are inert. Settled live on v1.0.80 with three runs differing
+only in the rule, same scratch home:
+
+| `permissions.deny` | result |
+|---|---|
+| absent (control) | file read |
+| `read(probe-target.txt)` + glob form | file read anyway |
+| bare `read`, `view`, plus both scoped forms | file read anyway |
+
+A bare `read` deny would block every read if the engine were live at this scope.
+It did not. Authoring credential rules here would produce a file that reads as
+protection while providing none.
+
+Credential protection on copilot therefore comes from the agentihooks hook layer
+(`hooks/context/credential_guard.py`, called from `on_pre_tool_use`), which is
+the only mechanism that actually executes on this target.
+
+### §11.2 MCP: OAuth is opt-in, and `tools` takes exact names
+
+`auth` and `oidc` default to **false** per server. Left at Copilot's default, a
+401 from any http/sse server starts a browser authorization flow; under WSL that
+launches a Windows browser with no session and the turn hangs with nothing to
+click. A server that genuinely needs OAuth sets `auth: true` explicitly.
+
+`tools` is an **exact-name allowlist — wildcards are not supported**. A pattern
+like `litellm_tools-*` silently matches nothing and disables the server
+entirely; the tool count reads 0 and no error is raised. Verified live.
+
+This matters because of the static-context ceiling: `gateway-tools` alone ships
+511 tool schemas, which puts static context at 121% of the window on copilot's
+small auto-routed models and aborts every turn at 0 credits with
+`compaction_static_context_blocked`. Attribution measured by elimination —
+shrinking the 66KB persona to 30 bytes moved it only 121% → 109%, while
+dropping the heavy MCP servers cleared it outright. The tools are the bulk, not
+the persona.
+
+Tool-search deferral (`toolSearch` + per-server `deferTools`) exists but is
+gated off server-side for non-enterprise accounts, and forcing the flags true
+via `enabledFeatureFlags` changed nothing (byte-identical schema count, no
+`tool_search` tool). Treat the allowlist as the working lever.
