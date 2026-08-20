@@ -478,3 +478,33 @@ Tool-search deferral (`toolSearch` + per-server `deferTools`) exists but is
 gated off server-side for non-enterprise accounts, and forcing the flags true
 via `enabledFeatureFlags` changed nothing (byte-identical schema count, no
 `tool_search` tool). Treat the allowlist as the working lever.
+
+### §11.3 MCP OAuth fires at startup — `COPILOT_DEBUG_BROWSER` is the only interception point
+
+Copilot connects **every** configured MCP server when the session opens and
+starts an OAuth flow on the first 401, opening one browser tab per server. Under
+WSL that is a Windows browser with no session, and the turn parks there. Four
+configured Microsoft-auth servers produce four tabs.
+
+There is no defer-auth, lazy-connect, or `autoConnect: false` key — all three are
+open upstream requests (copilot-cli #1938, #2026, #3462), and `deferTools` defers
+only tool *schemas*, not the connection. `disabledMcpServers` (settings, written
+by `/mcp disable`) stops the flow by stopping the server, which is the wrong
+trade when the server is wanted.
+
+`COPILOT_DEBUG_BROWSER` is checked ahead of every launch path — before the
+remote-environment skip, before `$BROWSER`, before `xdg-open`. It takes a JSON
+string array; Copilot spawns `array[0]` with the remaining elements plus the URL
+appended. Pointing it at a sink keeps servers configured and connected while no
+browser opens, and the authorization URL is recoverable:
+
+```
+_agentihooks: { "suppressBrowserLaunch": true }
+```
+
+The adapter renders that into the managed env file as a `sh -c` sink appending
+the URL to `~/.copilot/pending-oauth-urls.txt`. Authentication becomes operator-
+initiated: open the parked URL when you actually want that server.
+
+Caveat: this is global, so `copilot` login will not auto-open a browser either.
+The device-code flow still prints its verification URI and code in the TUI.

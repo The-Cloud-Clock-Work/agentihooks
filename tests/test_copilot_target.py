@@ -1,6 +1,7 @@
 """Tests for the Copilot target adapter (scripts/targets/copilot_target.py)."""
 
 import json
+import os
 import shlex
 import subprocess
 
@@ -866,3 +867,42 @@ class TestNativeDirectives:
         doc = json.loads((copilot_home() / "settings.json").read_text())
         assert "hooks" not in doc
         assert "fires each hook twice" in capsys.readouterr().out
+
+
+class TestSuppressBrowserLaunch:
+    """Copilot starts an MCP OAuth flow at startup and has no defer-auth key;
+    COPILOT_DEBUG_BROWSER is the only pre-launch interception point."""
+
+    @staticmethod
+    def _env_text(adapter):
+        return adapter._bypass_env_file().read_text()
+
+    def test_directive_writes_a_debug_browser_sink(self, adapter):
+        adapter.write_settings({"_agentihooks": {"suppressBrowserLaunch": True}})
+        assert "COPILOT_DEBUG_BROWSER=" in self._env_text(adapter)
+
+    def test_sink_parses_as_copilot_parses_it_and_captures_the_url(self, adapter, tmp_path):
+        adapter.write_settings({"_agentihooks": {"suppressBrowserLaunch": True}})
+        line = next(ln for ln in self._env_text(adapter).splitlines() if ln.startswith("COPILOT_DEBUG_BROWSER="))
+        spec = json.loads(line.split("=", 1)[1].strip("'"))
+        assert isinstance(spec, list) and spec and all(isinstance(x, str) for x in spec)
+
+        url = "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?x=1"
+        subprocess.run(  # copilot: spawn(spec[0], [...spec.slice(1), url])
+            [*spec, url], env={**os.environ, "HOME": str(tmp_path)}, check=True
+        )
+        assert (tmp_path / ".copilot" / "pending-oauth-urls.txt").read_text().strip() == url
+
+    def test_absent_directive_writes_no_sink(self, adapter):
+        adapter.write_settings({"_agentihooks": {"allowAll": True}})
+        assert "COPILOT_DEBUG_BROWSER" not in self._env_text(adapter)
+
+    def test_both_directives_coexist(self, adapter):
+        adapter.write_settings({"_agentihooks": {"allowAll": True, "suppressBrowserLaunch": True}})
+        text = self._env_text(adapter)
+        assert "COPILOT_ALLOW_ALL=1" in text and "COPILOT_DEBUG_BROWSER=" in text
+
+    def test_dropping_every_directive_removes_the_env_file(self, adapter):
+        adapter.write_settings({"_agentihooks": {"suppressBrowserLaunch": True}})
+        adapter.write_settings({})
+        assert not adapter._bypass_env_file().exists()

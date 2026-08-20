@@ -136,6 +136,10 @@ def _split_frontmatter(text: str) -> tuple[dict, str]:
     return (front if isinstance(front, dict) else {}), parts[2].lstrip("\n")
 
 
+_OAUTH_URL_FILE = "$HOME/.copilot/pending-oauth-urls.txt"
+_OAUTH_URL_SINK = f'mkdir -p "$HOME/.copilot" && printf "%s\\n" "$1" >> "{_OAUTH_URL_FILE}"'
+
+
 class CopilotAdapter:
     name = "copilot"
 
@@ -159,32 +163,56 @@ class CopilotAdapter:
     def _bypass_env_file() -> Path:
         return _install_module().AGENTIHOOKS_STATE_DIR / "copilot.env"
 
-    def _write_bypass_env(self, enabled: bool) -> None:
-        """Apply the native ``_agentihooks.allowAll`` directive as Copilot's YOLO switch.
+    def _write_managed_env(self, directives: dict) -> None:
+        """Render the ``_agentihooks`` directives Copilot exposes only as env vars.
 
-        Copilot has no settings key for it: ``permissions.allow`` rules cover
-        tools only (a ``write`` rule still hits path verification), and
-        ``trustedFolders`` is not a recognized user setting at all. The only
-        global switch is ``COPILOT_ALLOW_ALL`` (the env form of
-        ``--allow-all-tools``), proven to clear a denial that tool rules did
-        not. It is written to a managed env file the installer's ``agentienv``
-        shell block already auto-exports, so it reaches interactive sessions.
+        ``allowAll`` — Copilot has no settings key for YOLO: ``permissions.allow``
+        rules cover tools only (a ``write`` rule still hits path verification)
+        and ``trustedFolders`` is not a recognized user setting at all.
+        ``COPILOT_ALLOW_ALL`` (the env form of ``--allow-all-tools``) is the only
+        global switch, proven to clear a denial that tool rules did not.
+
+        ``suppressBrowserLaunch`` — Copilot connects every configured MCP server
+        at startup and starts an OAuth flow on the first 401, opening one browser
+        tab per server; there is no defer-auth or lazy-connect key (copilot-cli
+        #1938, #2026, #3462 all request one). ``COPILOT_DEBUG_BROWSER`` is checked
+        ahead of every launch path, so pointing it at a sink parks the URL in a
+        file instead of seizing a browser, and authentication becomes something
+        the operator starts by hand.
+
+        Both land in a managed env file the installer's ``agentienv`` shell block
+        already auto-exports, so they reach interactive sessions.
         """
         _i = _install_module()
         path = self._bypass_env_file()
-        if not enabled:
+
+        lines: list[str] = []
+        if directives.get("allowAll"):
+            lines.append("# native _agentihooks.allowAll → Copilot allow-all-tools\n")
+            lines.append("COPILOT_ALLOW_ALL=1\n")
+        if directives.get("suppressBrowserLaunch"):
+            sink = json.dumps(["sh", "-c", _OAUTH_URL_SINK, "agentihooks-oauth"])
+            lines.append("# native _agentihooks.suppressBrowserLaunch → park OAuth URLs, never open a browser\n")
+            lines.append(f"COPILOT_DEBUG_BROWSER='{sink}'\n")
+
+        if not lines:
             if path.exists():
                 path.unlink()
-                _i._cprint(f"  [RM] bypass mode off — removed {path}")
+                _i._cprint(f"  [RM] no copilot env directives — removed {path}")
             return
+
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(
             path,
-            "# managed-by: agentihooks — regenerate with: agentihooks init --target copilot\n"
-            "# native _agentihooks.allowAll → Copilot allow-all-tools\n"
-            "COPILOT_ALLOW_ALL=1\n",
+            "# managed-by: agentihooks — regenerate with: agentihooks init --target copilot\n" + "".join(lines),
         )
-        _i._cprint(f"  [OK] bypassPermissions → COPILOT_ALLOW_ALL=1 in {path} (run: source ~/.bashrc)")
+        if directives.get("allowAll"):
+            _i._cprint(f"  [OK] allowAll → COPILOT_ALLOW_ALL=1 in {path} (run: source ~/.bashrc)")
+        if directives.get("suppressBrowserLaunch"):
+            _i._cprint(
+                f"  [OK] suppressBrowserLaunch → COPILOT_DEBUG_BROWSER in {path}; "
+                f"OAuth URLs park in {_OAUTH_URL_FILE} (run: source ~/.bashrc)"
+            )
 
     # ------------------------------------------------------------------
     # settings: settings.json managed keys + hooks/agentihooks.json + wrapper
@@ -250,7 +278,7 @@ class CopilotAdapter:
                 )
         _atomic_write(self._managed_sidecar(home), json.dumps(recorded, indent=2) + "\n")
 
-        self._write_bypass_env(bool(directives.get("allowAll")))
+        self._write_managed_env(directives)
 
         _atomic_write(settings_path, json.dumps(doc, indent=2) + "\n")
         _i._cprint(f"[OK] Wrote managed keys into {settings_path}")
@@ -754,7 +782,7 @@ class CopilotAdapter:
             if removed_keys:
                 _i._cprint(f"  [RM] Removed managed keys from {settings_path}: {', '.join(removed_keys)}")
         self._managed_sidecar(home).unlink(missing_ok=True)
-        self._write_bypass_env(False)
+        self._write_managed_env({})
 
         strip_persona(home / "copilot-instructions.md", _MANAGED_HEADER, _MANAGED_FOOTER)
 
