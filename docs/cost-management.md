@@ -43,7 +43,6 @@ AgentiHooks solves all four.
 | **Smart compact suggestions** | Generic "/compact" warnings that don't tell you what to drop | **Faster, more effective compaction** |
 | **Context audit tracking** | No visibility into what tools consume the most context | **Informed compaction decisions** |
 | **Thinking/effort policy** | Extended thinking burning tens of thousands of output tokens | **10K-50K tokens per over-think** |
-| **Peak hour awareness** | Running expensive jobs during peak billing hours | **Session budget preservation** |
 | **MCP surface area reporting** | Heavy MCP servers silently consuming context every turn | **10K-100K tokens per session** |
 | **CLAUDE.md linting** | Bloated CLAUDE.md paying tokens on every turn | **500-5K tokens per turn** |
 | **MCP hygiene reminders** | Unused MCP servers contributing schema tokens every turn | **10K-100K tokens per session** |
@@ -136,7 +135,7 @@ Edge-triggered warnings fire exactly once per threshold crossing per session -- 
 | **Warning** | 60% | Yellow banner: *"CONTEXT 60% -- consider /compact soon"* |
 | **Critical** | 80% | Red banner: *"CONTEXT 80% -- /compact now or start new session"* |
 
-Warnings appear on the statusline's conditional Line 4 (the row that also carries native rate limits and the peak/off-peak indicator) so they're impossible to miss. Line 3 carries the agentihooks profile + settings-profile + channels list. Edge-triggering is tracked in Redis -- each level fires at most once.
+Warnings appear on the statusline's conditional Line 4 (the row that also carries native rate limits) so they're impossible to miss. Line 3 carries the agentihooks profile + settings-profile + channels list. Edge-triggering is tracked in Redis -- each level fires at most once.
 
 **Config:**
 
@@ -180,7 +179,7 @@ This lets you spot runaway token consumption in real time -- a `burn: 45K/turn` 
 
 ### 8. Native rate limit display
 
-Claude Code provides native rate limit data (`rate_limits.five_hour` and `rate_limits.seven_day`) in every statusline payload. AgentiHooks surfaces this on statusline Line 4 (the conditional row that also shows context-threshold warnings and the peak/off-peak indicator; Line 3 above it carries the agentihooks profile + channels list):
+Claude Code provides native rate limit data (`rate_limits.five_hour` and `rate_limits.seven_day`) in every statusline payload. AgentiHooks surfaces this on statusline Line 4 (the conditional row that also shows context-threshold warnings; Line 3 above it carries the agentihooks profile + channels list):
 
 ```
 session:53% [1h35m] | weekly:35%
@@ -241,23 +240,6 @@ architectural decisions. Prefer Sonnet for implementation; reserve Opus for plan
 
 ---
 
-### 12. Peak/off-peak awareness
-
-Detects Anthropic's peak billing hours (weekday business hours US Pacific) and shows an indicator on the statusline. When session usage is high during peak hours, adds a warning.
-
-```
-session:62% [1h] | PEAK -- sessions burn faster during business hours
-```
-
-| Variable | Default | What it controls |
-|----------|---------|-----------------|
-| `PEAK_HOURS_ENABLED` | `true` | Show peak indicator on statusline |
-| `PEAK_HOURS_START` | `9` | Peak start hour |
-| `PEAK_HOURS_END` | `17` | Peak end hour |
-| `PEAK_HOURS_TZ` | `US/Pacific` | Timezone for peak calculation |
-
----
-
 ### 13. MCP surface area reporting
 
 CLI tool that analyzes MCP server configurations and reports estimated token overhead. Also warns at session start if total tools exceed a threshold.
@@ -308,7 +290,6 @@ Moving workflow-specific content from CLAUDE.md (loaded every turn) to skills (l
 | **Awareness** | Statusline cost/burn | On | Prevents waste | `TOKEN_MONITOR_ENABLED` |
 | **Awareness** | Context warnings (smart) | On | Prevents resets | `COMPACT_SUGGEST_ENABLED` |
 | **Awareness** | Context audit | On | Informed compaction | `CONTEXT_AUDIT_ENABLED` |
-| **Awareness** | Peak hour indicator | On | Budget preservation | `PEAK_HOURS_ENABLED` |
 | **Awareness** | Native rate limit display | On | Prevents limit hits | *(native)* |
 | **Decode** | Thinking/effort policy | On | 10K-50K/over-think | `EFFORT_POLICY_ENABLED` |
 | **Startup** | CLAUDE.md linting | CLI | 500-5K/turn | `agentihooks lint-claude` |
@@ -332,6 +313,6 @@ Verify everything is working:
 agentihooks status
 ```
 
-This shows your full system health: profile, hooks, Python, Redis, OTEL, all cost guardrails with descriptions, your entire MCP fleet with real tool counts (queried via MCP protocol, cached 1h), per-project enabled/disabled state, and rate limit summary with peak/off-peak indicator.
+This shows your full system health: profile, hooks, Python, Redis, OTEL, all cost guardrails with descriptions, your entire MCP fleet with real tool counts (queried via MCP protocol, cached 1h), per-project enabled/disabled state, and rate limit summary.
 
 Inside a Claude session, use `/agentihooks` for the same diagnostics plus live session metrics (context fill, burn rate, per-tool consumption).

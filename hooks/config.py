@@ -384,14 +384,6 @@ DEFAULT_EFFORT: str = os.getenv("DEFAULT_EFFORT", "medium")
 THINKING_BUDGET_TOKENS: int = int(os.getenv("THINKING_BUDGET_TOKENS", "0"))
 
 # =============================================================================
-# PEAK / OFF-PEAK AWARENESS
-# =============================================================================
-PEAK_HOURS_ENABLED = _env_bool("PEAK_HOURS_ENABLED", "true")
-PEAK_HOURS_START: int = int(os.getenv("PEAK_HOURS_START", "5"))
-PEAK_HOURS_END: int = int(os.getenv("PEAK_HOURS_END", "11"))
-PEAK_HOURS_TZ: str = os.getenv("PEAK_HOURS_TZ", "US/Pacific")
-
-# =============================================================================
 # MCP SURFACE AREA WARNING
 # =============================================================================
 MCP_TOOL_WARN_THRESHOLD: int = int(os.getenv("MCP_TOOL_WARN_THRESHOLD", "40"))

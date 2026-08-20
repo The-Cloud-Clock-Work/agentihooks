@@ -223,7 +223,7 @@ Line 3 -- active agentihooks profile, settings-profile overlay, channel subscrip
 agentihooks: anton,brain  settings:anton,brain  channels:brain,amygdala
 ```
 
-Line 4 (conditional) -- threshold warning if fill % crosses `TOKEN_WARN_PCT` or `TOKEN_CRITICAL_PCT`, native rate limits, or peak/off-peak indicator:
+Line 4 (conditional) -- threshold warning if fill % crosses `TOKEN_WARN_PCT` or `TOKEN_CRITICAL_PCT` or native rate limits:
 ```
 CONTEXT 61% -- consider /compact soon
 ```

@@ -228,7 +228,6 @@ _GUARDRAIL_DESCRIPTIONS = {
     "context_compression": "Token compression on injected content (only when CONTEXT_COMPRESSION_SCOPE=all)",
     "context_audit": "Tracks per-tool token consumption across the session",
     "effort_policy": "Injects thinking/effort guidance, warns on expensive subagents",
-    "peak_hours": "Shows peak billing indicator on statusline",
     "compact_suggest": "Smart /compact suggestions based on audit data",
 }
 
@@ -244,7 +243,6 @@ def check_guardrails() -> dict[str, Any]:
             CONTEXT_REFRESH_COMPRESSION,
             EFFORT_POLICY_ENABLED,
             FILE_READ_CACHE_ENABLED,
-            PEAK_HOURS_ENABLED,
         )
 
         flags = {
@@ -257,7 +255,6 @@ def check_guardrails() -> dict[str, Any]:
             "context_compression": CONTEXT_REFRESH_COMPRESSION != "off" and CONTEXT_COMPRESSION_SCOPE == "all",
             "context_audit": CONTEXT_AUDIT_ENABLED,
             "effort_policy": EFFORT_POLICY_ENABLED,
-            "peak_hours": PEAK_HOURS_ENABLED,
             "compact_suggest": COMPACT_SUGGEST_ENABLED,
         }
     except Exception:
@@ -497,13 +494,9 @@ def check_mcp() -> dict[str, Any]:
 
 def check_quota() -> dict[str, Any]:
     try:
-        from hooks.config import PEAK_HOURS_END, PEAK_HOURS_START, PEAK_HOURS_TZ
-        from hooks.observability.peak_hours import peak_indicator
-
-        peak = peak_indicator(PEAK_HOURS_START, PEAK_HOURS_END, PEAK_HOURS_TZ)
-        return {"summary": "native (via statusline)", "peak": peak, "ok": True}
+        return {"summary": "native (via statusline)", "ok": True}
     except Exception as e:
-        return {"summary": f"(error: {e})", "peak": "unknown", "ok": False}
+        return {"summary": f"(error: {e})", "ok": False}
 
 
 def check_session(session_id: str) -> dict[str, Any]:
@@ -703,7 +696,7 @@ def format_cli(results: dict[str, Any]) -> str:
     # Quota
     q = results["quota"]
     tag = "[OK]" if q["ok"] else "[--]"
-    lines.append(_cprint(f"{tag} Quota: {q['summary']} | {q['peak']}"))
+    lines.append(_cprint(f"{tag} Quota: {q['summary']}"))
 
     # Session (if present)
     s = results.get("session")
