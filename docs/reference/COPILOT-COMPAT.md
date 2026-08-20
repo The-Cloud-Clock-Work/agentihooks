@@ -508,3 +508,27 @@ initiated: open the parked URL when you actually want that server.
 
 Caveat: this is global, so `copilot` login will not auto-open a browser either.
 The device-code flow still prints its verification URI and code in the TUI.
+
+### §11.4 `mcpDefaultDisabled` — servers configured but not connected
+
+`disabledMcpServers` (settings) keeps a server fully configured while leaving it
+unconnected, which makes `/mcp enable <name>` an on-demand connect switch. GitHub's
+docs describe `/mcp disable` as applying "for the current session"; it does not —
+the command writes `disabledMcpServers` to `~/.copilot/settings.json` and a fresh
+process honours it:
+
+```
+$ copilot mcp list          # settings.json: {}
+  probe-a (local)           probe-b (local)
+$ copilot mcp list          # settings.json: {"disabledMcpServers":["probe-a"]}
+  probe-a (local, disabled) probe-b (local)
+```
+
+The `_agentihooks.mcpDefaultDisabled` directive applies that to every configured
+server after MCP registration, including servers agentihooks does not manage (they
+are in the same `mcp-config.json`). `mcpAlwaysEnabled` overrides the exempt set,
+which defaults to `hooks-utils` — disabling the toolbelt would remove the fleet
+tools from the session.
+
+Copilot records a hand-enable in `enabledMcpServers`, and the installer never
+re-disables a name found there, so `/mcp enable` survives the next install.

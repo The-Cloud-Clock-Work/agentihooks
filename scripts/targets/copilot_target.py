@@ -136,6 +136,8 @@ def _split_frontmatter(text: str) -> tuple[dict, str]:
     return (front if isinstance(front, dict) else {}), parts[2].lstrip("\n")
 
 
+_MCP_ALWAYS_ENABLED = ("hooks-utils",)
+
 _OAUTH_URL_FILE = "$HOME/.copilot/pending-oauth-urls.txt"
 _OAUTH_URL_SINK = f'mkdir -p "$HOME/.copilot" && printf "%s\\n" "$1" >> "{_OAUTH_URL_FILE}"'
 
@@ -236,6 +238,7 @@ class CopilotAdapter:
         # for; today that is allow-all, which is an env var only.
         native = dict(native or {})
         directives = native.pop("_agentihooks", None) or {}
+        self._mcp_directives = directives
         wanted: dict = {k: v for k, v in native.items() if not k.startswith("_")}
 
         # Copilot merges an inline `hooks` key with the hooks/ directory, so a
@@ -828,8 +831,53 @@ class CopilotAdapter:
                     _i._cprint(f"  [RM] Removed MCP servers from {mcp_path}: {', '.join(removed)}")
         clear_managed_mcp(self.name)
 
+    def _apply_mcp_default_disabled(self) -> None:
+        """Start every configured MCP server disabled, per ``_agentihooks.mcpDefaultDisabled``.
+
+        Copilot connects every configured server when a session opens and opens
+        a browser OAuth tab for each one that 401s; there is no lazy-connect key
+        (copilot-cli #1938, #2026, #3462). A server named in ``disabledMcpServers``
+        stays fully configured but is not connected, so ``/mcp enable <name>``
+        becomes the on-demand switch.
+
+        ``enabledMcpServers`` is Copilot's record of what the operator turned on
+        by hand; those are never re-disabled here, so an enable survives the next
+        install.
+        """
+        directives = getattr(self, "_mcp_directives", None) or {}
+        if not directives.get("mcpDefaultDisabled"):
+            return
+
+        _i = _install_module()
+        home = self.home()
+        config = self._load_json(home / "mcp-config.json")
+        configured = sorted((config.get("mcpServers") or {}).keys())
+        if not configured:
+            return
+
+        settings_path = home / "settings.json"
+        doc = self._load_json(settings_path)
+        always_on = set(directives.get("mcpAlwaysEnabled") or _MCP_ALWAYS_ENABLED)
+        operator_enabled = set(doc.get("enabledMcpServers") or [])
+
+        disabled = set(doc.get("disabledMcpServers") or [])
+        disabled.update(n for n in configured if n not in always_on and n not in operator_enabled)
+        if not disabled:
+            return
+
+        doc["disabledMcpServers"] = sorted(disabled)
+        _atomic_write(settings_path, json.dumps(doc, indent=2) + "\n")
+
+        held = sorted(n for n in configured if n in operator_enabled or n in always_on)
+        _i._cprint(
+            f"  [OK] {len(doc['disabledMcpServers'])} MCP server(s) start disabled — /mcp enable <name> to connect one"
+        )
+        if held:
+            _i._cprint(f"       left enabled: {', '.join(held)}")
+
     def post_install_reconcile(self, profile_chain: list[str], persisted_profile: str) -> None:
         _i = _install_module()
+        self._apply_mcp_default_disabled()
         _i._cprint("  [--] Copilot install complete. Verify with: agentihooks doctor --target copilot")
 
     # ------------------------------------------------------------------

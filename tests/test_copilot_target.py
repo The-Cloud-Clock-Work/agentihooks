@@ -906,3 +906,63 @@ class TestSuppressBrowserLaunch:
         adapter.write_settings({"_agentihooks": {"suppressBrowserLaunch": True}})
         adapter.write_settings({})
         assert not adapter._bypass_env_file().exists()
+
+
+class TestMcpDefaultDisabled:
+    """Copilot connects every configured server at session start; disabling by
+    default makes /mcp enable the on-demand switch."""
+
+    @staticmethod
+    def _settings():
+        return json.loads((copilot_home() / "settings.json").read_text())
+
+    @staticmethod
+    def _seed_mcp(names):
+        path = copilot_home() / "mcp-config.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": {n: {"type": "local", "command": "/bin/true"} for n in names}}))
+
+    def test_every_configured_server_starts_disabled(self, adapter):
+        adapter.write_settings({"_agentihooks": {"mcpDefaultDisabled": True}})
+        self._seed_mcp(["atlassian", "drawio", "WorkIQ-MailServer"])
+        adapter.post_install_reconcile([], "smith")
+        assert self._settings()["disabledMcpServers"] == [
+            "WorkIQ-MailServer",
+            "atlassian",
+            "drawio",
+        ]
+
+    def test_hooks_utils_stays_enabled(self, adapter):
+        adapter.write_settings({"_agentihooks": {"mcpDefaultDisabled": True}})
+        self._seed_mcp(["hooks-utils", "drawio"])
+        adapter.post_install_reconcile([], "smith")
+        assert self._settings()["disabledMcpServers"] == ["drawio"]
+
+    def test_operator_enabled_server_is_not_re_disabled(self, adapter):
+        """`/mcp enable X` records X in enabledMcpServers; the next install must
+        leave it on."""
+        adapter.write_settings({"_agentihooks": {"mcpDefaultDisabled": True}})
+        self._seed_mcp(["atlassian", "drawio"])
+        adapter.post_install_reconcile([], "smith")
+
+        path = copilot_home() / "settings.json"
+        doc = json.loads(path.read_text())
+        doc["disabledMcpServers"] = ["drawio"]
+        doc["enabledMcpServers"] = ["atlassian"]
+        path.write_text(json.dumps(doc))
+
+        adapter.write_settings({"_agentihooks": {"mcpDefaultDisabled": True}})
+        adapter.post_install_reconcile([], "smith")
+        assert self._settings()["disabledMcpServers"] == ["drawio"]
+
+    def test_custom_always_enabled_list(self, adapter):
+        adapter.write_settings({"_agentihooks": {"mcpDefaultDisabled": True, "mcpAlwaysEnabled": ["drawio"]}})
+        self._seed_mcp(["hooks-utils", "drawio", "atlassian"])
+        adapter.post_install_reconcile([], "smith")
+        assert self._settings()["disabledMcpServers"] == ["atlassian", "hooks-utils"]
+
+    def test_absent_directive_disables_nothing(self, adapter):
+        adapter.write_settings({})
+        self._seed_mcp(["atlassian", "drawio"])
+        adapter.post_install_reconcile([], "smith")
+        assert "disabledMcpServers" not in self._settings()
