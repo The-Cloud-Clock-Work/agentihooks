@@ -585,3 +585,25 @@ launcher would silently open nothing, which is worse than the default it replace
 
 `suppressBrowserLaunch` (§11.3) is the same mechanism pointed at a sink;
 `browserCommand` wins if both are set.
+
+### §11.6 `channels` — broadcast subscriptions have no settings home in Copilot
+
+Claude carries `AGENTIHOOKS_BASE_CHANNELS` in its settings `env` block. Copilot's
+settings catalogue has no `env` key (only `envValueMode`, which is unrelated), so
+that mechanism does not port. Left alone, a Copilot session reads an unset
+variable, subscribes to nothing, and every channel-targeted broadcast passes it
+by — visible as an empty `channels:` on the statusline:
+
+```
+agentihooks: smith,brain  settings:smith,brain  channels:
+```
+
+`_agentihooks.channels` renders the list into the managed env file, which the
+installer's `agentienv` shell block sources with `set -a`. Copilot inherits the
+exported variable, and so do the hooks, the statusline command and the MCP server
+it spawns — one write covers all four. A list or a comma string are both accepted.
+
+`profiles/_base/settings.base.copilot.json` ships `brain,amygdala`, matching the
+Claude default in `profiles/default/.claude/settings.overrides.json`; a test pins
+the two together so a copilot session lands on the same channels a claude session
+does.

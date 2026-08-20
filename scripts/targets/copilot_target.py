@@ -262,6 +262,11 @@ class CopilotAdapter:
         instead, for when no browser should open at all. ``browserCommand`` wins
         if both are set.
 
+        ``channels`` — the broadcast subscription list. Claude carries it in its
+        settings ``env`` block; Copilot has no ``env`` settings key, so without
+        this a Copilot session reads an unset ``AGENTIHOOKS_BASE_CHANNELS``,
+        subscribes to nothing, and every channel-targeted broadcast passes it by.
+
         All land in a managed env file the installer's ``agentienv`` shell block
         already auto-exports, so they reach interactive sessions.
         """
@@ -271,6 +276,12 @@ class CopilotAdapter:
         lines: list[str] = []
         launcher: list[str] | None = None
         launcher_note = ""
+        channels = directives.get("channels")
+        if isinstance(channels, (list, tuple)):
+            channels = ",".join(str(c) for c in channels)
+        if channels:
+            lines.append("# native _agentihooks.channels → broadcast subscriptions\n")
+            lines.append(f"AGENTIHOOKS_BASE_CHANNELS={channels}\n")
         if directives.get("allowAll"):
             lines.append("# native _agentihooks.allowAll → Copilot allow-all-tools\n")
             lines.append("COPILOT_ALLOW_ALL=1\n")
@@ -298,6 +309,8 @@ class CopilotAdapter:
             path,
             "# managed-by: agentihooks — regenerate with: agentihooks init --target copilot\n" + "".join(lines),
         )
+        if channels:
+            _i._cprint(f"  [OK] broadcast channels → AGENTIHOOKS_BASE_CHANNELS={channels} in {path}")
         if directives.get("allowAll"):
             _i._cprint(f"  [OK] allowAll → COPILOT_ALLOW_ALL=1 in {path} (run: source ~/.bashrc)")
         if launcher:

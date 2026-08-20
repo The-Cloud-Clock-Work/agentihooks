@@ -4,6 +4,7 @@ import json
 import os
 import shlex
 import subprocess
+from pathlib import Path
 
 import install  # binds the installer identity conftest patches; also used directly below
 import pytest
@@ -1047,3 +1048,36 @@ class TestBrowserCommand:
         url = "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize"
         subprocess.run([*self._launcher(adapter), url], check=True)
         assert seen.read_text() == url
+
+
+class TestBroadcastChannels:
+    """Claude sets AGENTIHOOKS_BASE_CHANNELS in its settings `env` block; copilot
+    has no `env` settings key, so an unset var means no channel subscriptions."""
+
+    @staticmethod
+    def _env(adapter):
+        return adapter._bypass_env_file().read_text()
+
+    def test_channels_reach_the_env_file(self, adapter):
+        adapter.write_settings({"_agentihooks": {"channels": "brain,amygdala"}})
+        assert "AGENTIHOOKS_BASE_CHANNELS=brain,amygdala" in self._env(adapter)
+
+    def test_list_form_is_joined(self, adapter):
+        adapter.write_settings({"_agentihooks": {"channels": ["brain", "amygdala"]}})
+        assert "AGENTIHOOKS_BASE_CHANNELS=brain,amygdala" in self._env(adapter)
+
+    def test_channels_survive_alongside_other_directives(self, adapter):
+        adapter.write_settings({"_agentihooks": {"channels": "brain", "allowAll": True}})
+        text = self._env(adapter)
+        assert "AGENTIHOOKS_BASE_CHANNELS=brain" in text and "COPILOT_ALLOW_ALL=1" in text
+
+    def test_channels_alone_still_writes_the_file(self, adapter):
+        adapter.write_settings({"_agentihooks": {"channels": "brain"}})
+        assert adapter._bypass_env_file().exists()
+
+    def test_the_shipped_base_subscribes_to_the_claude_defaults(self):
+        """A copilot session must land on the same channels a claude session does."""
+        repo = Path(__file__).resolve().parents[1]
+        base = json.loads((repo / "profiles/_base/settings.base.copilot.json").read_text())
+        claude = json.loads((repo / "profiles/default/.claude/settings.overrides.json").read_text())
+        assert base["_agentihooks"]["channels"] == claude["env"]["AGENTIHOOKS_BASE_CHANNELS"]
