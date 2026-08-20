@@ -1057,6 +1057,30 @@ def on_pre_tool_use(payload: dict) -> None:
 
         log_new_entries(session_id, transcript_path)
 
+    # Credential-read guard. Runs on every target: it was previously wired
+    # through Claude's settings `hooks` array (and paired with Claude-only
+    # `permissions.deny` rules), so codex and copilot had no credential-read
+    # protection at all. Reading is the exposure — a value reaching the
+    # transcript has to be rotated, not deleted — so this blocks rather than
+    # redacts, and bypass mode does not lift it.
+    try:
+        from hooks.config import CREDENTIAL_GUARD_ENABLED
+
+        if CREDENTIAL_GUARD_ENABLED:
+            from hooks.context.credential_guard import decide as _credential_decide
+
+            _reason = _credential_decide(payload)
+            if _reason:
+                otel.emit_event(
+                    "agentihooks.guardrail.credential_read_blocked",
+                    {"session.id": payload.get("session_id", ""), "tool_name": tool_name},
+                )
+                raise BlockAction(_reason)
+    except BlockAction:
+        raise
+    except Exception as e:  # NOSONAR — a guard that crashes must not crash the hook
+        log("credential_guard failed", {"error": str(e)})
+
     # File read deduplication
     if tool_name == "Read":
         try:

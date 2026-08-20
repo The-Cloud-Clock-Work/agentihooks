@@ -35,6 +35,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **The credential-read guard now runs on every target.** It was wired through
+  Claude's settings `hooks` array and paired with Claude-only `permissions.deny`
+  rules, so codex and copilot had no credential-read protection whatsoever — and
+  copilot cannot supply it through settings either, since its
+  `permissions.allow/ask/deny` are enterprise-managed and inert in user settings
+  (verified live on v1.0.80: a bare `read` deny did not block a read). Ported to
+  `hooks/context/credential_guard.py`, called from `on_pre_tool_use`, gated by
+  `CREDENTIAL_GUARD_ENABLED`. The bundle hook's 45-case selftest became a real
+  pytest suite. Verified through each target's live entry point.
 - Native codex + copilot settings for the `smith` profile.
 
 ## [2.2.0] - 2026-08-20

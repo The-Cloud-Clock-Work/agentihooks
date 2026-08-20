@@ -273,6 +273,10 @@ BASH_FILTER_TEST_MAX_FAILURES = int(os.getenv("BASH_FILTER_TEST_MAX_FAILURES", "
 BASH_FILTER_GIT_MAX_COMMITS = int(os.getenv("BASH_FILTER_GIT_MAX_COMMITS", "20"))
 
 FILE_READ_CACHE_ENABLED = _env_bool("FILE_READ_CACHE_ENABLED", "true")
+
+# Credential-read guard: blocks a read whose OUTPUT would be a secret value.
+# On by default and on every target; reading is the exposure.
+CREDENTIAL_GUARD_ENABLED = _env_bool("CREDENTIAL_GUARD_ENABLED", "true")
 FILE_READ_CACHE_BACKEND = os.getenv("FILE_READ_CACHE_BACKEND", "redis")
 FILE_READ_CACHE_TTL = int(os.getenv("FILE_READ_CACHE_TTL", "21600"))
 
