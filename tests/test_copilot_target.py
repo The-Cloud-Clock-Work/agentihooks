@@ -65,7 +65,10 @@ class TestSettingsJson:
         adapter.write_settings({"_agentihooks": {"allowAll": True}})
         env_file = install.AGENTIHOOKS_STATE_DIR / "copilot.env"
         assert env_file.exists(), "bypassPermissions must produce the copilot env file"
-        assert "COPILOT_ALLOW_ALL=1" in env_file.read_text()
+        # Copilot tests `=== "true"` for folder trust, workspace MCP sources,
+        # repo hooks and plugin loading; only the --allow-all-tools binding is
+        # presence-based. A truthy-looking "1" leaves the rest silently off.
+        assert "COPILOT_ALLOW_ALL=true" in env_file.read_text()
 
     def test_non_bypass_removes_allow_all_env(self, adapter):
         adapter.write_settings({"_agentihooks": {"allowAll": True}})
@@ -901,7 +904,7 @@ class TestSuppressBrowserLaunch:
     def test_both_directives_coexist(self, adapter):
         adapter.write_settings({"_agentihooks": {"allowAll": True, "suppressBrowserLaunch": True}})
         text = self._env_text(adapter)
-        assert "COPILOT_ALLOW_ALL=1" in text and "COPILOT_DEBUG_BROWSER=" in text
+        assert "COPILOT_ALLOW_ALL=true" in text and "COPILOT_DEBUG_BROWSER=" in text
 
     def test_dropping_every_directive_removes_the_env_file(self, adapter):
         adapter.write_settings({"_agentihooks": {"suppressBrowserLaunch": True}})
@@ -1069,7 +1072,7 @@ class TestBroadcastChannels:
     def test_channels_survive_alongside_other_directives(self, adapter):
         adapter.write_settings({"_agentihooks": {"channels": "brain", "allowAll": True}})
         text = self._env(adapter)
-        assert "AGENTIHOOKS_BASE_CHANNELS=brain" in text and "COPILOT_ALLOW_ALL=1" in text
+        assert "AGENTIHOOKS_BASE_CHANNELS=brain" in text and "COPILOT_ALLOW_ALL=true" in text
 
     def test_channels_alone_still_writes_the_file(self, adapter):
         adapter.write_settings({"_agentihooks": {"channels": "brain"}})

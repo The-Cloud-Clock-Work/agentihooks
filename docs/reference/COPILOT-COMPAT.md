@@ -428,7 +428,7 @@ key for:
 
 | directive | effect |
 |---|---|
-| `allowAll: true` | writes `COPILOT_ALLOW_ALL=1` to `~/.agentihooks/copilot.env`, which the installer's `agentienv` shell block auto-exports |
+| `allowAll: true` | writes `COPILOT_ALLOW_ALL=true` to `~/.agentihooks/copilot.env`, which the installer's `agentienv` shell block auto-exports. The value must be the literal `true` — see §11.7 |
 
 **Never declare a `hooks` key.** Copilot merges an inline settings `hooks` with
 the `hooks/` directory, so declaring both fires every hook twice. The adapter
@@ -633,3 +633,25 @@ the directive.
 Claude default in `profiles/default/.claude/settings.overrides.json`; a test pins
 the two together so a copilot session lands on the same channels a claude session
 does.
+
+### §11.7 `COPILOT_ALLOW_ALL` must be the literal `true`
+
+The variable is read two different ways, and only one of them is truthy-tolerant.
+
+`--allow-all-tools` is declared with Commander's `.env("COPILOT_ALLOW_ALL")`, which
+binds on the variable being **present and non-empty**. So `COPILOT_ALLOW_ALL=1`
+does grant the tools axis, and a probe that only exercises a tool call reports
+success.
+
+Every other consumer compares `process.env.COPILOT_ALLOW_ALL === "true"` — an
+exact string. Those gate folder trust, workspace MCP source discovery, repo hook
+loading in prompt mode, and plugin activation. With `1` they all stay off,
+silently, while the tools axis works — the failure mode is a switch that looks
+set because the visible half of it is.
+
+`copilot help environment` documents it as: *allow all tools to run automatically
+without confirmation when set to "true"*. Take that literally.
+
+Note also that allow-all is not one flag but three axes — `getAllowAllPermissionStatus()`
+returns `baseline: {tools, paths, urls}`, and `--allow-all-paths` is a separate
+flag. Granting tools does not grant paths.

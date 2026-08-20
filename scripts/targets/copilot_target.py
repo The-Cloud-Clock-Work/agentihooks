@@ -293,8 +293,14 @@ class CopilotAdapter:
             lines.append("# native _agentihooks.channels → broadcast subscriptions\n")
             lines.append(f"AGENTIHOOKS_BASE_CHANNELS={channels}\n")
         if directives.get("allowAll"):
+            # The literal string "true", not "1". Commander binds the var to
+            # --allow-all-tools on presence alone, so "1" does grant the tools
+            # axis — but folder trust, workspace MCP sources, repo hooks and
+            # plugin loading each test `=== "true"` separately, and silently
+            # stay off for any other value. Half the switch is worse than none,
+            # because the half that works makes it look set.
             lines.append("# native _agentihooks.allowAll → Copilot allow-all-tools\n")
-            lines.append("COPILOT_ALLOW_ALL=1\n")
+            lines.append("COPILOT_ALLOW_ALL=true\n")
 
         browser = self._resolve_browser_command(directives.get("browserCommand"))
         if browser:
@@ -322,7 +328,7 @@ class CopilotAdapter:
         if channels:
             _i._cprint(f"  [OK] broadcast channels → AGENTIHOOKS_BASE_CHANNELS={channels} in {path}")
         if directives.get("allowAll"):
-            _i._cprint(f"  [OK] allowAll → COPILOT_ALLOW_ALL=1 in {path} (run: source ~/.bashrc)")
+            _i._cprint(f"  [OK] allowAll → COPILOT_ALLOW_ALL=true in {path} (run: source ~/.bashrc)")
         if launcher:
             _i._cprint(f"  [OK] COPILOT_DEBUG_BROWSER in {path} — {launcher_note} (run: source ~/.bashrc)")
 
