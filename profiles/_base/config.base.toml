@@ -1,0 +1,24 @@
+# Codex-native base settings. Profiles override these in their own
+# .codex/config.overrides.toml; agentihooks merges into ~/.codex/config.toml
+# under [agentihooks.managed] so operator hand-edits survive.
+#
+# Safe posture by default: a profile that wants full autonomy states
+# approval_policy = "never" / sandbox_mode = "danger-full-access" explicitly
+# rather than having it inferred from a Claude settings key.
+
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[features]
+# The whole hook layer is dead weight without this.
+hooks = true
+
+[tui]
+status_line = [
+  "model-with-reasoning",
+  "current-dir",
+  "context-usage",
+  "used-tokens",
+  "five-hour-limit",
+  "weekly-limit",
+]

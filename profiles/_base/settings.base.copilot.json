@@ -1,0 +1,8 @@
+{
+  "_comment": "Copilot-native base settings. Profiles override these in their own .copilot/settings.overrides.json. Never declare a `hooks` key here: copilot merges inline settings hooks with the hooks/ directory, so declaring both fires every hook twice. Hooks are adapter-written to ~/.copilot/hooks/agentihooks.json.",
+  "statusLine": {
+    "type": "command",
+    "command": "__PYTHON__ -m hooks.statusline"
+  },
+  "disableAllHooks": false
+}

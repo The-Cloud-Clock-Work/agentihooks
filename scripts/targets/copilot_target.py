@@ -160,7 +160,7 @@ class CopilotAdapter:
         return _install_module().AGENTIHOOKS_STATE_DIR / "copilot.env"
 
     def _write_bypass_env(self, enabled: bool) -> None:
-        """Translate claude's ``bypassPermissions`` into Copilot's YOLO switch.
+        """Apply the native ``_agentihooks.allowAll`` directive as Copilot's YOLO switch.
 
         Copilot has no settings key for it: ``permissions.allow`` rules cover
         tools only (a ``write`` rule still hits path verification), and
@@ -168,8 +168,7 @@ class CopilotAdapter:
         global switch is ``COPILOT_ALLOW_ALL`` (the env form of
         ``--allow-all-tools``), proven to clear a denial that tool rules did
         not. It is written to a managed env file the installer's ``agentienv``
-        shell block already auto-exports, so it applies to interactive
-        sessions the way ``defaultMode`` does for claude.
+        shell block already auto-exports, so it reaches interactive sessions.
         """
         _i = _install_module()
         path = self._bypass_env_file()
@@ -182,7 +181,7 @@ class CopilotAdapter:
         _atomic_write(
             path,
             "# managed-by: agentihooks — regenerate with: agentihooks init --target copilot\n"
-            "# claude permissions.defaultMode=bypassPermissions → Copilot allow-all-tools\n"
+            "# native _agentihooks.allowAll → Copilot allow-all-tools\n"
             "COPILOT_ALLOW_ALL=1\n",
         )
         _i._cprint(f"  [OK] bypassPermissions → COPILOT_ALLOW_ALL=1 in {path} (run: source ~/.bashrc)")
@@ -191,7 +190,7 @@ class CopilotAdapter:
     # settings: settings.json managed keys + hooks/agentihooks.json + wrapper
     # ------------------------------------------------------------------
 
-    def write_settings(self, rendered: dict) -> Path:
+    def write_settings(self, native: dict) -> Path:
         _i = _install_module()
         home = self.home()
         home.mkdir(parents=True, exist_ok=True)
@@ -199,20 +198,28 @@ class CopilotAdapter:
         settings_path = home / "settings.json"
         doc = self._load_json(settings_path)
 
-        python_bin = str(_i._detect_venv() or sys.executable)
+        # Settings are authored natively (profiles/_base/settings.base.copilot.json
+        # plus each profile's .copilot/settings.overrides.json) and arrive here
+        # already merged.
+        #
+        # `_agentihooks` is a reserved block, not a Copilot setting — Copilot
+        # warns about unknown top-level keys, so it is consumed here and never
+        # written to disk. It carries the directives Copilot has no settings key
+        # for; today that is allow-all, which is an env var only.
+        native = dict(native or {})
+        directives = native.pop("_agentihooks", None) or {}
+        wanted: dict = {k: v for k, v in native.items() if not k.startswith("_")}
 
-        # Unlike codex, Copilot drives a status line from a command whose stdin
-        # carries the session state as JSON — the same contract statusline.py
-        # already implements for claude.
-        wanted: dict = {
-            "statusLine": {
-                "type": "command",
-                "command": f"{shlex.quote(python_bin)} -m hooks.statusline",
-            },
-            # Hooks are the entire guardrail layer; an inherited true here
-            # would disable every one of them silently.
-            "disableAllHooks": False,
-        }
+        # Copilot merges an inline `hooks` key with the hooks/ directory, so a
+        # native file declaring both would fire every hook twice.
+        if wanted.pop("hooks", None) is not None:
+            _i._cprint(
+                "  [!!] native copilot settings declared a 'hooks' key — dropped. "
+                "Hooks are written to hooks/agentihooks.json; declaring both fires each hook twice."
+            )
+
+        # Floor: the hook layer is the entire guardrail surface.
+        wanted["disableAllHooks"] = False
 
         # Managed-key discipline: record what we wrote so a later change can
         # update it, while a value the operator hand-edited since our last
@@ -243,8 +250,7 @@ class CopilotAdapter:
                 )
         _atomic_write(self._managed_sidecar(home), json.dumps(recorded, indent=2) + "\n")
 
-        default_mode = (rendered.get("permissions") or {}).get("defaultMode", "")
-        self._write_bypass_env(default_mode == "bypassPermissions")
+        self._write_bypass_env(bool(directives.get("allowAll")))
 
         _atomic_write(settings_path, json.dumps(doc, indent=2) + "\n")
         _i._cprint(f"[OK] Wrote managed keys into {settings_path}")
@@ -642,6 +648,28 @@ class CopilotAdapter:
                     clean_tools.append(tool)
                 if clean_tools:
                     entry["tools"] = clean_tools
+            # Copilot-native fields a Claude .mcp.json cannot express. Passed
+            # through when a native mcp-config layer supplies them:
+            #   auth/oidc=false  — do NOT attempt OAuth for this server. Without
+            #     it a 401 from an http/sse server starts a browser OAuth flow,
+            #     which under WSL launches a Windows browser that cannot
+            #     authenticate and leaves the session hanging.
+            #   tools/excludeTools — trim the tool surface a server contributes,
+            #     the only lever against copilot's static-context ceiling.
+            #   deferTools — "auto" allows tool-search deferral where enabled.
+            for key in ("auth", "oidc", "deferTools", "excludeTools", "timeout", "filterMapping"):
+                if key in spec:
+                    entry[key] = spec[key]
+
+            # Interactive OAuth is opt-IN on copilot. Left to its default, a 401
+            # from any http/sse server starts a browser authorization flow; under
+            # WSL that launches a Windows browser with no session and the turn
+            # hangs with nothing to click. Our servers authenticate by header or
+            # run locally, so a server that genuinely needs OAuth says so with an
+            # explicit `auth: true` in its native mcp-config layer.
+            entry.setdefault("auth", False)
+            entry.setdefault("oidc", False)
+
             table[name] = entry
             added.append(name)
 

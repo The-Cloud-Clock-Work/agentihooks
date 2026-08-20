@@ -4,6 +4,39 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **Bundles now author settings and MCP in each harness's OWN file format**,
+  replacing the Claude-settings translation. codex reads
+  `.codex/config.overrides.toml`, copilot reads `.copilot/settings.overrides.json`
+  + `.copilot/mcp-config.overrides.json`, claude is unchanged. Native bases live
+  at `profiles/_base/{config.base.toml,settings.base.copilot.json}`, and settings
+  gain the bundle-global rung MCP already had.
+
+  The translation carried exactly one key (`permissions.defaultMode`) to codex and
+  copilot and hardcoded the rest in Python, so every target-native capability was
+  unreachable from a bundle. `model_reasoning_effort`, `effortLevel`, per-server
+  MCP tool allowlists and OAuth posture are now all profile-settable.
+
+### Fixed
+
+- **Copilot no longer starts an interactive MCP OAuth flow by default.** A 401
+  from any http/sse server began a browser authorization that, under WSL, opened
+  a Windows browser with no session and hung the turn. `auth`/`oidc` now default
+  to false per server; a server that genuinely needs OAuth opts in explicitly.
+- **Copilot static-context overflow.** `gateway-tools` alone ships 511 tool
+  schemas, putting static context at 121% of the window on copilot's small
+  auto-routed models — every simple turn aborted at 0 credits with
+  `compaction_static_context_blocked`. The anton profile now ships an exact-name
+  `tools` allowlist (99 tools). Note copilot's `tools` does NOT accept wildcards:
+  a pattern silently matches nothing and disables the server entirely.
+
+### Added
+
+- Native codex + copilot settings for the `smith` profile.
+
 ## [2.2.0] - 2026-08-20
 
 ### Fixed

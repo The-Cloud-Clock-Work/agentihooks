@@ -402,3 +402,53 @@ class TestTargetConstantParity:
         from scripts.targets import SUPPORTED_TARGETS
 
         assert hooks_default in SUPPORTED_TARGETS
+
+
+class TestNativeLayerDiscovery:
+    """Each target resolves its OWN settings/MCP files. The previous design
+    translated one Claude document per target, which could carry only
+    permissions.defaultMode and left every target-native capability
+    unreachable from a bundle."""
+
+    def _layout(self, tmp_path):
+        for sub, name, body in (
+            (".claude", "settings.overrides.json", '{"claudeKey": 1}'),
+            (".codex", "config.overrides.toml", 'approval_policy = "never"\n'),
+            (".copilot", "settings.overrides.json", '{"effortLevel": "high"}'),
+        ):
+            d = tmp_path / sub
+            d.mkdir(parents=True, exist_ok=True)
+            (d / name).write_text(body)
+        return tmp_path
+
+    def test_each_target_resolves_its_own_file(self, tmp_path):
+        root = self._layout(tmp_path)
+        for target, expect in (
+            ("claude", "settings.overrides.json"),
+            ("codex", "config.overrides.toml"),
+            ("copilot", "settings.overrides.json"),
+        ):
+            got = install._native_layer_path(root, target, install._NATIVE_SETTINGS_NAME)
+            assert got is not None, target
+            assert got.name == expect
+            assert got.parent.name == install._TARGET_SUBDIR[target]
+
+    def test_missing_native_file_is_none_not_an_error(self, tmp_path):
+        assert install._native_layer_path(tmp_path, "codex", install._NATIVE_SETTINGS_NAME) is None
+
+    def test_layer_root_fallback_for_pre_subdir_layout(self, tmp_path):
+        (tmp_path / "settings.overrides.json").write_text('{"legacy": true}')
+        got = install._native_layer_path(tmp_path, "claude", install._NATIVE_SETTINGS_NAME)
+        assert got is not None and got.parent == tmp_path
+
+    def test_toml_layer_loads_as_plain_dict(self, tmp_path):
+        f = tmp_path / "config.overrides.toml"
+        f.write_text('approval_policy = "never"\n\n[tui]\nstatus_line = ["a"]\n')
+        data = install._load_native_layer(f)
+        assert data["approval_policy"] == "never"
+        assert data["tui"]["status_line"] == ["a"]
+
+    def test_json_layer_loads(self, tmp_path):
+        f = tmp_path / "settings.overrides.json"
+        f.write_text('{"effortLevel": "high"}')
+        assert install._load_native_layer(f)["effortLevel"] == "high"

@@ -40,7 +40,7 @@ class TestSettingsJson:
         assert doc["beep"] is True
 
     def test_statusline_wired_to_command(self, adapter):
-        adapter.write_settings({})
+        adapter.write_settings({"statusLine": {"type": "command", "command": "/usr/bin/python -m hooks.statusline"}})
         doc = json.loads((copilot_home() / "settings.json").read_text())
         assert doc["statusLine"]["type"] == "command"
         assert "hooks.statusline" in doc["statusLine"]["command"]
@@ -60,28 +60,28 @@ class TestSettingsJson:
         tools only (a write rule still hits path verification) and
         trustedFolders is not a recognized setting. COPILOT_ALLOW_ALL is the
         switch, exported by the installer's agentienv shell block."""
-        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+        adapter.write_settings({"_agentihooks": {"allowAll": True}})
         env_file = install.AGENTIHOOKS_STATE_DIR / "copilot.env"
         assert env_file.exists(), "bypassPermissions must produce the copilot env file"
         assert "COPILOT_ALLOW_ALL=1" in env_file.read_text()
 
     def test_non_bypass_removes_allow_all_env(self, adapter):
-        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+        adapter.write_settings({"_agentihooks": {"allowAll": True}})
         env_file = install.AGENTIHOOKS_STATE_DIR / "copilot.env"
         assert env_file.exists()
-        adapter.write_settings({"permissions": {"defaultMode": "default"}})
+        adapter.write_settings({})
         assert not env_file.exists(), "turning bypass off must withdraw the env file"
 
     def test_bypass_does_not_write_unrecognized_trusted_folders(self, adapter):
         """trustedFolders is not in Copilot's canonical settings keys — writing
         it makes the CLI warn about an unknown key on every launch."""
-        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+        adapter.write_settings({"_agentihooks": {"allowAll": True}})
         doc = json.loads((copilot_home() / "settings.json").read_text())
         assert "trustedFolders" not in doc
 
     def test_teardown_removes_stale_trusted_folders_and_env(self, adapter):
         home = copilot_home()
-        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+        adapter.write_settings({"_agentihooks": {"allowAll": True}})
         doc = json.loads((home / "settings.json").read_text())
         doc["trustedFolders"] = [str(install.AGENTIHOOKS_ROOT)]
         (home / "settings.json").write_text(json.dumps(doc))
@@ -91,12 +91,12 @@ class TestSettingsJson:
         assert not (install.AGENTIHOOKS_STATE_DIR / "copilot.env").exists()
 
     def test_operator_hand_set_managed_key_survives_reinit(self, adapter, capsys):
-        adapter.write_settings({})
+        adapter.write_settings({"statusLine": {"type": "command", "command": "/usr/bin/python -m hooks.statusline"}})
         home = copilot_home()
         doc = json.loads((home / "settings.json").read_text())
         doc["statusLine"] = {"type": "command", "command": "/usr/local/bin/my-status"}
         (home / "settings.json").write_text(json.dumps(doc))
-        adapter.write_settings({})
+        adapter.write_settings({"statusLine": {"type": "command", "command": "/usr/bin/python -m hooks.statusline"}})
         doc = json.loads((home / "settings.json").read_text())
         assert doc["statusLine"]["command"] == "/usr/local/bin/my-status"
         assert "hand-set" in capsys.readouterr().out
@@ -611,7 +611,7 @@ class TestAdapterRegistration:
 
 class TestTeardown:
     def _full_install(self, adapter, tmp_path):
-        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+        adapter.write_settings({"_agentihooks": {"allowAll": True}})
         adapter.register_mcp({"hooks-utils": {"command": "/usr/bin/python", "args": ["-m", "hooks.mcp"]}})
         agents_src = tmp_path / "agents"
         agents_src.mkdir(exist_ok=True)
@@ -743,7 +743,7 @@ class TestManagedSidecar:
     launch (observed v1.0.80)."""
 
     def test_settings_json_carries_no_agentihooks_key(self, adapter):
-        adapter.write_settings({})
+        adapter.write_settings({"statusLine": {"type": "command", "command": "/usr/bin/python -m hooks.statusline"}})
         doc = json.loads((copilot_home() / "settings.json").read_text())
         assert "agentihooks" not in doc
         sidecar = json.loads((copilot_home() / ".agentihooks-managed.json").read_text())
@@ -775,21 +775,21 @@ class TestSidecarSelfHeal:
     holding our values must not brand every managed key a permanent hand-edit."""
 
     def test_sidecar_loss_reheals_and_does_not_warn(self, adapter, capsys):
-        adapter.write_settings({})
+        adapter.write_settings({"statusLine": {"type": "command", "command": "/usr/bin/python -m hooks.statusline"}})
         home = copilot_home()
         sidecar = adapter._managed_sidecar(home)
         assert sidecar.exists()
         sidecar.unlink()
         capsys.readouterr()
 
-        adapter.write_settings({})
+        adapter.write_settings({"statusLine": {"type": "command", "command": "/usr/bin/python -m hooks.statusline"}})
         out = capsys.readouterr().out
         assert "hand-set" not in out, "sidecar loss with our value intact must not read as a hand-edit"
         healed = json.loads(sidecar.read_text())
         assert "statusLine" in healed and "disableAllHooks" in healed, "sidecar must re-heal all managed keys"
 
     def test_genuine_hand_edit_still_detected_after_sidecar_loss(self, adapter, capsys):
-        adapter.write_settings({})
+        adapter.write_settings({"statusLine": {"type": "command", "command": "/usr/bin/python -m hooks.statusline"}})
         home = copilot_home()
         doc = json.loads((home / "settings.json").read_text())
         doc["statusLine"] = {"type": "command", "command": "/usr/local/bin/mine"}
@@ -797,8 +797,72 @@ class TestSidecarSelfHeal:
         adapter._managed_sidecar(home).unlink()
         capsys.readouterr()
 
-        adapter.write_settings({})
+        adapter.write_settings({"statusLine": {"type": "command", "command": "/usr/bin/python -m hooks.statusline"}})
         out = capsys.readouterr().out
         assert "hand-set" in out, "a real hand-edit that differs from our value must still be respected"
         doc = json.loads((home / "settings.json").read_text())
         assert doc["statusLine"]["command"] == "/usr/local/bin/mine"
+
+
+class TestNativeMcpPassThrough:
+    """Copilot-native MCP fields a Claude .mcp.json cannot express must survive
+    registration. `auth: false` is the one that matters operationally: without
+    it a 401 from an http/sse server starts a browser OAuth flow, which under
+    WSL opens a Windows browser with no session and hangs the turn."""
+
+    def test_auth_false_survives(self, adapter):
+        adapter.register_mcp(
+            {
+                "gw": {
+                    "type": "http",
+                    "url": "https://gw.example/mcp",
+                    "auth": False,
+                    "oidc": False,
+                    "deferTools": "auto",
+                }
+            }
+        )
+        entry = json.loads((copilot_home() / "mcp-config.json").read_text())["mcpServers"]["gw"]
+        assert entry["auth"] is False
+        assert entry["oidc"] is False
+        assert entry["deferTools"] == "auto"
+
+    def test_tool_allowlist_and_exclusions_survive(self, adapter):
+        adapter.register_mcp(
+            {"srv": {"command": "/bin/srv", "tools": ["a", "b"], "excludeTools": ["c"], "timeout": 30000}}
+        )
+        entry = json.loads((copilot_home() / "mcp-config.json").read_text())["mcpServers"]["srv"]
+        assert entry["tools"] == ["a", "b"]
+        assert entry["excludeTools"] == ["c"]
+        assert entry["timeout"] == 30000
+
+    def test_oauth_is_off_unless_a_server_opts_in(self, adapter):
+        """Interactive OAuth is opt-in: an unconfigured server must not be able
+        to start a browser flow, which hangs under WSL."""
+        adapter.register_mcp({"srv": {"command": "/bin/srv"}})
+        entry = json.loads((copilot_home() / "mcp-config.json").read_text())["mcpServers"]["srv"]
+        assert entry["auth"] is False
+        assert entry["oidc"] is False
+        for key in ("deferTools", "excludeTools"):
+            assert key not in entry
+
+    def test_a_server_can_opt_back_into_oauth(self, adapter):
+        adapter.register_mcp({"srv": {"type": "http", "url": "https://x.example/mcp", "auth": True}})
+        entry = json.loads((copilot_home() / "mcp-config.json").read_text())["mcpServers"]["srv"]
+        assert entry["auth"] is True
+
+
+class TestNativeDirectives:
+    def test_reserved_block_never_reaches_settings_json(self, adapter):
+        adapter.write_settings({"_agentihooks": {"allowAll": True}, "effortLevel": "high"})
+        doc = json.loads((copilot_home() / "settings.json").read_text())
+        assert "_agentihooks" not in doc, "copilot warns about unknown top-level keys"
+        assert doc["effortLevel"] == "high"
+
+    def test_native_hooks_key_is_dropped_with_a_warning(self, adapter, capsys):
+        """Copilot merges inline settings hooks with the hooks/ dir — declaring
+        both fires every hook twice."""
+        adapter.write_settings({"hooks": {"preToolUse": [{"command": "/x"}]}})
+        doc = json.loads((copilot_home() / "settings.json").read_text())
+        assert "hooks" not in doc
+        assert "fires each hook twice" in capsys.readouterr().out

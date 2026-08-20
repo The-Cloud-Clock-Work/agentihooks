@@ -24,15 +24,16 @@ class TestConfigToml:
         (home / "config.toml").write_text(
             '# operator comment\nmodel = "gpt-5.6"\n\n[model_providers.litellm]\nname = "Gateway"\n'
         )
-        adapter.write_settings({"permissions": {"defaultMode": "auto"}})
+        adapter.write_settings({"features": {"hooks": True}})
         text = (home / "config.toml").read_text()
         assert "# operator comment" in text
         assert 'model = "gpt-5.6"' in text
         assert 'name = "Gateway"' in text
         assert "hooks = true" in text
 
-    def test_bypass_permissions_translation(self, adapter):
-        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+    def test_native_posture_written(self, adapter):
+        """Codex posture is authored natively now, not inferred from a Claude key."""
+        adapter.write_settings({"approval_policy": "never", "sandbox_mode": "danger-full-access"})
         text = (codex_home() / "config.toml").read_text()
         assert 'approval_policy = "never"' in text
         assert 'sandbox_mode = "danger-full-access"' in text
@@ -44,18 +45,18 @@ class TestConfigToml:
         adapter.write_settings({})
         assert 'approval_policy = "untrusted"' in (home / "config.toml").read_text()
 
-    def test_bypass_then_default_restores_managed_values(self, adapter):
-        """Bypass → default must downgrade sandboxing back, not stick forever."""
-        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+    def test_posture_change_restores_managed_values(self, adapter):
+        """A profile switching posture must downgrade, not stick forever."""
+        adapter.write_settings({"approval_policy": "never", "sandbox_mode": "danger-full-access"})
         text = (codex_home() / "config.toml").read_text()
         assert 'approval_policy = "never"' in text
-        adapter.write_settings({"permissions": {"defaultMode": "default"}})
+        adapter.write_settings({"approval_policy": "on-request", "sandbox_mode": "workspace-write"})
         text = (codex_home() / "config.toml").read_text()
         assert 'approval_policy = "on-request"' in text
         assert 'sandbox_mode = "workspace-write"' in text
 
     def test_operator_hand_set_approval_policy_survives_reinit(self, adapter, capsys):
-        adapter.write_settings({})
+        adapter.write_settings({"approval_policy": "on-request", "sandbox_mode": "workspace-write"})
         home = codex_home()
         # Operator hand-edits the live key only — not our internal [agentihooks.managed]
         # record, which they don't know exists. count=1 hits the first (top-level)
@@ -66,7 +67,7 @@ class TestConfigToml:
             .replace('approval_policy = "on-request"', 'approval_policy = "untrusted"', 1)
         )
         (home / "config.toml").write_text(text)
-        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+        adapter.write_settings({"approval_policy": "never", "sandbox_mode": "danger-full-access"})
         text = (home / "config.toml").read_text()
         assert 'approval_policy = "untrusted"' in text
         assert "hand-set" in capsys.readouterr().out
@@ -541,7 +542,7 @@ class TestHooksUtilsTransport:
 
 class TestTeardown:
     def _full_install(self, adapter, tmp_path):
-        adapter.write_settings({"permissions": {"defaultMode": "auto"}})
+        adapter.write_settings({"features": {"hooks": True}})
         adapter.register_mcp({"hooks-utils": {"command": "/usr/bin/python", "args": ["-m", "hooks.mcp"]}})
         cmds_src = tmp_path / "commands"
         cmds_src.mkdir(exist_ok=True)

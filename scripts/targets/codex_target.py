@@ -85,7 +85,21 @@ class CodexAdapter:
     # settings: config.toml managed keys + hooks.json + wrapper
     # ------------------------------------------------------------------
 
-    def write_settings(self, rendered: dict) -> Path:
+    @staticmethod
+    def _apply_managed(target: dict, recorded: dict, key: str, value, label: str) -> None:
+        """Write *value* unless the operator hand-edited that key since our last write."""
+        _i = _install_module()
+        current = target.get(key)
+        if current is None or current == recorded.get(key):
+            target[key] = value
+            recorded[key] = value
+        else:
+            _i._cprint(
+                f"  [!!] config.toml '{label}' hand-set to {current!r} (managed value would be "
+                f"{value!r}) — leaving operator value in place"
+            )
+
+    def write_settings(self, native: dict) -> Path:
         _i = self._i = _install_module()
         home = self.home()
         home.mkdir(parents=True, exist_ok=True)
@@ -93,48 +107,31 @@ class CodexAdapter:
         config_path = home / "config.toml"
         doc = self._load_toml(config_path)
 
-        # [features] hooks must be on or the whole hook layer is dead weight.
-        features = doc.setdefault("features", {})
-        features["hooks"] = True
-
-        # Permission translation (claude settings → codex posture). We record the
-        # values we last wrote under [agentihooks.managed] so a later downgrade
-        # (bypass → default) can restore them — but only while the operator hasn't
-        # hand-edited the key since our last write. A hand-edit differs from our
-        # own record and is left alone.
-        default_mode = (rendered.get("permissions") or {}).get("defaultMode", "")
-        if default_mode == "bypassPermissions":
-            wanted = {"approval_policy": "never", "sandbox_mode": "danger-full-access"}
-        else:
-            wanted = {"approval_policy": "on-request", "sandbox_mode": "workspace-write"}
+        # Native settings arrive already merged (base + bundle + profile chain).
+        # Everything else is authored natively (profiles/_base/config.base.toml
+        # plus each profile's .codex/config.overrides.toml) and arrives here
+        # already merged. Each key is applied under the managed-key record so a
+        # value the operator hand-edited since our last write is left alone.
+        #
+        # Nested tables (tui, features, …) merge key-by-key rather than being
+        # replaced wholesale: config.toml is a shared operator file, and
+        # replacing a table would silently drop settings we never wrote.
         managed = doc.setdefault("agentihooks", {}).setdefault("managed", {})
-        for key, value in wanted.items():
-            current = doc.get(key)
-            recorded = managed.get(key)
-            if current is None or current == recorded:
-                doc[key] = value
-                managed[key] = value
-            else:
-                _i._cprint(
-                    f"  [!!] config.toml '{key}' hand-set to {current!r} (managed value would be "
-                    f"{value!r}) — leaving operator value in place"
-                )
+        for key, value in (native or {}).items():
+            if key in ("agentihooks", "mcp_servers") or key.startswith("_"):
+                continue
+            if isinstance(value, dict):
+                table = doc.setdefault(key, {})
+                recorded_table = managed.setdefault(key, {})
+                for sub, subvalue in value.items():
+                    self._apply_managed(table, recorded_table, sub, subvalue, f"{key}.{sub}")
+                continue
+            self._apply_managed(doc, managed, key, value, key)
 
-        # Statusline degrade: no command-backed statusline on codex (upstream
-        # openai/codex #20140) — configure the closest built-in items. The
-        # `ah:` profile line is emitted as a SessionStart banner instead.
-        tui = doc.setdefault("tui", {})
-        tui.setdefault(
-            "status_line",
-            [
-                "model-with-reasoning",
-                "current-dir",
-                "context-usage",
-                "used-tokens",
-                "five-hour-limit",
-                "weekly-limit",
-            ],
-        )
+        # Floor, applied after the merge: the hook layer is the entire guardrail
+        # surface, so it is never left off — not by a native file, not by a
+        # hand-edit.
+        doc.setdefault("features", {})["hooks"] = True
 
         # Notification degrade: codex has no Notification hook — the fixed
         # `notify` mechanism (agent-turn-complete, JSON as argv[1]) is bridged
