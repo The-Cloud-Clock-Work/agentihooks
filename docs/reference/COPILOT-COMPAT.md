@@ -584,7 +584,14 @@ Copilot reports only a *spawn* failure to its debug log, so an unresolvable
 launcher would silently open nothing, which is worse than the default it replaced.
 
 `suppressBrowserLaunch` (§11.3) is the same mechanism pointed at a sink;
-`browserCommand` wins if both are set.
+`browserCommand` wins if both are set. A value that is neither a string nor a list
+of strings is dropped with a warning — the install must degrade to Copilot's own
+browser, not abort on a typo.
+
+One undocumented Copilot detail, confirmed in `app.js`: the web-flow login path
+substitutes the URL for a literal `"%s"` element if the array contains one,
+instead of appending. Nothing agentihooks emits contains `%s`, so the append
+behaviour above is what fires.
 
 ### §11.6 `channels` — broadcast subscriptions have no settings home in Copilot
 
@@ -601,7 +608,26 @@ agentihooks: smith,brain  settings:smith,brain  channels:
 `_agentihooks.channels` renders the list into the managed env file, which the
 installer's `agentienv` shell block sources with `set -a`. Copilot inherits the
 exported variable, and so do the hooks, the statusline command and the MCP server
-it spawns — one write covers all four. A list or a comma string are both accepted.
+it spawns. A list or a comma string are both accepted.
+
+**The reach stops at the shell.** `agentienv` runs from `~/.bashrc`, which bash
+sources only for interactive shells, so only a Copilot descending from one gets
+the variable. Measured:
+
+```
+bash -c  '...'  → AGENTIHOOKS_BASE_CHANNELS UNSET   (non-interactive)
+bash -lc '...'  → AGENTIHOOKS_BASE_CHANNELS UNSET   (login, non-interactive)
+bash -ic '...'  → agentienv loads; variable SET
+```
+
+A Copilot launched by an IDE extension, a systemd unit, or any non-interactive
+spawn subscribes to nothing. That is the same limit every variable in that file
+carries, `COPILOT_ALLOW_ALL` included; a target-native settings key would not have
+it, and Copilot exposes none.
+
+The file is install-time codegen: it materialises on the next
+`agentihooks init --target copilot`, not retroactively on an install that predates
+the directive.
 
 `profiles/_base/settings.base.copilot.json` ships `brain,amygdala`, matching the
 Claude default in `profiles/default/.claude/settings.overrides.json`; a test pins

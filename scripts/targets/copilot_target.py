@@ -228,6 +228,16 @@ class CopilotAdapter:
             browser = shlex.split(browser)
         if not browser:
             return None
+        # A typo'd native file (`"browserCommand": true`) must degrade to
+        # Copilot's own browser like every other malformed value, not abort the
+        # whole install. A dict is iterable over its keys, which would build a
+        # launcher out of nonsense — excluded explicitly rather than by luck.
+        if not isinstance(browser, (list, tuple)) or not all(isinstance(p, str) for p in browser):
+            _i._cprint(
+                f"  [!!] browserCommand must be a string or a list of strings, got {type(browser).__name__} "
+                "— dropped. Copilot keeps its own per-platform browser."
+            )
+            return None
 
         launcher = [str(part) for part in browser]
         head = launcher[0]
@@ -943,6 +953,13 @@ class CopilotAdapter:
         ``enabledMcpServers`` is Copilot's record of what the operator turned on
         by hand; those are never re-disabled here, so an enable survives the next
         install.
+
+        ``mcpAlwaysEnabled`` is a floor rather than a skip-list: a name in it is
+        lifted OUT of ``disabledMcpServers`` as well as kept out of it. Adding to
+        the set is not enough — a stale settings file, or one `/mcp disable
+        hooks-utils` in the past, would otherwise leave the toolbelt off forever
+        while the install reported it as enabled. Turning one off for good means
+        dropping it from ``mcpAlwaysEnabled``, which is where that decision belongs.
         """
         directives = getattr(self, "_mcp_directives", None) or {}
         if not directives.get("mcpDefaultDisabled"):
@@ -962,13 +979,14 @@ class CopilotAdapter:
 
         disabled = set(doc.get("disabledMcpServers") or [])
         disabled.update(n for n in configured if n not in always_on and n not in operator_enabled)
-        if not disabled:
+        disabled -= always_on
+        if disabled == set(doc.get("disabledMcpServers") or []) and not disabled:
             return
 
         doc["disabledMcpServers"] = sorted(disabled)
         _atomic_write(settings_path, json.dumps(doc, indent=2) + "\n")
 
-        held = sorted(n for n in configured if n in operator_enabled or n in always_on)
+        held = sorted(n for n in configured if n not in disabled)
         _i._cprint(
             f"  [OK] {len(doc['disabledMcpServers'])} MCP server(s) start disabled — /mcp enable <name> to connect one"
         )

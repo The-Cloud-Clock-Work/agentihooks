@@ -1081,3 +1081,54 @@ class TestBroadcastChannels:
         base = json.loads((repo / "profiles/_base/settings.base.copilot.json").read_text())
         claude = json.loads((repo / "profiles/default/.claude/settings.overrides.json").read_text())
         assert base["_agentihooks"]["channels"] == claude["env"]["AGENTIHOOKS_BASE_CHANNELS"]
+
+
+class TestRefuterRegressions:
+    """Cases an adversarial pass found after the features shipped."""
+
+    @staticmethod
+    def _settings():
+        return json.loads((copilot_home() / "settings.json").read_text())
+
+    @staticmethod
+    def _seed_mcp(names):
+        path = copilot_home() / "mcp-config.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": {n: {"type": "local", "command": "/bin/true"} for n in names}}))
+
+    def test_always_enabled_server_is_lifted_out_of_an_existing_disable(self, adapter):
+        """Adding to the disabled set is not enough: a stale settings file, or one
+        past `/mcp disable hooks-utils`, would leave the toolbelt off forever."""
+        adapter.write_settings({"_agentihooks": {"mcpDefaultDisabled": True}})
+        self._seed_mcp(["hooks-utils", "drawio"])
+        path = copilot_home() / "settings.json"
+        doc = json.loads(path.read_text())
+        doc["disabledMcpServers"] = ["hooks-utils"]
+        path.write_text(json.dumps(doc))
+
+        adapter.post_install_reconcile([], "smith")
+        assert self._settings()["disabledMcpServers"] == ["drawio"]
+
+    def test_reported_enabled_list_matches_what_was_written(self, adapter, capsys):
+        """The log line was computed independently of the written set and could
+        claim a server was left enabled while it sat in disabledMcpServers."""
+        adapter.write_settings({"_agentihooks": {"mcpDefaultDisabled": True}})
+        self._seed_mcp(["hooks-utils", "drawio"])
+        adapter.post_install_reconcile([], "smith")
+        out = capsys.readouterr().out
+        written = set(self._settings()["disabledMcpServers"])
+        for line in out.splitlines():
+            if "left enabled:" in line:
+                claimed = {n.strip() for n in line.split("left enabled:", 1)[1].split(",")}
+                assert not (claimed & written), f"claimed enabled but written disabled: {claimed & written}"
+
+    @pytest.mark.parametrize("value", [True, 1, 1.5, {"chrome": True}])
+    def test_malformed_browser_command_degrades_instead_of_crashing(self, adapter, capsys, value):
+        """A typo'd native file must not abort `agentihooks init --target copilot`."""
+        adapter.write_settings({"_agentihooks": {"browserCommand": value, "allowAll": True}})
+        assert "COPILOT_DEBUG_BROWSER" not in adapter._bypass_env_file().read_text()
+        assert "browserCommand" in capsys.readouterr().out
+
+    def test_malformed_browser_command_leaves_other_directives_working(self, adapter):
+        adapter.write_settings({"_agentihooks": {"browserCommand": True, "channels": "brain"}})
+        assert "AGENTIHOOKS_BASE_CHANNELS=brain" in adapter._bypass_env_file().read_text()
