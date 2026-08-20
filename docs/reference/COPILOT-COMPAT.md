@@ -532,3 +532,32 @@ tools from the session.
 
 Copilot records a hand-enable in `enabledMcpServers`, and the installer never
 re-disables a name found there, so `/mcp enable` survives the next install.
+
+### §11.5 `browserCommand` — which browser gets the OAuth URL
+
+Copilot picks the OAuth browser per platform: `open` on macOS, `xdg-open` on
+Linux, `cmd /c start` on Windows. Under WSL the Linux branch applies, so
+`xdg-open` reaches whatever browser is installed *inside the distro* — which
+carries none of the operator's Windows sessions. A Microsoft authorization opened
+there can never complete: the browser has no session to authorize with.
+
+`COPILOT_DEBUG_BROWSER` is consulted ahead of every launch path (before the
+remote-environment skip, before `$BROWSER`, before the per-platform default). It
+holds a JSON string array; Copilot spawns `array[0]` with the remaining elements
+plus the URL appended. `_agentihooks.browserCommand` renders into it and accepts
+either form:
+
+```json
+"browserCommand": ["explorer.exe"]
+"browserCommand": "\"/mnt/c/Program Files/Google/Chrome/Application/chrome.exe\" --new-tab"
+```
+
+A string is shell-split; an array is passed through. `explorer.exe` hands the URL
+to the Windows default browser and needs nothing installed; an explicit path
+pins one browser. Verified from WSL: `chrome.exe <url>` and `wslview <url>` both
+exit 0, `explorer.exe <url>` opens the URL and exits 1 — harmless, since Copilot
+only reports a *spawn* failure, not a non-zero exit.
+
+On macOS and native Linux the key should be absent — Copilot's own default is
+already the operator's chosen browser. `suppressBrowserLaunch` (§11.3) is the
+same mechanism pointed at a sink; `browserCommand` wins if both are set.

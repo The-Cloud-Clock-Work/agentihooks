@@ -966,3 +966,50 @@ class TestMcpDefaultDisabled:
         self._seed_mcp(["atlassian", "drawio"])
         adapter.post_install_reconcile([], "smith")
         assert "disabledMcpServers" not in self._settings()
+
+
+class TestBrowserCommand:
+    """Under WSL, Copilot's xdg-open default reaches a Linux browser carrying none
+    of the operator's Windows sessions; COPILOT_DEBUG_BROWSER redirects it."""
+
+    @staticmethod
+    def _launcher(adapter):
+        line = next(
+            ln for ln in adapter._bypass_env_file().read_text().splitlines() if ln.startswith("COPILOT_DEBUG_BROWSER=")
+        )
+        return json.loads(line.split("=", 1)[1].strip("'"))
+
+    def test_array_form_is_written_verbatim(self, adapter):
+        adapter.write_settings({"_agentihooks": {"browserCommand": ["explorer.exe"]}})
+        assert self._launcher(adapter) == ["explorer.exe"]
+
+    def test_string_form_is_shell_split(self, adapter):
+        adapter.write_settings(
+            {
+                "_agentihooks": {
+                    "browserCommand": '"/mnt/c/Program Files/Google/Chrome/Application/chrome.exe" --new-tab'
+                }
+            }
+        )
+        assert self._launcher(adapter) == [
+            "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe",
+            "--new-tab",
+        ]
+
+    def test_browser_command_wins_over_the_sink(self, adapter):
+        adapter.write_settings({"_agentihooks": {"browserCommand": ["explorer.exe"], "suppressBrowserLaunch": True}})
+        assert self._launcher(adapter) == ["explorer.exe"]
+
+    def test_absent_leaves_copilot_default_untouched(self, adapter):
+        adapter.write_settings({"_agentihooks": {"allowAll": True}})
+        assert "COPILOT_DEBUG_BROWSER" not in adapter._bypass_env_file().read_text()
+
+    def test_launcher_receives_the_url_as_its_last_argument(self, adapter, tmp_path):
+        """Copilot spawns spec[0] with the rest of the array plus the URL."""
+        seen = tmp_path / "seen.txt"
+        adapter.write_settings(
+            {"_agentihooks": {"browserCommand": ["sh", "-c", f'printf "%s" "$1" > {seen}', "browser"]}}
+        )
+        url = "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize"
+        subprocess.run([*self._launcher(adapter), url], check=True)
+        assert seen.read_text() == url

@@ -174,28 +174,46 @@ class CopilotAdapter:
         ``COPILOT_ALLOW_ALL`` (the env form of ``--allow-all-tools``) is the only
         global switch, proven to clear a denial that tool rules did not.
 
-        ``suppressBrowserLaunch`` — Copilot connects every configured MCP server
-        at startup and starts an OAuth flow on the first 401, opening one browser
-        tab per server; there is no defer-auth or lazy-connect key (copilot-cli
-        #1938, #2026, #3462 all request one). ``COPILOT_DEBUG_BROWSER`` is checked
-        ahead of every launch path, so pointing it at a sink parks the URL in a
-        file instead of seizing a browser, and authentication becomes something
-        the operator starts by hand.
+        ``browserCommand`` / ``suppressBrowserLaunch`` — Copilot resolves the OAuth
+        browser per platform: ``open`` on macOS, ``xdg-open`` on Linux. Under WSL
+        ``xdg-open`` reaches whatever Linux browser is installed in the distro,
+        which carries none of the operator's Windows sessions, so a Microsoft
+        authorization lands in a browser that can never satisfy it.
+        ``COPILOT_DEBUG_BROWSER`` is consulted ahead of every launch path — before
+        the remote-environment skip, before ``$BROWSER``, before the per-platform
+        default — and takes a JSON string array that Copilot spawns with the URL
+        appended. ``browserCommand`` names that command (``explorer.exe`` for the
+        Windows default browser, or an explicit ``chrome.exe`` path);
+        ``suppressBrowserLaunch`` substitutes a sink that parks the URL in a file
+        instead, for when no browser should open at all. ``browserCommand`` wins
+        if both are set.
 
-        Both land in a managed env file the installer's ``agentienv`` shell block
+        All land in a managed env file the installer's ``agentienv`` shell block
         already auto-exports, so they reach interactive sessions.
         """
         _i = _install_module()
         path = self._bypass_env_file()
 
         lines: list[str] = []
+        launcher: list[str] | None = None
+        launcher_note = ""
         if directives.get("allowAll"):
             lines.append("# native _agentihooks.allowAll → Copilot allow-all-tools\n")
             lines.append("COPILOT_ALLOW_ALL=1\n")
-        if directives.get("suppressBrowserLaunch"):
-            sink = json.dumps(["sh", "-c", _OAUTH_URL_SINK, "agentihooks-oauth"])
+
+        browser = directives.get("browserCommand")
+        if isinstance(browser, str):
+            browser = shlex.split(browser)
+        if browser:
+            launcher = [str(part) for part in browser]
+            launcher_note = f"opens {launcher[0]}"
+            lines.append("# native _agentihooks.browserCommand → OAuth browser launcher\n")
+        elif directives.get("suppressBrowserLaunch"):
+            launcher = ["sh", "-c", _OAUTH_URL_SINK, "agentihooks-oauth"]
+            launcher_note = f"parks OAuth URLs in {_OAUTH_URL_FILE}"
             lines.append("# native _agentihooks.suppressBrowserLaunch → park OAuth URLs, never open a browser\n")
-            lines.append(f"COPILOT_DEBUG_BROWSER='{sink}'\n")
+        if launcher:
+            lines.append(f"COPILOT_DEBUG_BROWSER='{json.dumps(launcher)}'\n")
 
         if not lines:
             if path.exists():
@@ -210,11 +228,8 @@ class CopilotAdapter:
         )
         if directives.get("allowAll"):
             _i._cprint(f"  [OK] allowAll → COPILOT_ALLOW_ALL=1 in {path} (run: source ~/.bashrc)")
-        if directives.get("suppressBrowserLaunch"):
-            _i._cprint(
-                f"  [OK] suppressBrowserLaunch → COPILOT_DEBUG_BROWSER in {path}; "
-                f"OAuth URLs park in {_OAUTH_URL_FILE} (run: source ~/.bashrc)"
-            )
+        if launcher:
+            _i._cprint(f"  [OK] COPILOT_DEBUG_BROWSER in {path} — {launcher_note} (run: source ~/.bashrc)")
 
     # ------------------------------------------------------------------
     # settings: settings.json managed keys + hooks/agentihooks.json + wrapper
