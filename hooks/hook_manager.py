@@ -369,6 +369,19 @@ def on_session_start(payload: dict) -> None:
         except Exception:
             pass
 
+    if _is_codex():
+        try:
+            from hooks.config import CODEX_CONTEXT_PIN_ENABLED
+
+            if CODEX_CONTEXT_PIN_ENABLED:
+                from hooks.context.codex_context_pin import pin as _pin_catalog
+
+                _pinned = _pin_catalog()
+                if _pinned and _pinned[0]:
+                    log("codex context pin applied", {"raised": _pinned[0], "ceiling": _pinned[1]})
+        except Exception as e:
+            log("codex context pin failed", {"error": str(e)})
+
     from hooks.config import MCP_HYGIENE_ENABLED
 
     if MCP_HYGIENE_ENABLED:

@@ -281,6 +281,7 @@ FILE_READ_CACHE_BACKEND = os.getenv("FILE_READ_CACHE_BACKEND", "redis")
 FILE_READ_CACHE_TTL = int(os.getenv("FILE_READ_CACHE_TTL", "21600"))
 
 MCP_HYGIENE_ENABLED = _env_bool("MCP_HYGIENE_ENABLED", "true")
+CODEX_CONTEXT_PIN_ENABLED = _env_bool("CODEX_CONTEXT_PIN_ENABLED", "true")
 
 # Tell the agent its own session id at SessionStart. The session-scoped
 # hooks-utils tools (call_agent, pool_list, pool_status, channel_acknowledge)

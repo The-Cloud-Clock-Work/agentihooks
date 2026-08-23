@@ -142,6 +142,18 @@ class CodexAdapter:
         self._dump_toml(config_path, doc)
         _i._cprint(f"[OK] Wrote managed keys into {config_path}")
 
+        # The catalog pin (hooks/context/codex_context_pin.py) locks
+        # models_cache.json read-only, which also stops codex refreshing it.
+        # Releasing it here buys one fresh fetch; the next SessionStart re-pins
+        # against whatever ceiling that fetch advertised.
+        try:
+            from hooks.context.codex_context_pin import unpin
+
+            if unpin():
+                _i._cprint("  [--] Released the codex model-catalog pin — next launch refetches it")
+        except Exception:
+            pass
+
         self._write_hooks_json(home)
         return config_path
 
