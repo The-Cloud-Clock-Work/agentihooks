@@ -9,6 +9,11 @@
 approval_policy = "on-request"
 sandbox_mode = "workspace-write"
 
+# Codex clamps this to the account's server-delivered max_context_window, so
+# asking for the published model window yields the ceiling the account
+# actually has rather than forcing a window the backend will not serve.
+model_context_window = 1050000
+
 [features]
 # The whole hook layer is dead weight without this.
 hooks = true
