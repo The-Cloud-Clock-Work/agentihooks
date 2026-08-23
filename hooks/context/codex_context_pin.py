@@ -1,23 +1,22 @@
-"""Hold codex's model catalog at the largest context window it has advertised.
+"""Hold each codex model at the largest context window it has ever advertised.
 
 gpt-5.6-sol's long-context entitlement flaps: consecutive /models fetches under
 one unchanged ETag alternate max_context_window 272000 and 872000, and a codex
 session binds whichever body it happened to fetch for its whole lifetime. Codex
-re-fetches at every session start, so the usable window is a coin flip per
-launch — 258,400 or 828,400 effective. Raising the capped entries to the
-ceiling the catalog itself advertises elsewhere and denying codex write access
-to the cache makes the window stable. Codex logs a non-fatal
-"failed to write models cache: Permission denied" and runs normally.
+re-fetches at every session start, so the usable window was a coin flip per
+launch — 258,400 or 828,400 effective — and a capped session compacts more than
+three times sooner.
 
-The cost is real: while pinned, codex cannot pick up catalog updates.
-``agentihooks init --target codex`` unpins, so a re-init refreshes the catalog
-and re-pins against the newer ceiling.
+Every SessionStart records a per-slug high-water mark and rewrites any entry
+the catalog has since walked back, then locks the file read-only so codex
+prefers the recorded value. A model is only ever raised to a window the server
+itself advertised for that exact slug, so a genuinely small model is never
+inflated by a larger sibling.
 """
 
 from __future__ import annotations
 
 import json
-import stat
 from pathlib import Path
 
 _LOCKED = 0o444
@@ -30,10 +29,16 @@ def cache_path() -> Path:
     return codex_home() / "models_cache.json"
 
 
+def highwater_path() -> Path:
+    from hooks.config import AGENTIHOOKS_HOME
+
+    return AGENTIHOOKS_HOME / "codex_context_highwater.json"
+
+
 def _models(node: object) -> list[dict]:
     found: list[dict] = []
     if isinstance(node, dict):
-        if "max_context_window" in node:
+        if isinstance(node.get("max_context_window"), int) and node.get("slug"):
             found.append(node)
         for value in node.values():
             found.extend(_models(value))
@@ -51,12 +56,10 @@ def unpin() -> bool:
     return True
 
 
-def pin(ceiling: int | None = None) -> tuple[int, int] | None:
-    """Lift capped entries to *ceiling* and lock the cache.
+def pin() -> tuple[int, dict[str, int]] | None:
+    """Restore every walked-back window from its recorded high-water mark.
 
-    Returns ``(entries_raised, ceiling)``, or None when there is nothing to
-    pin. With no explicit ceiling the catalog's own highest advertised window
-    is used, so a future rollout raises the floor for every model at once.
+    Returns ``(entries_raised, highwater)`` or None when there is no catalog.
     """
     path = cache_path()
     if not path.exists():
@@ -67,19 +70,29 @@ def pin(ceiling: int | None = None) -> tuple[int, int] | None:
         return None
 
     entries = _models(doc)
-    windows = [e["max_context_window"] for e in entries if isinstance(e.get("max_context_window"), int)]
-    if not windows:
+    if not entries:
         return None
-    target = ceiling or max(windows)
 
-    raised = [e for e in entries if isinstance(e.get("max_context_window"), int) and e["max_context_window"] < target]
+    store = highwater_path()
+    try:
+        highwater: dict[str, int] = json.loads(store.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, FileNotFoundError):
+        highwater = {}
+
+    raised = []
+    for entry in entries:
+        slug, window = entry["slug"], entry["max_context_window"]
+        seen = max(highwater.get(slug, 0), window)
+        highwater[slug] = seen
+        if window < seen:
+            entry["max_context_window"] = seen
+            raised.append(slug)
+
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(json.dumps(highwater, indent=2, sort_keys=True), encoding="utf-8")
+
     if raised:
-        for entry in raised:
-            entry["max_context_window"] = target
         path.chmod(_WRITABLE)
         path.write_text(json.dumps(doc), encoding="utf-8")
-    elif stat.S_IMODE(path.stat().st_mode) == _LOCKED:
-        return (0, target)
-
     path.chmod(_LOCKED)
-    return (len(raised), target)
+    return (len(raised), highwater)

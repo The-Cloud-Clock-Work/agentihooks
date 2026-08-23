@@ -8,55 +8,73 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def _catalog(tmp_path, **windows):
-    models = [{"slug": slug, "max_context_window": w} for slug, w in windows.items()]
-    (tmp_path / "models_cache.json").write_text(json.dumps({"models": models}))
-    return tmp_path / "models_cache.json"
+@pytest.fixture
+def codex(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    (tmp_path / "codex").mkdir()
+    monkeypatch.setattr("hooks.config.AGENTIHOOKS_HOME", tmp_path / "state")
+    return tmp_path / "codex" / "models_cache.json"
+
+
+def _write(path, **windows):
+    path.write_text(json.dumps({"models": [{"slug": s, "max_context_window": w} for s, w in windows.items()]}))
+
+
+def _windows(path):
+    return {m["slug"]: m["max_context_window"] for m in json.loads(path.read_text())["models"]}
 
 
 class TestCodexContextPin:
-    def test_raises_capped_entries_to_the_advertised_ceiling(self, tmp_path, monkeypatch):
+    def test_restores_a_window_the_catalog_walked_back(self, codex):
         from hooks.context.codex_context_pin import pin
 
-        path = _catalog(tmp_path, sol=272000, terra=872000)
-        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-
-        assert pin() == (1, 872000)
-        windows = {m["slug"]: m["max_context_window"] for m in json.loads(path.read_text())["models"]}
-        assert windows == {"sol": 872000, "terra": 872000}
-
-    def test_locks_the_cache_against_codex(self, tmp_path, monkeypatch):
-        from hooks.context.codex_context_pin import pin
-
-        path = _catalog(tmp_path, sol=272000, terra=872000)
-        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        _write(codex, **{"gpt-5.6-sol": 872000})
         pin()
 
-        assert stat.S_IMODE(path.stat().st_mode) == 0o444
+        codex.chmod(0o644)
+        _write(codex, **{"gpt-5.6-sol": 272000})
+        raised, _ = pin()
 
-    def test_unpin_restores_write_access(self, tmp_path, monkeypatch):
+        assert raised == 1
+        assert _windows(codex) == {"gpt-5.6-sol": 872000}
+
+    def test_never_inflates_a_model_from_a_larger_sibling(self, codex):
+        from hooks.context.codex_context_pin import pin
+
+        _write(codex, **{"gpt-5.6-sol": 272000, "gpt-5.4": 1000000})
+        pin()
+
+        assert _windows(codex) == {"gpt-5.6-sol": 272000, "gpt-5.4": 1000000}
+
+    def test_locks_the_cache_against_codex(self, codex):
+        from hooks.context.codex_context_pin import pin
+
+        _write(codex, **{"gpt-5.6-sol": 872000})
+        pin()
+
+        assert stat.S_IMODE(codex.stat().st_mode) == 0o444
+
+    def test_unpin_restores_write_access(self, codex):
         from hooks.context.codex_context_pin import pin, unpin
 
-        path = _catalog(tmp_path, sol=272000, terra=872000)
-        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        _write(codex, **{"gpt-5.6-sol": 872000})
         pin()
 
         assert unpin() is True
-        assert stat.S_IMODE(path.stat().st_mode) == 0o644
+        assert stat.S_IMODE(codex.stat().st_mode) == 0o644
 
-    def test_second_pin_raises_nothing(self, tmp_path, monkeypatch):
+    def test_steady_state_raises_nothing(self, codex):
         from hooks.context.codex_context_pin import pin
 
-        _catalog(tmp_path, sol=272000, terra=872000)
-        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        _write(codex, **{"gpt-5.6-sol": 872000})
         pin()
 
-        assert pin() == (0, 872000)
+        assert pin()[0] == 0
 
-    def test_missing_cache_is_not_an_error(self, tmp_path, monkeypatch):
+    def test_missing_cache_is_not_an_error(self, codex):
         from hooks.context.codex_context_pin import pin, unpin
 
-        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        codex.unlink(missing_ok=True)
 
         assert pin() is None
         assert unpin() is False

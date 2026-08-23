@@ -378,7 +378,7 @@ def on_session_start(payload: dict) -> None:
 
                 _pinned = _pin_catalog()
                 if _pinned and _pinned[0]:
-                    log("codex context pin applied", {"raised": _pinned[0], "ceiling": _pinned[1]})
+                    log("codex context pin applied", {"raised": _pinned[0], "highwater": _pinned[1]})
         except Exception as e:
             log("codex context pin failed", {"error": str(e)})
 
