@@ -142,17 +142,18 @@ class CodexAdapter:
         self._dump_toml(config_path, doc)
         _i._cprint(f"[OK] Wrote managed keys into {config_path}")
 
-        # The catalog pin (hooks/context/codex_context_pin.py) locks
-        # models_cache.json read-only, which also stops codex refreshing it.
-        # Releasing it here buys one fresh fetch; the next SessionStart re-pins
-        # against whatever ceiling that fetch advertised.
+        # model_catalog_json must name a file that already parses — codex exits
+        # non-zero when it does not — so the catalog is built before the key
+        # naming it is written.
         try:
-            from hooks.context.codex_context_pin import unpin
+            from hooks.context.codex_context_pin import catalog_path, refresh
 
-            if unpin():
-                _i._cprint("  [--] Released the codex model-catalog pin — next launch refetches it")
-        except Exception:
-            pass
+            if refresh() is not None:
+                doc.setdefault("model_catalog_json", str(catalog_path()))
+                self._dump_toml(config_path, doc)
+                _i._cprint(f"  [--] Codex model catalog pinned at {catalog_path()}")
+        except Exception as e:
+            _i._cprint(f"  [!!] Could not pin the codex model catalog: {e}")
 
         self._write_hooks_json(home)
         return config_path
