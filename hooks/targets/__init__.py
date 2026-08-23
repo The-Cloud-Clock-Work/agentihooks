@@ -10,6 +10,7 @@ the live value.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 DEFAULT_TARGET = "claude"
 
@@ -24,6 +25,16 @@ def is_codex() -> bool:
 
 def is_copilot() -> bool:
     return current_target() == "copilot"
+
+
+def codex_home() -> Path:
+    raw = (os.environ.get("CODEX_HOME") or "").split(",")[0].strip()
+    return Path(raw).expanduser() if raw else Path.home() / ".codex"
+
+
+def copilot_home() -> Path:
+    raw = (os.environ.get("COPILOT_HOME") or "").split(",")[0].strip()
+    return Path(raw).expanduser() if raw else Path.home() / ".copilot"
 
 
 # Targets whose host parses hook stdout as exactly one JSON object, so context

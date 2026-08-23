@@ -29,12 +29,16 @@ def get_thinking_guidance(default_effort: str, budget: int) -> str:
         ),
         "medium": (
             "Default effort: medium. Use standard reasoning depth. "
-            "Reserve high/ultrathink for complex architectural decisions or debugging. "
-            "Prefer Sonnet for implementation; reserve Opus for planning."
+            "Reserve high/ultrathink for complex architectural decisions or debugging."
         ),
         "high": ("Default effort: high. Full reasoning enabled."),
     }
     parts.append(effort_guidance.get(default_effort, effort_guidance["medium"]))
+
+    from hooks.targets import current_target
+
+    if default_effort == "medium" and current_target() == "claude":
+        parts.append("Prefer Sonnet for implementation; reserve Opus for planning.")
 
     if budget > 0:
         parts.append(f"Advisory thinking budget: {budget:,} tokens per response.")

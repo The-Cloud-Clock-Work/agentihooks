@@ -373,12 +373,17 @@ def on_session_start(payload: dict) -> None:
 
     if MCP_HYGIENE_ENABLED:
         from hooks.common import inject_context
+        from hooks.targets import current_target as _hygiene_target
 
-        inject_context(
+        _hygiene = (
             "TOKEN CONTROL ACTIVE: Multiple MCP servers loaded. "
-            "Disable unused servers via /mcp to reduce per-turn token overhead. "
-            "Model guidance: use Sonnet 4.6 for implementation; reserve Opus 4.6 for plan mode (Shift+Tab)."
+            "Disable unused servers via /mcp to reduce per-turn token overhead."
         )
+        if _hygiene_target() == "claude":
+            _hygiene += (
+                " Model guidance: use Sonnet 4.6 for implementation; reserve Opus 4.6 for plan mode (Shift+Tab)."
+            )
+        inject_context(_hygiene)
 
     # Thinking/effort policy guidance
     try:
