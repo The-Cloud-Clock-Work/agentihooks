@@ -1,8 +1,10 @@
 """Tests for the Copilot target adapter (scripts/targets/copilot_target.py)."""
 
 import json
+import os
 import shlex
 import subprocess
+from pathlib import Path
 
 import install  # binds the installer identity conftest patches; also used directly below
 import pytest
@@ -40,7 +42,7 @@ class TestSettingsJson:
         assert doc["beep"] is True
 
     def test_statusline_wired_to_command(self, adapter):
-        adapter.write_settings({})
+        adapter.write_settings({"statusLine": {"type": "command", "command": "/usr/bin/python -m hooks.statusline"}})
         doc = json.loads((copilot_home() / "settings.json").read_text())
         assert doc["statusLine"]["type"] == "command"
         assert "hooks.statusline" in doc["statusLine"]["command"]
@@ -60,28 +62,31 @@ class TestSettingsJson:
         tools only (a write rule still hits path verification) and
         trustedFolders is not a recognized setting. COPILOT_ALLOW_ALL is the
         switch, exported by the installer's agentienv shell block."""
-        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+        adapter.write_settings({"_agentihooks": {"allowAll": True}})
         env_file = install.AGENTIHOOKS_STATE_DIR / "copilot.env"
         assert env_file.exists(), "bypassPermissions must produce the copilot env file"
-        assert "COPILOT_ALLOW_ALL=1" in env_file.read_text()
+        # Copilot tests `=== "true"` for folder trust, workspace MCP sources,
+        # repo hooks and plugin loading; only the --allow-all-tools binding is
+        # presence-based. A truthy-looking "1" leaves the rest silently off.
+        assert "COPILOT_ALLOW_ALL=true" in env_file.read_text()
 
     def test_non_bypass_removes_allow_all_env(self, adapter):
-        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+        adapter.write_settings({"_agentihooks": {"allowAll": True}})
         env_file = install.AGENTIHOOKS_STATE_DIR / "copilot.env"
         assert env_file.exists()
-        adapter.write_settings({"permissions": {"defaultMode": "default"}})
+        adapter.write_settings({})
         assert not env_file.exists(), "turning bypass off must withdraw the env file"
 
     def test_bypass_does_not_write_unrecognized_trusted_folders(self, adapter):
         """trustedFolders is not in Copilot's canonical settings keys — writing
         it makes the CLI warn about an unknown key on every launch."""
-        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+        adapter.write_settings({"_agentihooks": {"allowAll": True}})
         doc = json.loads((copilot_home() / "settings.json").read_text())
         assert "trustedFolders" not in doc
 
     def test_teardown_removes_stale_trusted_folders_and_env(self, adapter):
         home = copilot_home()
-        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+        adapter.write_settings({"_agentihooks": {"allowAll": True}})
         doc = json.loads((home / "settings.json").read_text())
         doc["trustedFolders"] = [str(install.AGENTIHOOKS_ROOT)]
         (home / "settings.json").write_text(json.dumps(doc))
@@ -91,12 +96,12 @@ class TestSettingsJson:
         assert not (install.AGENTIHOOKS_STATE_DIR / "copilot.env").exists()
 
     def test_operator_hand_set_managed_key_survives_reinit(self, adapter, capsys):
-        adapter.write_settings({})
+        adapter.write_settings({"statusLine": {"type": "command", "command": "/usr/bin/python -m hooks.statusline"}})
         home = copilot_home()
         doc = json.loads((home / "settings.json").read_text())
         doc["statusLine"] = {"type": "command", "command": "/usr/local/bin/my-status"}
         (home / "settings.json").write_text(json.dumps(doc))
-        adapter.write_settings({})
+        adapter.write_settings({"statusLine": {"type": "command", "command": "/usr/bin/python -m hooks.statusline"}})
         doc = json.loads((home / "settings.json").read_text())
         assert doc["statusLine"]["command"] == "/usr/local/bin/my-status"
         assert "hand-set" in capsys.readouterr().out
@@ -611,7 +616,7 @@ class TestAdapterRegistration:
 
 class TestTeardown:
     def _full_install(self, adapter, tmp_path):
-        adapter.write_settings({"permissions": {"defaultMode": "bypassPermissions"}})
+        adapter.write_settings({"_agentihooks": {"allowAll": True}})
         adapter.register_mcp({"hooks-utils": {"command": "/usr/bin/python", "args": ["-m", "hooks.mcp"]}})
         agents_src = tmp_path / "agents"
         agents_src.mkdir(exist_ok=True)
@@ -743,7 +748,7 @@ class TestManagedSidecar:
     launch (observed v1.0.80)."""
 
     def test_settings_json_carries_no_agentihooks_key(self, adapter):
-        adapter.write_settings({})
+        adapter.write_settings({"statusLine": {"type": "command", "command": "/usr/bin/python -m hooks.statusline"}})
         doc = json.loads((copilot_home() / "settings.json").read_text())
         assert "agentihooks" not in doc
         sidecar = json.loads((copilot_home() / ".agentihooks-managed.json").read_text())
@@ -775,21 +780,21 @@ class TestSidecarSelfHeal:
     holding our values must not brand every managed key a permanent hand-edit."""
 
     def test_sidecar_loss_reheals_and_does_not_warn(self, adapter, capsys):
-        adapter.write_settings({})
+        adapter.write_settings({"statusLine": {"type": "command", "command": "/usr/bin/python -m hooks.statusline"}})
         home = copilot_home()
         sidecar = adapter._managed_sidecar(home)
         assert sidecar.exists()
         sidecar.unlink()
         capsys.readouterr()
 
-        adapter.write_settings({})
+        adapter.write_settings({"statusLine": {"type": "command", "command": "/usr/bin/python -m hooks.statusline"}})
         out = capsys.readouterr().out
         assert "hand-set" not in out, "sidecar loss with our value intact must not read as a hand-edit"
         healed = json.loads(sidecar.read_text())
         assert "statusLine" in healed and "disableAllHooks" in healed, "sidecar must re-heal all managed keys"
 
     def test_genuine_hand_edit_still_detected_after_sidecar_loss(self, adapter, capsys):
-        adapter.write_settings({})
+        adapter.write_settings({"statusLine": {"type": "command", "command": "/usr/bin/python -m hooks.statusline"}})
         home = copilot_home()
         doc = json.loads((home / "settings.json").read_text())
         doc["statusLine"] = {"type": "command", "command": "/usr/local/bin/mine"}
@@ -797,8 +802,336 @@ class TestSidecarSelfHeal:
         adapter._managed_sidecar(home).unlink()
         capsys.readouterr()
 
-        adapter.write_settings({})
+        adapter.write_settings({"statusLine": {"type": "command", "command": "/usr/bin/python -m hooks.statusline"}})
         out = capsys.readouterr().out
         assert "hand-set" in out, "a real hand-edit that differs from our value must still be respected"
         doc = json.loads((home / "settings.json").read_text())
         assert doc["statusLine"]["command"] == "/usr/local/bin/mine"
+
+
+class TestNativeMcpPassThrough:
+    """Copilot-native MCP fields a Claude .mcp.json cannot express must survive
+    registration. `auth: false` is the one that matters operationally: without
+    it a 401 from an http/sse server starts a browser OAuth flow, which under
+    WSL opens a Windows browser with no session and hangs the turn."""
+
+    def test_auth_false_survives(self, adapter):
+        adapter.register_mcp(
+            {
+                "gw": {
+                    "type": "http",
+                    "url": "https://gw.example/mcp",
+                    "auth": False,
+                    "oidc": False,
+                    "deferTools": "auto",
+                }
+            }
+        )
+        entry = json.loads((copilot_home() / "mcp-config.json").read_text())["mcpServers"]["gw"]
+        assert entry["auth"] is False
+        assert entry["oidc"] is False
+        assert entry["deferTools"] == "auto"
+
+    def test_tool_allowlist_and_exclusions_survive(self, adapter):
+        adapter.register_mcp(
+            {"srv": {"command": "/bin/srv", "tools": ["a", "b"], "excludeTools": ["c"], "timeout": 30000}}
+        )
+        entry = json.loads((copilot_home() / "mcp-config.json").read_text())["mcpServers"]["srv"]
+        assert entry["tools"] == ["a", "b"]
+        assert entry["excludeTools"] == ["c"]
+        assert entry["timeout"] == 30000
+
+    def test_oauth_is_off_unless_a_server_opts_in(self, adapter):
+        """Interactive OAuth is opt-in: an unconfigured server must not be able
+        to start a browser flow, which hangs under WSL."""
+        adapter.register_mcp({"srv": {"command": "/bin/srv"}})
+        entry = json.loads((copilot_home() / "mcp-config.json").read_text())["mcpServers"]["srv"]
+        assert entry["auth"] is False
+        assert entry["oidc"] is False
+        for key in ("deferTools", "excludeTools"):
+            assert key not in entry
+
+    def test_a_server_can_opt_back_into_oauth(self, adapter):
+        adapter.register_mcp({"srv": {"type": "http", "url": "https://x.example/mcp", "auth": True}})
+        entry = json.loads((copilot_home() / "mcp-config.json").read_text())["mcpServers"]["srv"]
+        assert entry["auth"] is True
+
+
+class TestNativeDirectives:
+    def test_reserved_block_never_reaches_settings_json(self, adapter):
+        adapter.write_settings({"_agentihooks": {"allowAll": True}, "effortLevel": "high"})
+        doc = json.loads((copilot_home() / "settings.json").read_text())
+        assert "_agentihooks" not in doc, "copilot warns about unknown top-level keys"
+        assert doc["effortLevel"] == "high"
+
+    def test_native_hooks_key_is_dropped_with_a_warning(self, adapter, capsys):
+        """Copilot merges inline settings hooks with the hooks/ dir — declaring
+        both fires every hook twice."""
+        adapter.write_settings({"hooks": {"preToolUse": [{"command": "/x"}]}})
+        doc = json.loads((copilot_home() / "settings.json").read_text())
+        assert "hooks" not in doc
+        assert "fires each hook twice" in capsys.readouterr().out
+
+
+class TestSuppressBrowserLaunch:
+    """Copilot starts an MCP OAuth flow at startup and has no defer-auth key;
+    COPILOT_DEBUG_BROWSER is the only pre-launch interception point."""
+
+    @staticmethod
+    def _env_text(adapter):
+        return adapter._bypass_env_file().read_text()
+
+    def test_directive_writes_a_debug_browser_sink(self, adapter):
+        adapter.write_settings({"_agentihooks": {"suppressBrowserLaunch": True}})
+        assert "COPILOT_DEBUG_BROWSER=" in self._env_text(adapter)
+
+    def test_sink_parses_as_copilot_parses_it_and_captures_the_url(self, adapter, tmp_path):
+        adapter.write_settings({"_agentihooks": {"suppressBrowserLaunch": True}})
+        line = next(ln for ln in self._env_text(adapter).splitlines() if ln.startswith("COPILOT_DEBUG_BROWSER="))
+        spec = json.loads(line.split("=", 1)[1].strip("'"))
+        assert isinstance(spec, list) and spec and all(isinstance(x, str) for x in spec)
+
+        url = "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize?x=1"
+        subprocess.run(  # copilot: spawn(spec[0], [...spec.slice(1), url])
+            [*spec, url], env={**os.environ, "HOME": str(tmp_path)}, check=True
+        )
+        assert (tmp_path / ".copilot" / "pending-oauth-urls.txt").read_text().strip() == url
+
+    def test_absent_directive_writes_no_sink(self, adapter):
+        adapter.write_settings({"_agentihooks": {"allowAll": True}})
+        assert "COPILOT_DEBUG_BROWSER" not in self._env_text(adapter)
+
+    def test_both_directives_coexist(self, adapter):
+        adapter.write_settings({"_agentihooks": {"allowAll": True, "suppressBrowserLaunch": True}})
+        text = self._env_text(adapter)
+        assert "COPILOT_ALLOW_ALL=true" in text and "COPILOT_DEBUG_BROWSER=" in text
+
+    def test_dropping_every_directive_removes_the_env_file(self, adapter):
+        adapter.write_settings({"_agentihooks": {"suppressBrowserLaunch": True}})
+        adapter.write_settings({})
+        assert not adapter._bypass_env_file().exists()
+
+
+class TestMcpDefaultDisabled:
+    """Copilot connects every configured server at session start; disabling by
+    default makes /mcp enable the on-demand switch."""
+
+    @staticmethod
+    def _settings():
+        return json.loads((copilot_home() / "settings.json").read_text())
+
+    @staticmethod
+    def _seed_mcp(names):
+        path = copilot_home() / "mcp-config.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": {n: {"type": "local", "command": "/bin/true"} for n in names}}))
+
+    def test_every_configured_server_starts_disabled(self, adapter):
+        adapter.write_settings({"_agentihooks": {"mcpDefaultDisabled": True}})
+        self._seed_mcp(["atlassian", "drawio", "WorkIQ-MailServer"])
+        adapter.post_install_reconcile([], "smith")
+        assert self._settings()["disabledMcpServers"] == [
+            "WorkIQ-MailServer",
+            "atlassian",
+            "drawio",
+        ]
+
+    def test_hooks_utils_stays_enabled(self, adapter):
+        adapter.write_settings({"_agentihooks": {"mcpDefaultDisabled": True}})
+        self._seed_mcp(["hooks-utils", "drawio"])
+        adapter.post_install_reconcile([], "smith")
+        assert self._settings()["disabledMcpServers"] == ["drawio"]
+
+    def test_operator_enabled_server_is_not_re_disabled(self, adapter):
+        """`/mcp enable X` records X in enabledMcpServers; the next install must
+        leave it on."""
+        adapter.write_settings({"_agentihooks": {"mcpDefaultDisabled": True}})
+        self._seed_mcp(["atlassian", "drawio"])
+        adapter.post_install_reconcile([], "smith")
+
+        path = copilot_home() / "settings.json"
+        doc = json.loads(path.read_text())
+        doc["disabledMcpServers"] = ["drawio"]
+        doc["enabledMcpServers"] = ["atlassian"]
+        path.write_text(json.dumps(doc))
+
+        adapter.write_settings({"_agentihooks": {"mcpDefaultDisabled": True}})
+        adapter.post_install_reconcile([], "smith")
+        assert self._settings()["disabledMcpServers"] == ["drawio"]
+
+    def test_custom_always_enabled_list(self, adapter):
+        adapter.write_settings({"_agentihooks": {"mcpDefaultDisabled": True, "mcpAlwaysEnabled": ["drawio"]}})
+        self._seed_mcp(["hooks-utils", "drawio", "atlassian"])
+        adapter.post_install_reconcile([], "smith")
+        assert self._settings()["disabledMcpServers"] == ["atlassian", "hooks-utils"]
+
+    def test_absent_directive_disables_nothing(self, adapter):
+        adapter.write_settings({})
+        self._seed_mcp(["atlassian", "drawio"])
+        adapter.post_install_reconcile([], "smith")
+        assert "disabledMcpServers" not in self._settings()
+
+
+class TestBrowserCommand:
+    """Under WSL, Copilot's xdg-open default reaches a Linux browser carrying none
+    of the operator's Windows sessions; COPILOT_DEBUG_BROWSER redirects it."""
+
+    @staticmethod
+    def _launcher(adapter):
+        line = next(
+            ln for ln in adapter._bypass_env_file().read_text().splitlines() if ln.startswith("COPILOT_DEBUG_BROWSER=")
+        )
+        return json.loads(line.split("=", 1)[1].strip("'"))
+
+    def test_array_form_is_written_verbatim(self, adapter):
+        adapter.write_settings({"_agentihooks": {"browserCommand": ["/bin/sh"]}})
+        assert self._launcher(adapter) == ["/bin/sh"]
+
+    def test_string_form_is_shell_split(self, adapter):
+        adapter.write_settings({"_agentihooks": {"browserCommand": '"/bin/sh" --new-tab'}})
+        assert self._launcher(adapter) == ["/bin/sh", "--new-tab"]
+
+    def test_browser_command_wins_over_the_sink(self, adapter):
+        adapter.write_settings({"_agentihooks": {"browserCommand": ["/bin/sh"], "suppressBrowserLaunch": True}})
+        assert self._launcher(adapter) == ["/bin/sh"]
+
+    def test_absent_leaves_copilot_default_untouched(self, adapter):
+        adapter.write_settings({"_agentihooks": {"allowAll": True}})
+        assert "COPILOT_DEBUG_BROWSER" not in adapter._bypass_env_file().read_text()
+
+    def test_unresolvable_command_is_dropped_not_written(self, adapter, capsys):
+        """A bundle profile lands on more than one machine; copilot only debug-logs
+        a failed spawn, so an absent launcher would silently open nothing."""
+        adapter.write_settings({"_agentihooks": {"browserCommand": ["/no/such/browser"], "allowAll": True}})
+        assert "COPILOT_DEBUG_BROWSER" not in adapter._bypass_env_file().read_text()
+        assert "not found on this machine" in capsys.readouterr().out
+
+    def test_auto_follows_the_platform(self, adapter):
+        from scripts.targets import copilot_target
+
+        adapter.write_settings({"_agentihooks": {"browserCommand": "auto", "allowAll": True}})
+        text = adapter._bypass_env_file().read_text()
+        wsl = adapter._running_under_wsl() and any(adapter._resolves(c) for c in copilot_target._WSL_BROWSER_CANDIDATES)
+        assert ("COPILOT_DEBUG_BROWSER" in text) is wsl
+
+    def test_auto_off_wsl_writes_nothing(self, adapter, monkeypatch):
+        monkeypatch.setattr(type(adapter), "_running_under_wsl", staticmethod(lambda: False))
+        adapter.write_settings({"_agentihooks": {"browserCommand": "auto", "allowAll": True}})
+        assert "COPILOT_DEBUG_BROWSER" not in adapter._bypass_env_file().read_text()
+
+    def test_auto_on_wsl_picks_the_first_resolvable_candidate(self, adapter, monkeypatch):
+        from scripts.targets import copilot_target
+
+        monkeypatch.setattr(type(adapter), "_running_under_wsl", staticmethod(lambda: True))
+        chrome = copilot_target._WSL_BROWSER_CANDIDATES[1]
+        monkeypatch.setattr(type(adapter), "_resolves", staticmethod(lambda c: c == chrome))
+        adapter.write_settings({"_agentihooks": {"browserCommand": "auto"}})
+        assert self._launcher(adapter) == [chrome]
+
+    def test_auto_never_uses_explorer_exe(self, adapter):
+        """Spawned with a Linux working directory — copilot's normal condition —
+        explorer.exe ignores the URL and opens a File Explorer window."""
+        from scripts.targets import copilot_target
+
+        assert not any("explorer.exe" in c for c in copilot_target._WSL_BROWSER_CANDIDATES)
+
+    def test_auto_on_wsl_with_no_windows_browser_warns_and_writes_nothing(self, adapter, monkeypatch, capsys):
+        monkeypatch.setattr(type(adapter), "_running_under_wsl", staticmethod(lambda: True))
+        monkeypatch.setattr(type(adapter), "_resolves", staticmethod(lambda c: False))
+        adapter.write_settings({"_agentihooks": {"browserCommand": "auto", "allowAll": True}})
+        assert "COPILOT_DEBUG_BROWSER" not in adapter._bypass_env_file().read_text()
+        assert "no Windows browser found from WSL" in capsys.readouterr().out
+
+    def test_launcher_receives_the_url_as_its_last_argument(self, adapter, tmp_path):
+        """Copilot spawns spec[0] with the rest of the array plus the URL."""
+        seen = tmp_path / "seen.txt"
+        adapter.write_settings(
+            {"_agentihooks": {"browserCommand": ["sh", "-c", f'printf "%s" "$1" > {seen}', "browser"]}}
+        )
+        url = "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize"
+        subprocess.run([*self._launcher(adapter), url], check=True)
+        assert seen.read_text() == url
+
+
+class TestBroadcastChannels:
+    """Claude sets AGENTIHOOKS_BASE_CHANNELS in its settings `env` block; copilot
+    has no `env` settings key, so an unset var means no channel subscriptions."""
+
+    @staticmethod
+    def _env(adapter):
+        return adapter._bypass_env_file().read_text()
+
+    def test_channels_reach_the_env_file(self, adapter):
+        adapter.write_settings({"_agentihooks": {"channels": "brain,amygdala"}})
+        assert "AGENTIHOOKS_BASE_CHANNELS=brain,amygdala" in self._env(adapter)
+
+    def test_list_form_is_joined(self, adapter):
+        adapter.write_settings({"_agentihooks": {"channels": ["brain", "amygdala"]}})
+        assert "AGENTIHOOKS_BASE_CHANNELS=brain,amygdala" in self._env(adapter)
+
+    def test_channels_survive_alongside_other_directives(self, adapter):
+        adapter.write_settings({"_agentihooks": {"channels": "brain", "allowAll": True}})
+        text = self._env(adapter)
+        assert "AGENTIHOOKS_BASE_CHANNELS=brain" in text and "COPILOT_ALLOW_ALL=true" in text
+
+    def test_channels_alone_still_writes_the_file(self, adapter):
+        adapter.write_settings({"_agentihooks": {"channels": "brain"}})
+        assert adapter._bypass_env_file().exists()
+
+    def test_the_shipped_base_subscribes_to_the_claude_defaults(self):
+        """A copilot session must land on the same channels a claude session does."""
+        repo = Path(__file__).resolve().parents[1]
+        base = json.loads((repo / "profiles/_base/settings.base.copilot.json").read_text())
+        claude = json.loads((repo / "profiles/default/.claude/settings.overrides.json").read_text())
+        assert base["_agentihooks"]["channels"] == claude["env"]["AGENTIHOOKS_BASE_CHANNELS"]
+
+
+class TestRefuterRegressions:
+    """Cases an adversarial pass found after the features shipped."""
+
+    @staticmethod
+    def _settings():
+        return json.loads((copilot_home() / "settings.json").read_text())
+
+    @staticmethod
+    def _seed_mcp(names):
+        path = copilot_home() / "mcp-config.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"mcpServers": {n: {"type": "local", "command": "/bin/true"} for n in names}}))
+
+    def test_always_enabled_server_is_lifted_out_of_an_existing_disable(self, adapter):
+        """Adding to the disabled set is not enough: a stale settings file, or one
+        past `/mcp disable hooks-utils`, would leave the toolbelt off forever."""
+        adapter.write_settings({"_agentihooks": {"mcpDefaultDisabled": True}})
+        self._seed_mcp(["hooks-utils", "drawio"])
+        path = copilot_home() / "settings.json"
+        doc = json.loads(path.read_text())
+        doc["disabledMcpServers"] = ["hooks-utils"]
+        path.write_text(json.dumps(doc))
+
+        adapter.post_install_reconcile([], "smith")
+        assert self._settings()["disabledMcpServers"] == ["drawio"]
+
+    def test_reported_enabled_list_matches_what_was_written(self, adapter, capsys):
+        """The log line was computed independently of the written set and could
+        claim a server was left enabled while it sat in disabledMcpServers."""
+        adapter.write_settings({"_agentihooks": {"mcpDefaultDisabled": True}})
+        self._seed_mcp(["hooks-utils", "drawio"])
+        adapter.post_install_reconcile([], "smith")
+        out = capsys.readouterr().out
+        written = set(self._settings()["disabledMcpServers"])
+        for line in out.splitlines():
+            if "left enabled:" in line:
+                claimed = {n.strip() for n in line.split("left enabled:", 1)[1].split(",")}
+                assert not (claimed & written), f"claimed enabled but written disabled: {claimed & written}"
+
+    @pytest.mark.parametrize("value", [True, 1, 1.5, {"chrome": True}])
+    def test_malformed_browser_command_degrades_instead_of_crashing(self, adapter, capsys, value):
+        """A typo'd native file must not abort `agentihooks init --target copilot`."""
+        adapter.write_settings({"_agentihooks": {"browserCommand": value, "allowAll": True}})
+        assert "COPILOT_DEBUG_BROWSER" not in adapter._bypass_env_file().read_text()
+        assert "browserCommand" in capsys.readouterr().out
+
+    def test_malformed_browser_command_leaves_other_directives_working(self, adapter):
+        adapter.write_settings({"_agentihooks": {"browserCommand": True, "channels": "brain"}})
+        assert "AGENTIHOOKS_BASE_CHANNELS=brain" in adapter._bypass_env_file().read_text()

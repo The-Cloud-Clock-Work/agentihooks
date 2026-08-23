@@ -273,10 +273,15 @@ BASH_FILTER_TEST_MAX_FAILURES = int(os.getenv("BASH_FILTER_TEST_MAX_FAILURES", "
 BASH_FILTER_GIT_MAX_COMMITS = int(os.getenv("BASH_FILTER_GIT_MAX_COMMITS", "20"))
 
 FILE_READ_CACHE_ENABLED = _env_bool("FILE_READ_CACHE_ENABLED", "true")
+
+# Credential-read guard: blocks a read whose OUTPUT would be a secret value.
+# On by default and on every target; reading is the exposure.
+CREDENTIAL_GUARD_ENABLED = _env_bool("CREDENTIAL_GUARD_ENABLED", "true")
 FILE_READ_CACHE_BACKEND = os.getenv("FILE_READ_CACHE_BACKEND", "redis")
 FILE_READ_CACHE_TTL = int(os.getenv("FILE_READ_CACHE_TTL", "21600"))
 
 MCP_HYGIENE_ENABLED = _env_bool("MCP_HYGIENE_ENABLED", "true")
+CODEX_CONTEXT_PIN_ENABLED = _env_bool("CODEX_CONTEXT_PIN_ENABLED", "true")
 
 # Tell the agent its own session id at SessionStart. The session-scoped
 # hooks-utils tools (call_agent, pool_list, pool_status, channel_acknowledge)
@@ -378,14 +383,6 @@ POST_TOOL_TRACE = _env_bool("POST_TOOL_TRACE", "false")
 EFFORT_POLICY_ENABLED = _env_bool("EFFORT_POLICY_ENABLED", "true")
 DEFAULT_EFFORT: str = os.getenv("DEFAULT_EFFORT", "medium")
 THINKING_BUDGET_TOKENS: int = int(os.getenv("THINKING_BUDGET_TOKENS", "0"))
-
-# =============================================================================
-# PEAK / OFF-PEAK AWARENESS
-# =============================================================================
-PEAK_HOURS_ENABLED = _env_bool("PEAK_HOURS_ENABLED", "true")
-PEAK_HOURS_START: int = int(os.getenv("PEAK_HOURS_START", "5"))
-PEAK_HOURS_END: int = int(os.getenv("PEAK_HOURS_END", "11"))
-PEAK_HOURS_TZ: str = os.getenv("PEAK_HOURS_TZ", "US/Pacific")
 
 # =============================================================================
 # MCP SURFACE AREA WARNING

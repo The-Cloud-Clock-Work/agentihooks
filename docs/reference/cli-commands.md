@@ -28,7 +28,7 @@ agentihooks init [--bundle <path>] [--profile <name>]
 ### What it does
 
 1. Links bundle directory (if `--bundle` is provided)
-2. Merges settings: `_base/settings.base.json` -> profile `.claude/settings.overrides.json`
+2. Merges settings in the target's own format: `_base/<target base>` -> bundle `.<target>/` -> profile `.<target>/` overrides
 3. Substitutes `/app` -> real repo path and `__PYTHON__` -> venv Python in all commands
 4. Preserves personal keys (`model`, `autoUpdatesChannel`, `skipDangerousModePermissionPrompt`) from any pre-existing unmanaged settings
 5. Writes `~/.claude/settings.json` with hook wiring and tool permissions
@@ -112,7 +112,7 @@ agentihooks settings-profile [NAME] [--clear]
 
 | Argument / Flag | Description |
 |----------------|-------------|
-| `NAME` | Settings profile to apply. Only its `settings.overrides.json` and `.mcp.json` are used. |
+| `NAME` | Settings profile to apply. Only its settings/MCP files for the active target are used, not its persona or content. |
 | `--clear` | Remove the settings overlay and revert to persona profile defaults. |
 
 With no arguments, shows the current persona and settings profile.

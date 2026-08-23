@@ -1,0 +1,13 @@
+{
+  "_comment": "Copilot-native base settings. Profiles override these in their own .copilot/settings.overrides.json. Never declare a `hooks` key here: copilot merges inline settings hooks with the hooks/ directory, so declaring both fires every hook twice. Hooks are adapter-written to ~/.copilot/hooks/agentihooks.json.",
+  "statusLine": {
+    "type": "command",
+    "command": "__PYTHON__ -m hooks.statusline"
+  },
+  "disableAllHooks": false,
+  "_agentihooks": {
+    "_comment": "Reserved directive block: consumed by the installer, never written to settings.json (copilot warns about unknown top-level keys). Carries what copilot has no settings key for.",
+    "_comment_channels": "Claude carries the broadcast subscription list in its settings `env` block; copilot has no `env` settings key, so without this the session reads an unset AGENTIHOOKS_BASE_CHANNELS, subscribes to nothing, and every channel-targeted broadcast passes it by. Matches the claude default in profiles/default/.claude/settings.overrides.json.",
+    "channels": "brain,amygdala"
+  }
+}

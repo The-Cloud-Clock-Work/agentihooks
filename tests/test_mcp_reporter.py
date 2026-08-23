@@ -87,3 +87,36 @@ class TestMcpReporter:
         result = load_all_mcp_configs(str(tmp_path))
         assert "local-test" in result
         assert result["local-test"]["source"] == "project"
+
+
+class TestMcpReporterTargets:
+    """The registry read must follow the CLI that invoked the hook."""
+
+    def test_codex_reads_config_toml(self, tmp_path, monkeypatch):
+        from scripts.mcp_reporter import load_all_mcp_configs
+
+        (tmp_path / "config.toml").write_text('[mcp_servers.codex-only]\ncommand = "x"\n')
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setenv("AGENTIHOOKS_TARGET", "codex")
+
+        result = load_all_mcp_configs(str(tmp_path))
+        assert list(result) == ["codex-only"]
+
+    def test_copilot_reads_mcp_config_json(self, tmp_path, monkeypatch):
+        from scripts.mcp_reporter import load_all_mcp_configs
+
+        (tmp_path / "mcp-config.json").write_text(json.dumps({"mcpServers": {"copilot-only": {"command": "x"}}}))
+        monkeypatch.setenv("COPILOT_HOME", str(tmp_path))
+        monkeypatch.setenv("AGENTIHOOKS_TARGET", "copilot")
+
+        result = load_all_mcp_configs(str(tmp_path))
+        assert list(result) == ["copilot-only"]
+
+    def test_off_target_ignores_project_mcp_json(self, tmp_path, monkeypatch):
+        from scripts.mcp_reporter import load_all_mcp_configs
+
+        (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"claude-only": {"command": "x"}}}))
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setenv("AGENTIHOOKS_TARGET", "codex")
+
+        assert load_all_mcp_configs(str(tmp_path)) == {}

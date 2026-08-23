@@ -1779,7 +1779,10 @@ class TestInstallGlobalHonoursTarget:
         (tiny / "settings.overrides.json").write_text("{}")
         base = profiles / "_base"
         base.mkdir()
+        # One native base per target — each target reads its own, in its own format.
         (base / "settings.base.json").write_text(json.dumps({"hooks": {}}))
+        (base / "settings.base.copilot.json").write_text(json.dumps({"disableAllHooks": False}))
+        (base / "config.base.toml").write_text('approval_policy = "on-request"\n')
         return profiles
 
     def _run(self, tmp_path, monkeypatch, target):

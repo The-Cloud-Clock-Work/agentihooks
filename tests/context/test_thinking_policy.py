@@ -15,6 +15,15 @@ class TestThinkingPolicy:
         assert "medium" in result.lower()
         assert "Sonnet" in result
 
+    def test_medium_effort_omits_claude_models_off_target(self, monkeypatch):
+        from hooks.context.thinking_policy import get_thinking_guidance
+
+        monkeypatch.setenv("AGENTIHOOKS_TARGET", "codex")
+        result = get_thinking_guidance("medium", 0)
+        assert "medium" in result.lower()
+        assert "Sonnet" not in result
+        assert "Opus" not in result
+
     def test_low_effort_generates_guidance(self):
         from hooks.context.thinking_policy import get_thinking_guidance
 

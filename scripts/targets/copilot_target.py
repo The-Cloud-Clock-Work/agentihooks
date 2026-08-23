@@ -136,6 +136,28 @@ def _split_frontmatter(text: str) -> tuple[dict, str]:
     return (front if isinstance(front, dict) else {}), parts[2].lstrip("\n")
 
 
+_MCP_ALWAYS_ENABLED = ("hooks-utils",)
+
+# WSL: reach a Windows browser, which holds the sessions the distro's own browser
+# does not. Tried in order; the first that resolves wins.
+#
+# `explorer.exe` is deliberately absent. It is the obvious choice and it is wrong:
+# spawned with a Linux working directory — Copilot's normal condition — it ignores
+# the URL and opens a File Explorer window on Documents. Every launcher here takes
+# the URL as argv, so a query string full of `&` survives; anything routed through
+# `cmd /c start` would not.
+_WSL_BROWSER_CANDIDATES = (
+    "wslview",
+    "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe",
+    "/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+    "/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+    "/mnt/c/Program Files/Microsoft/Edge/Application/msedge.exe",
+)
+
+_OAUTH_URL_FILE = "$HOME/.copilot/pending-oauth-urls.txt"
+_OAUTH_URL_SINK = f'mkdir -p "$HOME/.copilot" && printf "%s\\n" "$1" >> "{_OAUTH_URL_FILE}"'
+
+
 class CopilotAdapter:
     name = "copilot"
 
@@ -159,39 +181,162 @@ class CopilotAdapter:
     def _bypass_env_file() -> Path:
         return _install_module().AGENTIHOOKS_STATE_DIR / "copilot.env"
 
-    def _write_bypass_env(self, enabled: bool) -> None:
-        """Translate claude's ``bypassPermissions`` into Copilot's YOLO switch.
+    @staticmethod
+    def _running_under_wsl() -> bool:
+        if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+            return True
+        try:
+            return "microsoft" in Path("/proc/version").read_text().lower()
+        except OSError:
+            return False
 
-        Copilot has no settings key for it: ``permissions.allow`` rules cover
-        tools only (a ``write`` rule still hits path verification), and
-        ``trustedFolders`` is not a recognized user setting at all. The only
-        global switch is ``COPILOT_ALLOW_ALL`` (the env form of
-        ``--allow-all-tools``), proven to clear a denial that tool rules did
-        not. It is written to a managed env file the installer's ``agentienv``
-        shell block already auto-exports, so it applies to interactive
-        sessions the way ``defaultMode`` does for claude.
+    @staticmethod
+    def _resolves(command: str) -> bool:
+        return bool(Path(command).exists() if os.sep in command else shutil.which(command))
+
+    def _resolve_browser_command(self, browser) -> list[str] | None:
+        """Resolve ``_agentihooks.browserCommand`` against the machine being installed on.
+
+        A bundle profile is installed on more than one machine, so a launcher
+        naming a Windows browser is right under WSL and absent on macOS or native
+        Linux. Copilot reports only a *spawn* failure to its debug log, so an
+        unresolvable launcher would silently open nothing — worse than the
+        platform default it replaced. Anything that does not resolve here is
+        dropped with a warning, leaving Copilot's own default in place.
+
+        ``"auto"`` asks for the right answer per platform: the first resolvable
+        entry of ``_WSL_BROWSER_CANDIDATES`` under WSL, and Copilot's own default
+        everywhere else, which is already the operator's chosen browser.
+        """
+        _i = _install_module()
+        if isinstance(browser, str) and browser.strip().lower() == "auto":
+            if not self._running_under_wsl():
+                return None
+            browser = next(
+                ([c] for c in _WSL_BROWSER_CANDIDATES if self._resolves(c)),
+                None,
+            )
+            if not browser:
+                _i._cprint(
+                    "  [!!] browserCommand 'auto': no Windows browser found from WSL — "
+                    "copilot keeps xdg-open, which reaches a browser inside the distro "
+                    "carrying none of your Windows sessions. Install wslu, or name a "
+                    "browser path in browserCommand."
+                )
+                return None
+        if isinstance(browser, str):
+            browser = shlex.split(browser)
+        if not browser:
+            return None
+        # A typo'd native file (`"browserCommand": true`) must degrade to
+        # Copilot's own browser like every other malformed value, not abort the
+        # whole install. A dict is iterable over its keys, which would build a
+        # launcher out of nonsense — excluded explicitly rather than by luck.
+        if not isinstance(browser, (list, tuple)) or not all(isinstance(p, str) for p in browser):
+            _i._cprint(
+                f"  [!!] browserCommand must be a string or a list of strings, got {type(browser).__name__} "
+                "— dropped. Copilot keeps its own per-platform browser."
+            )
+            return None
+
+        launcher = [str(part) for part in browser]
+        head = launcher[0]
+        if not self._resolves(head):
+            _i._cprint(
+                f"  [!!] browserCommand '{head}' not found on this machine — dropped. "
+                'Copilot keeps its own per-platform browser; use "auto" for a portable profile.'
+            )
+            return None
+        return launcher
+
+    def _write_managed_env(self, directives: dict) -> None:
+        """Render the ``_agentihooks`` directives Copilot exposes only as env vars.
+
+        ``allowAll`` — Copilot has no settings key for YOLO: ``permissions.allow``
+        rules cover tools only (a ``write`` rule still hits path verification)
+        and ``trustedFolders`` is not a recognized user setting at all.
+        ``COPILOT_ALLOW_ALL`` (the env form of ``--allow-all-tools``) is the only
+        global switch, proven to clear a denial that tool rules did not.
+
+        ``browserCommand`` / ``suppressBrowserLaunch`` — Copilot resolves the OAuth
+        browser per platform: ``open`` on macOS, ``xdg-open`` on Linux. Under WSL
+        ``xdg-open`` reaches whatever Linux browser is installed in the distro,
+        which carries none of the operator's Windows sessions, so a Microsoft
+        authorization lands in a browser that can never satisfy it.
+        ``COPILOT_DEBUG_BROWSER`` is consulted ahead of every launch path — before
+        the remote-environment skip, before ``$BROWSER``, before the per-platform
+        default — and takes a JSON string array that Copilot spawns with the URL
+        appended. ``browserCommand`` names that command (``explorer.exe`` for the
+        Windows default browser, or an explicit ``chrome.exe`` path);
+        ``suppressBrowserLaunch`` substitutes a sink that parks the URL in a file
+        instead, for when no browser should open at all. ``browserCommand`` wins
+        if both are set.
+
+        ``channels`` — the broadcast subscription list. Claude carries it in its
+        settings ``env`` block; Copilot has no ``env`` settings key, so without
+        this a Copilot session reads an unset ``AGENTIHOOKS_BASE_CHANNELS``,
+        subscribes to nothing, and every channel-targeted broadcast passes it by.
+
+        All land in a managed env file the installer's ``agentienv`` shell block
+        already auto-exports, so they reach interactive sessions.
         """
         _i = _install_module()
         path = self._bypass_env_file()
-        if not enabled:
+
+        lines: list[str] = []
+        launcher: list[str] | None = None
+        launcher_note = ""
+        channels = directives.get("channels")
+        if isinstance(channels, (list, tuple)):
+            channels = ",".join(str(c) for c in channels)
+        if channels:
+            lines.append("# native _agentihooks.channels → broadcast subscriptions\n")
+            lines.append(f"AGENTIHOOKS_BASE_CHANNELS={channels}\n")
+        if directives.get("allowAll"):
+            # The literal string "true", not "1". Commander binds the var to
+            # --allow-all-tools on presence alone, so "1" does grant the tools
+            # axis — but folder trust, workspace MCP sources, repo hooks and
+            # plugin loading each test `=== "true"` separately, and silently
+            # stay off for any other value. Half the switch is worse than none,
+            # because the half that works makes it look set.
+            lines.append("# native _agentihooks.allowAll → Copilot allow-all-tools\n")
+            lines.append("COPILOT_ALLOW_ALL=true\n")
+
+        browser = self._resolve_browser_command(directives.get("browserCommand"))
+        if browser:
+            launcher = browser
+            launcher_note = f"opens {launcher[0]}"
+            lines.append("# native _agentihooks.browserCommand → OAuth browser launcher\n")
+        elif directives.get("suppressBrowserLaunch"):
+            launcher = ["sh", "-c", _OAUTH_URL_SINK, "agentihooks-oauth"]
+            launcher_note = f"parks OAuth URLs in {_OAUTH_URL_FILE}"
+            lines.append("# native _agentihooks.suppressBrowserLaunch → park OAuth URLs, never open a browser\n")
+        if launcher:
+            lines.append(f"COPILOT_DEBUG_BROWSER='{json.dumps(launcher)}'\n")
+
+        if not lines:
             if path.exists():
                 path.unlink()
-                _i._cprint(f"  [RM] bypass mode off — removed {path}")
+                _i._cprint(f"  [RM] no copilot env directives — removed {path}")
             return
+
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(
             path,
-            "# managed-by: agentihooks — regenerate with: agentihooks init --target copilot\n"
-            "# claude permissions.defaultMode=bypassPermissions → Copilot allow-all-tools\n"
-            "COPILOT_ALLOW_ALL=1\n",
+            "# managed-by: agentihooks — regenerate with: agentihooks init --target copilot\n" + "".join(lines),
         )
-        _i._cprint(f"  [OK] bypassPermissions → COPILOT_ALLOW_ALL=1 in {path} (run: source ~/.bashrc)")
+        if channels:
+            _i._cprint(f"  [OK] broadcast channels → AGENTIHOOKS_BASE_CHANNELS={channels} in {path}")
+        if directives.get("allowAll"):
+            _i._cprint(f"  [OK] allowAll → COPILOT_ALLOW_ALL=true in {path} (run: source ~/.bashrc)")
+        if launcher:
+            _i._cprint(f"  [OK] COPILOT_DEBUG_BROWSER in {path} — {launcher_note} (run: source ~/.bashrc)")
 
     # ------------------------------------------------------------------
     # settings: settings.json managed keys + hooks/agentihooks.json + wrapper
     # ------------------------------------------------------------------
 
-    def write_settings(self, rendered: dict) -> Path:
+    def write_settings(self, native: dict) -> Path:
         _i = _install_module()
         home = self.home()
         home.mkdir(parents=True, exist_ok=True)
@@ -199,20 +344,29 @@ class CopilotAdapter:
         settings_path = home / "settings.json"
         doc = self._load_json(settings_path)
 
-        python_bin = str(_i._detect_venv() or sys.executable)
+        # Settings are authored natively (profiles/_base/settings.base.copilot.json
+        # plus each profile's .copilot/settings.overrides.json) and arrive here
+        # already merged.
+        #
+        # `_agentihooks` is a reserved block, not a Copilot setting — Copilot
+        # warns about unknown top-level keys, so it is consumed here and never
+        # written to disk. It carries the directives Copilot has no settings key
+        # for; today that is allow-all, which is an env var only.
+        native = dict(native or {})
+        directives = native.pop("_agentihooks", None) or {}
+        self._mcp_directives = directives
+        wanted: dict = {k: v for k, v in native.items() if not k.startswith("_")}
 
-        # Unlike codex, Copilot drives a status line from a command whose stdin
-        # carries the session state as JSON — the same contract statusline.py
-        # already implements for claude.
-        wanted: dict = {
-            "statusLine": {
-                "type": "command",
-                "command": f"{shlex.quote(python_bin)} -m hooks.statusline",
-            },
-            # Hooks are the entire guardrail layer; an inherited true here
-            # would disable every one of them silently.
-            "disableAllHooks": False,
-        }
+        # Copilot merges an inline `hooks` key with the hooks/ directory, so a
+        # native file declaring both would fire every hook twice.
+        if wanted.pop("hooks", None) is not None:
+            _i._cprint(
+                "  [!!] native copilot settings declared a 'hooks' key — dropped. "
+                "Hooks are written to hooks/agentihooks.json; declaring both fires each hook twice."
+            )
+
+        # Floor: the hook layer is the entire guardrail surface.
+        wanted["disableAllHooks"] = False
 
         # Managed-key discipline: record what we wrote so a later change can
         # update it, while a value the operator hand-edited since our last
@@ -243,8 +397,7 @@ class CopilotAdapter:
                 )
         _atomic_write(self._managed_sidecar(home), json.dumps(recorded, indent=2) + "\n")
 
-        default_mode = (rendered.get("permissions") or {}).get("defaultMode", "")
-        self._write_bypass_env(default_mode == "bypassPermissions")
+        self._write_managed_env(directives)
 
         _atomic_write(settings_path, json.dumps(doc, indent=2) + "\n")
         _i._cprint(f"[OK] Wrote managed keys into {settings_path}")
@@ -642,6 +795,28 @@ class CopilotAdapter:
                     clean_tools.append(tool)
                 if clean_tools:
                     entry["tools"] = clean_tools
+            # Copilot-native fields a Claude .mcp.json cannot express. Passed
+            # through when a native mcp-config layer supplies them:
+            #   auth/oidc=false  — do NOT attempt OAuth for this server. Without
+            #     it a 401 from an http/sse server starts a browser OAuth flow,
+            #     which under WSL launches a Windows browser that cannot
+            #     authenticate and leaves the session hanging.
+            #   tools/excludeTools — trim the tool surface a server contributes,
+            #     the only lever against copilot's static-context ceiling.
+            #   deferTools — "auto" allows tool-search deferral where enabled.
+            for key in ("auth", "oidc", "deferTools", "excludeTools", "timeout", "filterMapping"):
+                if key in spec:
+                    entry[key] = spec[key]
+
+            # Interactive OAuth is opt-IN on copilot. Left to its default, a 401
+            # from any http/sse server starts a browser authorization flow; under
+            # WSL that launches a Windows browser with no session and the turn
+            # hangs with nothing to click. Our servers authenticate by header or
+            # run locally, so a server that genuinely needs OAuth says so with an
+            # explicit `auth: true` in its native mcp-config layer.
+            entry.setdefault("auth", False)
+            entry.setdefault("oidc", False)
+
             table[name] = entry
             added.append(name)
 
@@ -726,7 +901,7 @@ class CopilotAdapter:
             if removed_keys:
                 _i._cprint(f"  [RM] Removed managed keys from {settings_path}: {', '.join(removed_keys)}")
         self._managed_sidecar(home).unlink(missing_ok=True)
-        self._write_bypass_env(False)
+        self._write_managed_env({})
 
         strip_persona(home / "copilot-instructions.md", _MANAGED_HEADER, _MANAGED_FOOTER)
 
@@ -772,8 +947,61 @@ class CopilotAdapter:
                     _i._cprint(f"  [RM] Removed MCP servers from {mcp_path}: {', '.join(removed)}")
         clear_managed_mcp(self.name)
 
+    def _apply_mcp_default_disabled(self) -> None:
+        """Start every configured MCP server disabled, per ``_agentihooks.mcpDefaultDisabled``.
+
+        Copilot connects every configured server when a session opens and opens
+        a browser OAuth tab for each one that 401s; there is no lazy-connect key
+        (copilot-cli #1938, #2026, #3462). A server named in ``disabledMcpServers``
+        stays fully configured but is not connected, so ``/mcp enable <name>``
+        becomes the on-demand switch.
+
+        ``enabledMcpServers`` is Copilot's record of what the operator turned on
+        by hand; those are never re-disabled here, so an enable survives the next
+        install.
+
+        ``mcpAlwaysEnabled`` is a floor rather than a skip-list: a name in it is
+        lifted OUT of ``disabledMcpServers`` as well as kept out of it. Adding to
+        the set is not enough — a stale settings file, or one `/mcp disable
+        hooks-utils` in the past, would otherwise leave the toolbelt off forever
+        while the install reported it as enabled. Turning one off for good means
+        dropping it from ``mcpAlwaysEnabled``, which is where that decision belongs.
+        """
+        directives = getattr(self, "_mcp_directives", None) or {}
+        if not directives.get("mcpDefaultDisabled"):
+            return
+
+        _i = _install_module()
+        home = self.home()
+        config = self._load_json(home / "mcp-config.json")
+        configured = sorted((config.get("mcpServers") or {}).keys())
+        if not configured:
+            return
+
+        settings_path = home / "settings.json"
+        doc = self._load_json(settings_path)
+        always_on = set(directives.get("mcpAlwaysEnabled") or _MCP_ALWAYS_ENABLED)
+        operator_enabled = set(doc.get("enabledMcpServers") or [])
+
+        disabled = set(doc.get("disabledMcpServers") or [])
+        disabled.update(n for n in configured if n not in always_on and n not in operator_enabled)
+        disabled -= always_on
+        if disabled == set(doc.get("disabledMcpServers") or []) and not disabled:
+            return
+
+        doc["disabledMcpServers"] = sorted(disabled)
+        _atomic_write(settings_path, json.dumps(doc, indent=2) + "\n")
+
+        held = sorted(n for n in configured if n not in disabled)
+        _i._cprint(
+            f"  [OK] {len(doc['disabledMcpServers'])} MCP server(s) start disabled — /mcp enable <name> to connect one"
+        )
+        if held:
+            _i._cprint(f"       left enabled: {', '.join(held)}")
+
     def post_install_reconcile(self, profile_chain: list[str], persisted_profile: str) -> None:
         _i = _install_module()
+        self._apply_mcp_default_disabled()
         _i._cprint("  [--] Copilot install complete. Verify with: agentihooks doctor --target copilot")
 
     # ------------------------------------------------------------------

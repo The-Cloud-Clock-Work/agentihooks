@@ -23,21 +23,13 @@ import re
 from pathlib import Path
 from typing import Any
 
+from hooks.targets import codex_home as _codex_home
+from hooks.targets import copilot_home as _copilot_home
 from hooks.targets import is_codex, is_copilot
 
 # Events whose handlers read the transcript: session digest/metrics, brain
 # marker capture, auto-save, compaction. Tool events deliberately excluded.
 _TRANSCRIPT_EVENTS = frozenset({"SessionEnd", "Stop", "SubagentStop", "PreCompact"})
-
-
-def _codex_home() -> Path:
-    raw = (os.environ.get("CODEX_HOME") or "").split(",")[0].strip()
-    return Path(raw).expanduser() if raw else Path.home() / ".codex"
-
-
-def _copilot_home() -> Path:
-    raw = (os.environ.get("COPILOT_HOME") or "").split(",")[0].strip()
-    return Path(raw).expanduser() if raw else Path.home() / ".copilot"
 
 
 # A codex session id is a UUID; anything else is refused rather than

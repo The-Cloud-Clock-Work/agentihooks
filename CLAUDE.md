@@ -102,7 +102,7 @@ Per-target reference: `docs/reference/CODEX-COMPAT.md`,
 
 ### Settings installation
 
-`scripts/install.py` reads `settings.base.json`, substitutes `__PYTHON__`/`/app` placeholders, deep-merges profile overrides + settings-profile overlay, writes to `~/.claude/settings.json`.
+`scripts/install.py` reads the target's native base (`_base/settings.base.json` for claude, `config.base.toml` for codex, `settings.base.copilot.json` for copilot), substitutes `__PYTHON__`/`/app` placeholders, deep-merges the bundle-global, profile-chain and settings-profile layers found under that target's subdir (`.claude/`, `.codex/`, `.copilot/`), and hands the result to `adapter.write_settings(native)`. Each adapter receives a document already in its own format — nothing is translated between targets. `_native_layer_path()` and `_load_native_layer()` own discovery and JSON/TOML loading.
 
 ### Profile system
 

@@ -412,3 +412,246 @@ Live-session evidence (2026-08-19, v1.0.80, authenticated):
 | auth rides in `config.json` | copy into scratch home → authenticated turn |
 | hook commands run via `/bin/sh` | binary string: "`/bin/sh` on Unix-like systems, `cmd.exe` on Windows" |
 | `shell` valid as agent grant name; hook boundary reports `bash` | `copilot --agent` run + captured `toolCalls` |
+
+## §11 Native settings authoring (v2.3+)
+
+Profiles author copilot settings in Copilot's own format at
+`<profile>/.copilot/settings.overrides.json`, merged over
+`profiles/_base/settings.base.copilot.json`. MCP is authored separately at
+`<profile>/.copilot/mcp-config.overrides.json`. Nothing is translated from
+Claude settings any more.
+
+**`_agentihooks` is a reserved block, not a Copilot setting.** Copilot warns
+about unknown top-level keys on every launch, so the installer consumes this
+block and never writes it to disk. It carries directives Copilot has no settings
+key for:
+
+| directive | effect |
+|---|---|
+| `allowAll: true` | writes `COPILOT_ALLOW_ALL=true` to `~/.agentihooks/copilot.env`, which the installer's `agentienv` shell block auto-exports. The value must be the literal `true` — see §11.7 |
+
+**Never declare a `hooks` key.** Copilot merges an inline settings `hooks` with
+the `hooks/` directory, so declaring both fires every hook twice. The adapter
+drops it with a warning. Hooks are written to `hooks/agentihooks.json`.
+
+### §11.1 `permissions.*` is enterprise-only — do not author it here
+
+The settings catalogue describes `permissions.allow/ask/deny` as
+*"Enterprise-managed permission rules"*, and that is literal: rules written into
+**user** settings are inert. Settled live on v1.0.80 with three runs differing
+only in the rule, same scratch home:
+
+| `permissions.deny` | result |
+|---|---|
+| absent (control) | file read |
+| `read(probe-target.txt)` + glob form | file read anyway |
+| bare `read`, `view`, plus both scoped forms | file read anyway |
+
+A bare `read` deny would block every read if the engine were live at this scope.
+It did not. Authoring credential rules here would produce a file that reads as
+protection while providing none.
+
+Credential protection on copilot therefore comes from the agentihooks hook layer
+(`hooks/context/credential_guard.py`, called from `on_pre_tool_use`), which is
+the only mechanism that actually executes on this target.
+
+### §11.2 MCP: OAuth is opt-in, and `tools` takes exact names
+
+`auth` and `oidc` default to **false** per server. Left at Copilot's default, a
+401 from any http/sse server starts a browser authorization flow; under WSL that
+launches a Windows browser with no session and the turn hangs with nothing to
+click. A server that genuinely needs OAuth sets `auth: true` explicitly.
+
+`tools` is an **exact-name allowlist — wildcards are not supported**. A pattern
+like `litellm_tools-*` silently matches nothing and disables the server
+entirely; the tool count reads 0 and no error is raised. Verified live.
+
+This matters because of the static-context ceiling: `gateway-tools` alone ships
+511 tool schemas, which puts static context at 121% of the window on copilot's
+small auto-routed models and aborts every turn at 0 credits with
+`compaction_static_context_blocked`. Attribution measured by elimination —
+shrinking the 66KB persona to 30 bytes moved it only 121% → 109%, while
+dropping the heavy MCP servers cleared it outright. The tools are the bulk, not
+the persona.
+
+Tool-search deferral (`toolSearch` + per-server `deferTools`) exists but is
+gated off server-side for non-enterprise accounts, and forcing the flags true
+via `enabledFeatureFlags` changed nothing (byte-identical schema count, no
+`tool_search` tool). Treat the allowlist as the working lever.
+
+### §11.3 MCP OAuth fires at startup — `COPILOT_DEBUG_BROWSER` is the only interception point
+
+Copilot connects **every** configured MCP server when the session opens and
+starts an OAuth flow on the first 401, opening one browser tab per server. Under
+WSL that is a Windows browser with no session, and the turn parks there. Four
+configured Microsoft-auth servers produce four tabs.
+
+There is no defer-auth, lazy-connect, or `autoConnect: false` key — all three are
+open upstream requests (copilot-cli #1938, #2026, #3462), and `deferTools` defers
+only tool *schemas*, not the connection. `disabledMcpServers` (settings, written
+by `/mcp disable`) stops the flow by stopping the server, which is the wrong
+trade when the server is wanted.
+
+`COPILOT_DEBUG_BROWSER` is checked ahead of every launch path — before the
+remote-environment skip, before `$BROWSER`, before `xdg-open`. It takes a JSON
+string array; Copilot spawns `array[0]` with the remaining elements plus the URL
+appended. Pointing it at a sink keeps servers configured and connected while no
+browser opens, and the authorization URL is recoverable:
+
+```
+_agentihooks: { "suppressBrowserLaunch": true }
+```
+
+The adapter renders that into the managed env file as a `sh -c` sink appending
+the URL to `~/.copilot/pending-oauth-urls.txt`. Authentication becomes operator-
+initiated: open the parked URL when you actually want that server.
+
+Caveat: this is global, so `copilot` login will not auto-open a browser either.
+The device-code flow still prints its verification URI and code in the TUI.
+
+### §11.4 `mcpDefaultDisabled` — servers configured but not connected
+
+`disabledMcpServers` (settings) keeps a server fully configured while leaving it
+unconnected, which makes `/mcp enable <name>` an on-demand connect switch. GitHub's
+docs describe `/mcp disable` as applying "for the current session"; it does not —
+the command writes `disabledMcpServers` to `~/.copilot/settings.json` and a fresh
+process honours it:
+
+```
+$ copilot mcp list          # settings.json: {}
+  probe-a (local)           probe-b (local)
+$ copilot mcp list          # settings.json: {"disabledMcpServers":["probe-a"]}
+  probe-a (local, disabled) probe-b (local)
+```
+
+The `_agentihooks.mcpDefaultDisabled` directive applies that to every configured
+server after MCP registration, including servers agentihooks does not manage (they
+are in the same `mcp-config.json`). `mcpAlwaysEnabled` overrides the exempt set,
+which defaults to `hooks-utils` — disabling the toolbelt would remove the fleet
+tools from the session.
+
+Copilot records a hand-enable in `enabledMcpServers`, and the installer never
+re-disables a name found there, so `/mcp enable` survives the next install.
+
+### §11.5 `browserCommand` — which browser gets the OAuth URL
+
+Copilot picks the OAuth browser per platform: `open` on macOS, `xdg-open` on
+Linux, `cmd /c start` on Windows. Under WSL the Linux branch applies, so
+`xdg-open` reaches whatever browser is installed *inside the distro* — which
+carries none of the operator's Windows sessions. A Microsoft authorization opened
+there can never complete: the browser has no session to authorize with.
+
+`COPILOT_DEBUG_BROWSER` is consulted ahead of every launch path (before the
+remote-environment skip, before `$BROWSER`, before the per-platform default). It
+holds a JSON string array; Copilot spawns `array[0]` with the remaining elements
+plus the URL appended. `_agentihooks.browserCommand` renders into it and accepts
+either form:
+
+```json
+"browserCommand": "auto"
+"browserCommand": "\"/mnt/c/Program Files/Google/Chrome/Application/chrome.exe\" --new-tab"
+```
+
+A string is shell-split; an array is passed through. Every launcher receives the
+URL as argv, which matters: an authorization URL is full of `&`, so anything
+routed through `cmd /c start` would be truncated at the first one.
+
+**`explorer.exe` is the obvious choice and it is wrong.** Copilot spawns the
+launcher with its own working directory, which under WSL is a Linux path;
+explorer.exe cannot resolve one, ignores the URL, and opens a File Explorer
+window on Documents instead. Observed live. It exits 1 while doing so, and
+Copilot reports only a *spawn* failure, so nothing surfaces the misfire.
+
+`auto` therefore probes, in order: `wslview`, Windows Chrome (both Program Files
+locations), Windows Edge. Verified from a Linux cwd with a `&`-bearing URL:
+`wslview` exits 0 and opens the URL; `explorer.exe` exits 1 and opens Documents.
+If none resolve, nothing is written and the install warns — `wslu` supplies
+`wslview` and is the smallest fix.
+
+A bundle profile is installed on more than one machine, so the value resolves at
+install time rather than being written through blindly:
+
+| value | WSL | macOS / native Linux |
+|---|---|---|
+| `"auto"` | first of `wslview`, Chrome, Edge that resolves | nothing written — Copilot's `open` / `xdg-open` |
+| explicit command | written if it resolves | dropped with a warning if it does not |
+| absent | nothing written | nothing written |
+
+`"auto"` is the portable form: the OAuth URL reaches the Windows default browser
+under WSL and the operator's own default browser everywhere else. An explicit
+command that does not exist on the machine is dropped rather than written —
+Copilot reports only a *spawn* failure to its debug log, so an unresolvable
+launcher would silently open nothing, which is worse than the default it replaced.
+
+`suppressBrowserLaunch` (§11.3) is the same mechanism pointed at a sink;
+`browserCommand` wins if both are set. A value that is neither a string nor a list
+of strings is dropped with a warning — the install must degrade to Copilot's own
+browser, not abort on a typo.
+
+One undocumented Copilot detail, confirmed in `app.js`: the web-flow login path
+substitutes the URL for a literal `"%s"` element if the array contains one,
+instead of appending. Nothing agentihooks emits contains `%s`, so the append
+behaviour above is what fires.
+
+### §11.6 `channels` — broadcast subscriptions have no settings home in Copilot
+
+Claude carries `AGENTIHOOKS_BASE_CHANNELS` in its settings `env` block. Copilot's
+settings catalogue has no `env` key (only `envValueMode`, which is unrelated), so
+that mechanism does not port. Left alone, a Copilot session reads an unset
+variable, subscribes to nothing, and every channel-targeted broadcast passes it
+by — visible as an empty `channels:` on the statusline:
+
+```
+agentihooks: smith,brain  settings:smith,brain  channels:
+```
+
+`_agentihooks.channels` renders the list into the managed env file, which the
+installer's `agentienv` shell block sources with `set -a`. Copilot inherits the
+exported variable, and so do the hooks, the statusline command and the MCP server
+it spawns. A list or a comma string are both accepted.
+
+**The reach stops at the shell.** `agentienv` runs from `~/.bashrc`, which bash
+sources only for interactive shells, so only a Copilot descending from one gets
+the variable. Measured:
+
+```
+bash -c  '...'  → AGENTIHOOKS_BASE_CHANNELS UNSET   (non-interactive)
+bash -lc '...'  → AGENTIHOOKS_BASE_CHANNELS UNSET   (login, non-interactive)
+bash -ic '...'  → agentienv loads; variable SET
+```
+
+A Copilot launched by an IDE extension, a systemd unit, or any non-interactive
+spawn subscribes to nothing. That is the same limit every variable in that file
+carries, `COPILOT_ALLOW_ALL` included; a target-native settings key would not have
+it, and Copilot exposes none.
+
+The file is install-time codegen: it materialises on the next
+`agentihooks init --target copilot`, not retroactively on an install that predates
+the directive.
+
+`profiles/_base/settings.base.copilot.json` ships `brain,amygdala`, matching the
+Claude default in `profiles/default/.claude/settings.overrides.json`; a test pins
+the two together so a copilot session lands on the same channels a claude session
+does.
+
+### §11.7 `COPILOT_ALLOW_ALL` must be the literal `true`
+
+The variable is read two different ways, and only one of them is truthy-tolerant.
+
+`--allow-all-tools` is declared with Commander's `.env("COPILOT_ALLOW_ALL")`, which
+binds on the variable being **present and non-empty**. So `COPILOT_ALLOW_ALL=1`
+does grant the tools axis, and a probe that only exercises a tool call reports
+success.
+
+Every other consumer compares `process.env.COPILOT_ALLOW_ALL === "true"` — an
+exact string. Those gate folder trust, workspace MCP source discovery, repo hook
+loading in prompt mode, and plugin activation. With `1` they all stay off,
+silently, while the tools axis works — the failure mode is a switch that looks
+set because the visible half of it is.
+
+`copilot help environment` documents it as: *allow all tools to run automatically
+without confirmation when set to "true"*. Take that literally.
+
+Note also that allow-all is not one flag but three axes — `getAllowAllPermissionStatus()`
+returns `baseline: {tools, paths, urls}`, and `--allow-all-paths` is a separate
+flag. Granting tools does not grant paths.

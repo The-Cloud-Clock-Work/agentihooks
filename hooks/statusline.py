@@ -340,29 +340,6 @@ def main() -> None:
             except Exception:
                 pass
 
-        # Peak/off-peak indicator — uses native session rate limit for context
-        try:
-            from hooks.config import PEAK_HOURS_ENABLED, PEAK_HOURS_END, PEAK_HOURS_START, PEAK_HOURS_TZ
-
-            if PEAK_HOURS_ENABLED:
-                from hooks.observability.peak_hours import is_peak_now, to_local_hour
-
-                local_start, local_abbrev = to_local_hour(PEAK_HOURS_START, PEAK_HOURS_TZ)
-                local_end, _ = to_local_hour(PEAK_HOURS_END, PEAK_HOURS_TZ)
-                if is_peak_now(PEAK_HOURS_START, PEAK_HOURS_END, PEAK_HOURS_TZ):
-                    five_h = rate_limits.get("five_hour", {})
-                    session_pct = five_h.get("used_percentage", 0) or 0
-                    if session_pct > 50:
-                        parts_3.append(
-                            f"{_YELLOW}PEAK — sessions burn faster until {local_end:02d}:00 {local_abbrev}{_RESET}"
-                        )
-                    else:
-                        parts_3.append(f"{_YELLOW}PEAK {local_start:02d}:00-{local_end:02d}:00 {local_abbrev}{_RESET}")
-                else:
-                    parts_3.append(f"{_GREEN}OFF-PEAK — full session rate{_RESET}")
-        except Exception:
-            pass
-
         if parts_3:
             print(f"  {_DIM}|{_RESET}  ".join(parts_3))
 

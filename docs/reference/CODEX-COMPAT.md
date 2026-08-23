@@ -195,3 +195,64 @@ uv run python -m pytest tests/test_codex_target.py tests/test_codex_e2e.py
 | `project_doc_max_bytes` behaviour | 0.147.0 loaded a 415 KB `AGENTS.md` in full |
 | Rollout path and record types | `codex_rollout_path()` + `tests/fixtures/codex_rollout_sample.jsonl` |
 | Everything in §3–§5 not listed above | code-derived from `scripts/targets/codex_target.py` during this reconstruction; not re-verified against a codex binary |
+
+## Native settings authoring (v2.3+)
+
+Profiles author codex settings in codex's own TOML at
+`<profile>/.codex/config.overrides.toml`, merged over
+`profiles/_base/config.base.toml`. Nothing is translated from Claude settings
+any more — the previous design could carry only `permissions.defaultMode` and
+hardcoded the rest in Python, so `model_reasoning_effort` and every other
+codex-native key were unreachable from a bundle.
+
+Merge discipline: each top-level key is applied under the
+`[agentihooks.managed]` record, so a value the operator hand-edited since our
+last write is left alone. Nested tables (`tui`, `features`, …) merge key by key
+rather than being replaced wholesale — `config.toml` is a shared operator file
+and replacing a table would silently drop settings we never wrote.
+`features.hooks = true` is re-applied as a floor after the merge: the hook layer
+is the entire guardrail surface and is never left off.
+
+`[mcp_servers.*]` is not written from this file; MCP continues through
+`register_mcp`.
+
+### Official schema — prefer it over prose
+
+OpenAI publishes the serde-generated JSON Schema for `ConfigToml`:
+
+```
+https://developers.openai.com/codex/config-schema.json
+```
+
+Put `#:schema https://developers.openai.com/codex/config-schema.json` at the top
+of a config.toml for editor completion. Because it is generated from the Rust
+struct it cannot drift the way hand-written docs can, so it is the authority
+when the two disagree. `codex --strict-config <cmd>` errors on any key the
+installed binary does not recognise — a cheap CI check for a hand-authored file
+against an exact version.
+
+### Posture keys worth stating explicitly
+
+| key | values |
+|---|---|
+| `approval_policy` | `untrusted`, `on-request`, `never`, or a `granular` table |
+| `sandbox_mode` | `read-only`, `workspace-write`, `danger-full-access` |
+| `model_reasoning_effort` | `minimal`, `low`, `medium`, `high`, `xhigh` |
+
+`sandbox_workspace_write.{writable_roots,network_access}` refine
+`workspace-write`. The base ships the safe pairing
+(`on-request` / `workspace-write`); a profile wanting autonomy states
+`never` / `danger-full-access` itself rather than having it inferred.
+
+### Credential protection
+
+codex has no path-rule permission mechanism, so the Claude `permissions.deny`
+rules have no faithful codex equivalent and are deliberately NOT approximated
+here — a rule that reads as protection it does not provide is worse than none.
+Credential-read protection comes from the shared hook layer
+(`hooks/context/credential_guard.py`), which runs on every target.
+
+### Machine-managed — never hand-write
+
+`[hooks.state]` (hook trust hashes), `tui.model_availability_nux.*`, and
+`[projects.<path>].trust_level` are written by codex itself.

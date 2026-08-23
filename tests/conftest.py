@@ -47,6 +47,12 @@ def _isolate_real_user_paths(tmp_path, monkeypatch):
     monkeypatch.delenv("CODEX_HOME", raising=False)
     # Same for COPILOT_HOME, read first by targets.copilot_target.copilot_home.
     monkeypatch.delenv("COPILOT_HOME", raising=False)
+    # AGENTIHOOKS_HOME drives the state dir, which the copilot adapter's managed
+    # env file lives in — and that path is resolved INDEPENDENTLY of COPILOT_HOME.
+    # Isolating only the target home therefore still writes, and on the
+    # no-directives branch DELETES, the operator's real ~/.agentihooks/copilot.env.
+    # That has already happened once.
+    monkeypatch.delenv("AGENTIHOOKS_HOME", raising=False)
 
     try:
         import install
@@ -86,10 +92,13 @@ def _isolate_real_user_paths(tmp_path, monkeypatch):
     except Exception:
         yield
         return
+    from targets.copilot_target import CopilotAdapter
+
     for label, value in (
         ("codex_home", codex_home()),
         ("copilot_home", copilot_home()),
         ("agents_skills_home", agents_skills_home()),
+        ("copilot managed env file", CopilotAdapter._bypass_env_file()),
     ):
         assert real_home not in value.parents and value != real_home, (
             f"{label}() still resolves under the real home ({value}) — refusing to run"

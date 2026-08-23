@@ -96,7 +96,7 @@ Controls the Token Control Layer, which reduces context window consumption in ag
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TOKEN_CONTROL_ENABLED` | `true` | Master switch. Set `false` to disable all token control features at once. |
-| `TOKEN_MONITOR_ENABLED` | `true` | Enable the `statusLine` script (`hooks/statusline.py`) context window monitor. Outputs a 3-line status bar (line 1: fill %, model, cost; line 2: token counts, burn rate, cache ratio, git branch; line 3: active agentihooks profile, settings-profile, channels subscription list from `AGENTIHOOKS_BASE_CHANNELS`) plus a conditional 4th line for threshold warnings, native rate limits, or peak/off-peak indicator. `used_pct` is recomputed from `total_input_tokens / context_window_size * 100` to avoid stale payload values. |
+| `TOKEN_MONITOR_ENABLED` | `true` | Enable the `statusLine` script (`hooks/statusline.py`) context window monitor. Outputs a 3-line status bar (line 1: fill %, model, cost; line 2: token counts, burn rate, cache ratio, git branch; line 3: active agentihooks profile, settings-profile, channels subscription list from `AGENTIHOOKS_BASE_CHANNELS`) plus a conditional 4th line for threshold warnings or native rate limits. `used_pct` is recomputed from `total_input_tokens / context_window_size * 100` to avoid stale payload values. |
 | `TOKEN_WARN_PCT` | `60` | Fill percentage at which a warning banner is injected into Claude's context. Edge-triggered: fires only once per session per threshold level. |
 | `TOKEN_CRITICAL_PCT` | `80` | Fill percentage at which a critical banner is injected. |
 | `TOKEN_REDIS_TTL` | `3600` | TTL (seconds) for Redis keys storing token metrics and warning state. |
@@ -115,10 +115,6 @@ Controls the Token Control Layer, which reduces context window consumption in ag
 | `EFFORT_POLICY_ENABLED` | `true` | Inject thinking/effort guidance at `SessionStart` based on `DEFAULT_EFFORT`. Warns on PostToolUse when Agent tool spawns with unnecessarily expensive models. |
 | `DEFAULT_EFFORT` | `medium` | Default reasoning effort level: `low`, `medium`, or `high`. Controls guidance injected at session start. |
 | `THINKING_BUDGET_TOKENS` | `0` | Advisory thinking token ceiling per response. 0 = no limit. |
-| `PEAK_HOURS_ENABLED` | `true` | Show peak/off-peak indicator on statusline line 3. Detects Anthropic peak billing hours (weekday business hours). |
-| `PEAK_HOURS_START` | `9` | Peak start hour (in target timezone). |
-| `PEAK_HOURS_END` | `17` | Peak end hour (exclusive). |
-| `PEAK_HOURS_TZ` | `US/Pacific` | IANA timezone name for peak hour detection. |
 | `MCP_TOOL_WARN_THRESHOLD` | `40` | Warn at `SessionStart` if total MCP tools across all servers exceed this count. |
 | `MCP_SCHEMA_AVG_TOKENS` | `150` | Estimated tokens per MCP tool schema (used in `agentihooks mcp report`). |
 

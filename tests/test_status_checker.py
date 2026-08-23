@@ -167,12 +167,11 @@ class TestCheckGuardrails:
             patch("hooks.config.CONTEXT_COMPRESSION_SCOPE", "all"),
             patch("hooks.config.CONTEXT_AUDIT_ENABLED", True),
             patch("hooks.config.EFFORT_POLICY_ENABLED", True),
-            patch("hooks.config.PEAK_HOURS_ENABLED", True),
             patch("hooks.config.COMPACT_SUGGEST_ENABLED", True),
         ):
             result = check_guardrails()
-            assert result["active"] == 7
-            assert result["total"] == 7
+            assert result["active"] == 6
+            assert result["total"] == 6
 
     def test_compression_inactive_when_scope_default(self):
         """scope=refresh is a no-op post context-refresh removal — must not report active."""
@@ -263,7 +262,6 @@ class TestFormatters:
                     "file_dedup": True,
                     "context_audit": True,
                     "effort_policy": True,
-                    "peak_hours": True,
                     "compact_suggest": True,
                 },
                 "ok": True,
@@ -278,7 +276,7 @@ class TestFormatters:
                 },
                 "ok": True,
             },
-            "quota": {"summary": "(not configured)", "peak": "off-peak", "ok": False},
+            "quota": {"summary": "(not configured)", "ok": False},
             "session": {
                 "id": "test-123",
                 "fill_pct": 42.5,
@@ -426,7 +424,7 @@ class TestFormatterTargetLines:
             "otel": {"enabled": False, "ok": True},
             "guardrails": {"active": 0, "total": 0, "details": {}, "ok": True},
             "mcp": {"total": 0, "enabled": 0, "disabled": 0, "servers": {}, "ok": True},
-            "quota": {"summary": "(not configured)", "peak": "off-peak", "ok": False},
+            "quota": {"summary": "(not configured)", "ok": False},
         }
 
     def test_cli_prints_one_line_per_target(self):

@@ -92,8 +92,14 @@ class TargetAdapter(Protocol):
         """Config root this target reads (``~/.claude`` / ``~/.codex`` / ``~/.copilot``)."""
         ...
 
-    def write_settings(self, rendered: dict) -> Path:
-        """Persist the merged settings for this target; returns the file written."""
+    def write_settings(self, native: dict) -> Path:
+        """Persist the merged settings for this target; returns the file written.
+
+        *native* is authored in THIS target's own format — Claude's
+        ``settings.json`` shape, codex's ``config.toml`` shape, copilot's
+        ``settings.json`` shape — already merged across base → bundle →
+        profile chain. It is not a Claude document to be translated.
+        """
         ...
 
     def install_features(self, subdir: str, layers: list[tuple[str, Path]], filter_fn) -> None:

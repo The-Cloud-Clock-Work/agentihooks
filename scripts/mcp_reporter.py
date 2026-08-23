@@ -1,7 +1,10 @@
 """MCP surface area reporter — analyzes MCP server token cost.
 
-Reads MCP configurations from ~/.claude.json and project .mcp.json,
-enumerates tools per server, and estimates context token overhead.
+Reads the MCP registry of whichever agent CLI invoked the hook — claude's
+~/.claude.json plus project .mcp.json, codex's config.toml [mcp_servers], or
+copilot's mcp-config.json — enumerates tools per server, and estimates context
+token overhead. Reading claude's registry inside a codex session reports
+servers that session cannot see.
 """
 
 import json
@@ -9,12 +12,48 @@ from pathlib import Path
 from typing import Optional
 
 
+def _codex_mcp_configs() -> dict[str, dict]:
+    from hooks.targets import codex_home
+
+    config = codex_home() / "config.toml"
+    if not config.exists():
+        return {}
+    try:
+        import tomllib
+
+        table = tomllib.loads(config.read_text(encoding="utf-8")).get("mcp_servers", {})
+    except (OSError, ValueError):
+        return {}
+    return {name: {"source": "user", "config": spec} for name, spec in table.items() if isinstance(spec, dict)}
+
+
+def _copilot_mcp_configs() -> dict[str, dict]:
+    from hooks.targets import copilot_home
+
+    config = copilot_home() / "mcp-config.json"
+    if not config.exists():
+        return {}
+    try:
+        table = json.loads(config.read_text(encoding="utf-8")).get("mcpServers", {})
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return {name: {"source": "user", "config": spec} for name, spec in table.items() if isinstance(spec, dict)}
+
+
 def load_all_mcp_configs(project_path: Optional[str] = None) -> dict[str, dict]:
-    """Load MCP server configs from user scope and optional project scope.
+    """Load MCP server configs for the invoking target.
 
     Returns:
         {server_name: {"source": "user"|"project", "config": {...}, "tool_count": int}}
     """
+    from hooks.targets import current_target
+
+    target = current_target()
+    if target == "codex":
+        return _codex_mcp_configs()
+    if target == "copilot":
+        return _copilot_mcp_configs()
+
     servers: dict[str, dict] = {}
 
     # User scope: ~/.claude.json

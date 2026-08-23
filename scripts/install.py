@@ -148,6 +148,32 @@ _CLAUDE_SUBDIR = ".claude"
 _CLAUDE_MD_NAME = "CLAUDE.md"
 _MCP_JSON_NAME = ".mcp.json"
 
+# Native settings/MCP authoring, one file shape per target. A profile expresses
+# each harness's configuration in that harness's OWN format rather than in
+# Claude's, because the previous translation could only carry
+# `permissions.defaultMode` and left every target-native capability
+# (codex reasoning effort, copilot permission rules, copilot's per-server MCP
+# tool allowlist) unreachable from a bundle.
+#
+# claude's entries reproduce the pre-native paths exactly — its native format
+# IS the Claude shape — so its install output is unchanged.
+_TARGET_SUBDIR = {"claude": _CLAUDE_SUBDIR, "codex": ".codex", "copilot": ".copilot"}
+_NATIVE_SETTINGS_NAME = {
+    "claude": "settings.overrides.json",
+    "codex": "config.overrides.toml",
+    "copilot": "settings.overrides.json",
+}
+_NATIVE_MCP_NAME = {
+    "claude": _MCP_JSON_NAME,
+    "codex": "mcp.overrides.toml",
+    "copilot": "mcp-config.overrides.json",
+}
+_NATIVE_BASE_NAME = {
+    "claude": "settings.base.json",
+    "codex": "config.base.toml",
+    "copilot": "settings.base.copilot.json",
+}
+
 # Keys from ~/.claude/settings.json that belong to the user and should be
 # preserved when merging (unless the base settings already define them).
 PERSONAL_KEYS = {"model", "autoUpdatesChannel", "skipDangerousModePermissionPrompt"}
@@ -300,6 +326,39 @@ def load_json(path: Path) -> dict:
 def save_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def _native_layer_path(root: Path, target: str, names: dict[str, str]) -> Path | None:
+    """Locate one native layer file under *root* for *target*, or None.
+
+    Looks in the target's own subdir (``.claude`` / ``.codex`` / ``.copilot``)
+    and falls back to the layer root, which is where the pre-``.claude/``
+    profile layout kept these files.
+    """
+    name = names[target]
+    candidate = root / _TARGET_SUBDIR[target] / name
+    if candidate.exists():
+        return candidate
+    candidate = root / name
+    return candidate if candidate.exists() else None
+
+
+def _load_native_layer(path: Path) -> dict:
+    """Load a native settings/MCP layer as a plain dict, JSON or TOML by suffix.
+
+    TOML is parsed to a plain dict rather than a tomlkit document: this value is
+    merged and handed to an adapter, and the adapter owns the comment-preserving
+    round-trip into the live config file.
+    """
+    if path.suffix == ".toml":
+        import tomlkit
+
+        try:
+            return dict(tomlkit.parse(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError) as exc:
+            print(f"ERROR: {path} is not valid TOML: {exc}", file=sys.stderr)
+            sys.exit(1)
+    return load_json(path)
 
 
 def _deep_merge(base: dict, override: dict, _parent_key: str = "") -> dict:
@@ -2764,23 +2823,38 @@ def _install_global_inner(args: argparse.Namespace) -> None:
     _mcp_transport = _validate_mcp_transport_or_exit()
 
     # --- 1. Load and render base settings ---
-    if not BASE_SETTINGS.exists():
-        print(f"ERROR: {BASE_SETTINGS} not found.", file=sys.stderr)
+    _base_settings = PROFILES_DIR / "_base" / _NATIVE_BASE_NAME[install_target]
+    if not _base_settings.exists():
+        print(f"ERROR: {_base_settings} not found.", file=sys.stderr)
         sys.exit(1)
 
-    raw_settings = load_json(BASE_SETTINGS)
+    raw_settings = _load_native_layer(_base_settings)
     rendered: dict = substitute_paths(raw_settings)
     rendered = substitute_paths(rendered, "__PYTHON__", _canonical_python)
 
+    # --- 1a. Bundle-global native overrides ---
+    # Settings gain the bundle rung that MCP already had; without it a bundle
+    # can only express fleet-wide settings by repeating them in every profile.
+    _bundle_root = _get_bundle_path()
+    if _bundle_root:
+        _bundle_overrides = _native_layer_path(_bundle_root, install_target, _NATIVE_SETTINGS_NAME)
+        if _bundle_overrides:
+            _data = _load_native_layer(_bundle_overrides)
+            if install_target == "claude":
+                _data = _resolve_profile_hook_paths(_data, _bundle_root)
+            rendered = _deep_merge(rendered, _data)
+            print(f"Applied bundle overrides: {_bundle_overrides}")
+
     # --- 1b. Apply per-profile overrides (chained: each profile merges on top) ---
     for pname, pdir in profile_dirs:
-        overrides_path = pdir / _CLAUDE_SUBDIR / "settings.overrides.json"
-        if not overrides_path.exists():
-            overrides_path = pdir / "settings.overrides.json"
-        if overrides_path.exists():
-            overrides = load_json(overrides_path)
+        overrides_path = _native_layer_path(pdir, install_target, _NATIVE_SETTINGS_NAME)
+        if overrides_path:
+            overrides = _load_native_layer(overrides_path)
             # Resolve relative paths in hook commands against the profile's root
-            overrides = _resolve_profile_hook_paths(overrides, pdir)
+            # (claude only — codex/copilot hooks are adapter-written, never
+            # declared in their native settings files).
+            if install_target == "claude":
+                overrides = _resolve_profile_hook_paths(overrides, pdir)
             rendered = _deep_merge(rendered, overrides)
             print(f"Applied profile overrides: {overrides_path}")
 
@@ -2795,12 +2869,11 @@ def _install_global_inner(args: argparse.Namespace) -> None:
             print(f"Available profiles: {', '.join(available)}", file=sys.stderr)
             sys.exit(1)
 
-        sp_overrides = settings_profile_dir / _CLAUDE_SUBDIR / "settings.overrides.json"
-        if not sp_overrides.exists():
-            sp_overrides = settings_profile_dir / "settings.overrides.json"
-        if sp_overrides.exists():
-            sp_data = load_json(sp_overrides)
-            sp_data = _resolve_profile_hook_paths(sp_data, settings_profile_dir)
+        sp_overrides = _native_layer_path(settings_profile_dir, install_target, _NATIVE_SETTINGS_NAME)
+        if sp_overrides:
+            sp_data = _load_native_layer(sp_overrides)
+            if install_target == "claude":
+                sp_data = _resolve_profile_hook_paths(sp_data, settings_profile_dir)
             rendered = _deep_merge(rendered, sp_data)
             src = _profile_source_label(settings_profile_name)
             print(f"Applied settings-profile overlay: {settings_profile_name} ({src})")
@@ -2874,47 +2947,38 @@ def _install_global_inner(args: argparse.Namespace) -> None:
             _cprint("  [OK] Stopped the hooks-utils daemon (transport reverted to stdio)")
         _remove_systemd_user_unit()
 
-    # Layer 2: bundle .claude/.mcp.json — always installed; profile MCPs layer on top (override per-name)
-    if bundle_dir:
-        bundle_mcp = bundle_dir / _CLAUDE_SUBDIR / _MCP_JSON_NAME
-        if not bundle_mcp.exists():
-            bundle_mcp = bundle_dir / _MCP_JSON_NAME
-        if bundle_mcp.exists():
-            try:
-                mcp_data = load_json(bundle_mcp)
-                servers = mcp_data.get("mcpServers", {})
-                if servers:
-                    adapter.register_mcp(servers)
-                    _cprint(f"  [OK] Bundle MCP servers: {', '.join(servers.keys())}")
-            except (json.JSONDecodeError, OSError) as exc:
-                _cprint(f"  [WARN] Could not read bundle .mcp.json: {exc}")
+    # MCP layers, target-native. A layer that ships the target's own MCP file
+    # (copilot: mcp-config.overrides.json, codex: mcp.overrides.toml) is used
+    # as-is; otherwise the layer's Claude .mcp.json is re-projected by the
+    # adapter as before. Native files are what let copilot carry its per-server
+    # `tools` allowlist and `auth: false`, neither of which the Claude shape can
+    # express.
+    def _register_mcp_layer(root: Path, label: str) -> None:
+        native = _native_layer_path(root, install_target, _NATIVE_MCP_NAME)
+        claude_mcp = _native_layer_path(root, "claude", _NATIVE_MCP_NAME)
+        path = native or claude_mcp
+        if path is None:
+            return
+        try:
+            servers = (_load_native_layer(path).get("mcpServers") or {}) if path else {}
+            if servers:
+                adapter.register_mcp(servers)
+                _cprint(f"  [OK] {label} MCP servers: {', '.join(servers.keys())}")
+        except (json.JSONDecodeError, OSError) as exc:
+            _cprint(f"  [WARN] Could not read {path}: {exc}")
 
-    # Layer 3+: each profile's .mcp.json (chained)
+    # Layer 2: bundle — always installed; profile MCPs layer on top (override per-name)
+    if bundle_dir:
+        _register_mcp_layer(bundle_dir, "Bundle")
+
+    # Layer 3+: each profile (chained)
     for pname, pdir in profile_dirs:
-        profile_mcp = pdir / _CLAUDE_SUBDIR / _MCP_JSON_NAME
-        if profile_mcp.exists():
-            try:
-                mcp_data = load_json(profile_mcp)
-                servers = mcp_data.get("mcpServers", {})
-                if servers:
-                    adapter.register_mcp(servers)
-                    chain_label = f"Profile({pname})" if len(profile_chain) > 1 else "Profile"
-                    _cprint(f"  [OK] {chain_label} MCP servers: {', '.join(servers.keys())}")
-            except (json.JSONDecodeError, OSError) as exc:
-                _cprint(f"  [WARN] Could not read profile .mcp.json: {exc}")
+        chain_label = f"Profile({pname})" if len(profile_chain) > 1 else "Profile"
+        _register_mcp_layer(pdir, chain_label)
 
     # --- 6b. Settings-profile MCP overlay ---
     if settings_profile_dir is not None:
-        sp_mcp = settings_profile_dir / _CLAUDE_SUBDIR / _MCP_JSON_NAME
-        if sp_mcp.exists():
-            try:
-                mcp_data = load_json(sp_mcp)
-                servers = mcp_data.get("mcpServers", {})
-                if servers:
-                    adapter.register_mcp(servers)
-                    _cprint(f"  [OK] Settings-profile MCP servers: {', '.join(servers.keys())}")
-            except (json.JSONDecodeError, OSError) as exc:
-                _cprint(f"  [WARN] Could not read settings-profile .mcp.json: {exc}")
+        _register_mcp_layer(settings_profile_dir, "Settings-profile")
 
     # --- 7. Re-apply any custom MCPs tracked in state.json ---
     if STATE_JSON.exists():
