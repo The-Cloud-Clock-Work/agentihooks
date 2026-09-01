@@ -46,6 +46,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pytest suite. Verified through each target's live entry point.
 - Native codex + copilot settings for the `smith` profile.
 
+### Removed
+
+- **`call_agent`, `pool_list`, and `pool_status` are gone from `hooks-utils`.**
+  Directed agent-to-agent messaging and the live-agent pool are removed along
+  with their backing modules. Coordinate through `channel_publish` /
+  `channel_list` / `channel_acknowledge` instead. `channel_acknowledge` is
+  unaffected and keeps its explicit `session_id` argument.
+
 ## [2.2.0] - 2026-08-20
 
 ### Fixed

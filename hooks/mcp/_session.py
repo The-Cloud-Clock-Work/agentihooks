@@ -18,8 +18,8 @@ import os
 # whatever CLAUDE_CODE_SESSION_ID its launching shell happened to carry, so an
 # env read there does not return "no idea" — it returns a real, wrong session id
 # and silently writes another agent's state. Observed in testing: a daemon
-# started from a live Claude Code shell attributed every caller's pool_status to
-# that shell's session.
+# started from a live Claude Code shell attributed every caller's ack to that
+# shell's session.
 #
 # Set once at startup by ``hooks.mcp.build_server``; the tool bodies never
 # branch on transport themselves.

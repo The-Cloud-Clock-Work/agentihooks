@@ -342,7 +342,7 @@ def on_session_start(payload: dict) -> None:
         _inject_sid(
             f"Your {_host} session_id is `{session_id}`. Pass it as the "
             "`session_id` argument to the hooks-utils tools that need caller "
-            "identity — call_agent, pool_list, pool_status, channel_acknowledge."
+            "identity — channel_acknowledge."
         )
 
     # Codex has no command-backed statusline — the `ah:` status line the
@@ -617,17 +617,6 @@ def on_session_end(payload: dict) -> None:
             heartbeat_sessions()
         except Exception as e:
             log("broadcast session_end failed", {"error": str(e)})
-
-    # --- Agent pool: drop the per-session summary refresh counter ---
-    try:
-        from hooks.config import AGENT_POOL_ENABLED
-
-        if AGENT_POOL_ENABLED:
-            from hooks.context.agent_pool import clear_pool_session
-
-            clear_pool_session(session_id)
-    except Exception:
-        pass
 
 
 def on_user_prompt_submit(payload: dict) -> None:
@@ -1185,9 +1174,8 @@ def on_pre_tool_use(payload: dict) -> None:
 
     _pretool_blocks: list[str] = []
 
-    # Gate is BROADCAST_ENABLED only (not BROADCAST_CRITICAL_ON_PRETOOL): directed
-    # agent-to-agent messages always inject here; get_pretool_context/broadcasts
-    # apply the critical-on-pretool opt-in to non-directed broadcasts internally.
+    # get_pretool_context/broadcasts own the critical-on-pretool opt-in
+    # internally; this call site only checks whether broadcasts are enabled.
     if BROADCAST_ENABLED:
         try:
             from hooks.context.broadcast import get_pretool_context
@@ -1475,17 +1463,6 @@ def on_post_tool_use(payload: dict) -> None:
                 "tool_name": payload.get("tool_name", "unknown"),
             },
         )
-
-    # Agent pool — refresh this session's "what I'm doing" summary every N calls
-    try:
-        from hooks.config import AGENT_POOL_ENABLED
-
-        if AGENT_POOL_ENABLED and payload.get("session_id"):
-            from hooks.context.agent_pool import maybe_refresh_summary
-
-            maybe_refresh_summary(payload["session_id"])
-    except Exception as e:
-        log("agent_pool refresh failed", {"error": str(e)})
 
     # Retry circuit breaker — track failures and inject research instructions
     from hooks.config import RETRY_BREAKER_ENABLED

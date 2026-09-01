@@ -168,8 +168,7 @@ def pid_alive(pid: int | None) -> bool:
     """Is *pid* a live hooks-utils daemon?
 
     The cmdline cross-check is what stops a recycled pid reading as a running
-    daemon — the same guard ``hooks/context/agent_pool.py`` applies to peer
-    sessions. Where /proc is absent the signal check stands alone and callers are
+    daemon. Where /proc is absent the signal check stands alone and callers are
     told via ``DaemonStatus.liveness_is_exact``.
     """
     if not pid:

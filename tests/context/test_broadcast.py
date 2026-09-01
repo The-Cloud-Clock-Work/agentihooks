@@ -715,3 +715,39 @@ class TestContentHashField:
             h = msgs[0]["content_hash"]
             found = find_broadcast_by_content_hash(h, channel="ops")
         assert found is None
+
+    def test_hash_format_is_pinned_against_persisted_state(self):
+        """The hash formula must stay byte-for-byte stable.
+
+        Every already-persisted ~/.agentihooks/broadcast.json and delivery-state
+        entry was hashed under this exact field layout (including the
+        now-always-empty target_session slot). Changing the formula silently
+        reshapes every existing hash, so the brain adapter's "is this the same
+        content, just a fresh id" dedup misses on the first tick after upgrade
+        and re-delivers every live persistent broadcast.
+        """
+        from hooks.context.broadcast import _msg_hash
+
+        msg = {"channel": "brain", "severity": "alert", "message": "same body"}
+        assert _msg_hash(msg) == _msg_hash({**msg, "target_session": ""})
+        assert _msg_hash(msg) != _msg_hash({**msg, "target_session": "some-peer"})
+
+
+class TestLeftoverDirectedMessages:
+    """target_session was the substrate for the now-removed call_agent feature.
+
+    Nothing creates a target_session entry anymore, but one already persisted
+    (not yet past its TTL) must not leak to every session as a global message.
+    """
+
+    def test_leftover_directed_message_matches_nobody(self):
+        from hooks.context.broadcast import _message_matches_channel
+
+        leftover = {"message": "old directed message", "severity": "alert", "target_session": "some-peer"}
+        assert _message_matches_channel(leftover, session_channels=[]) is False
+        assert _message_matches_channel(leftover, session_channels=["*"]) is False
+
+    def test_ordinary_global_message_unaffected(self):
+        from hooks.context.broadcast import _message_matches_channel
+
+        assert _message_matches_channel({"message": "hi", "severity": "info"}, session_channels=[]) is True
