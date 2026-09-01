@@ -30,15 +30,12 @@ one isn't in your tool list, its category is off for this profile.
 | `enforcement_set` | A discipline must survive context drift — a drumbeat that re-injects every N tool calls (global, permanent until cleared). Cheap: context tokens only, no API call. |
 | `enforcement_list` | Check active drumbeats before adding or clearing one. |
 | `enforcement_clear` | A drumbeat's job is done — clear by `enforcement_id`, by `tag`, or all. |
-| `pool_list` | See which fleet agents are live and what each is working on — read this before `call_agent` to spot who might collide with your work. |
-| `call_agent` | Contact one specific peer by session id (from `pool_list`) — directed, not broadcast. See *Directed messaging* below. |
-| `pool_status` | Declare what you're working on (`pool_status("rolling out litellm :dev", session_id=...)`) so peers scanning `pool_list` can tell whether they'd collide with you. |
 
-## Your own session id — pass it to the four tools that need it
+## Your own session id — pass it to the tool that needs it
 
-`call_agent`, `pool_list`, `pool_status` and `channel_acknowledge` act *as you*,
-so they need to know which session you are. SessionStart tells you: **"Your
-Claude Code session_id is `<id>`"**. Pass that as `session_id`.
+`channel_acknowledge` acts *as you*, so it needs to know which session you are.
+SessionStart tells you: **"Your Claude Code session_id is `<id>`"**. Pass that
+as `session_id`.
 
 Under the default stdio setup the server can infer it and the argument is
 optional. Where `hooks-utils` runs as a shared network server, one process
@@ -89,31 +86,3 @@ Every subscribed peer now carries that context on every turn and steers around
 you. When you're done, retract it with `channel_clear` (or downgrade to a resolved
 `info`) so the lane reopens. This is the whole point of Fleet Command: agents that
 would otherwise clobber each other coordinate through the channel instead.
-
-## Directed messaging — `call_agent` (one specific peer)
-
-`channel_publish` is one-to-many; `call_agent` is one-to-one. Use it when you know
-*which* peer you need — you ran `pool_list`, saw a session working your exact lane,
-and want to reach that agent specifically.
-
-It does the same two safe things for every peer: (1) drops your message in the
-peer's **private inbox** — the peer reads it itself on its next turn, or before its
-next tool call if it's mid-work — and (2) **forks** a throwaway copy of the peer's
-context to answer you *now* with what it's doing. It never writes the peer's real
-session, so it can't corrupt it, and the forked reader has **no tools** — it can't
-make another agent act. Communication, not remote control. `mode` tells you whether
-the peer is `live` (will see your message soon) or `dormant` (sees it only if
-reopened before it expires); `delivered` means "queued to the peer's inbox".
-
-**Call once and read `their_state` — do not poll in a loop** (each call spawns a
-subprocess). To quiet a directed message you've handled, `channel_acknowledge` it.
-
-```
-pool_list(session_id="<your sid>")   # find who's live and on what
-call_agent(
-  target_session_id="<peer sid>",
-  message="Are you touching the litellm values? I'm about to push :dev.",
-  session_id="<your sid>",           # who the message is from
-)
-# → {mode:"live", delivered:true, their_state:"mid-rollout on litellm, hold off"}
-```

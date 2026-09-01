@@ -24,8 +24,7 @@ def _file_lock(path):
     """Best-effort exclusive lock via a sidecar ``<path>.lock`` file.
 
     Serializes the read-modify-write on the shared JSON stores (broadcasts,
-    sessions, delivery-state, pool counters) so concurrent sessions — which the
-    agent pool makes a genuinely multi-writer workload — don't lose updates.
+    sessions, delivery-state) so concurrent sessions don't lose updates.
     No-op if ``fcntl`` is unavailable.
     """
     if fcntl is None:
@@ -155,6 +154,11 @@ def _msg_hash(msg: dict) -> str:
     # Channel + severity + message uniquely identify semantic content. Two
     # broadcasts with identical content on the same channel are the same
     # broadcast for dedup purposes, even if they carry different UUIDs.
+    # The second field is always "" now that target_session no longer exists —
+    # kept as a slot so the hash format matches what's already persisted in
+    # ~/.agentihooks/broadcast.json and the delivery-state file. Dropping it
+    # would reshape every existing hash and dump every live persistent
+    # broadcast back into the "new content" path on the next tick.
     raw = "|".join(
         [
             str(msg.get("channel", "")),
@@ -324,17 +328,15 @@ def _get_session_channels(session_id: str) -> list[str]:
     return list(BASE_CHANNELS)
 
 
-def _message_matches_channel(msg: dict, session_channels: list[str], session_id: str = "") -> bool:
+def _message_matches_channel(msg: dict, session_channels: list[str]) -> bool:
     """Check if a message should be delivered to a session.
 
-    Directed messages (``target_session`` set) are private: they reach ONLY the
-    addressed session and bypass channel subscription entirely — a wildcard
-    subscriber must NOT receive another agent's directed message. This check
-    runs first and short-circuits.
+    A ``target_session`` message is a leftover from the retired directed-delivery
+    feature — nothing creates one anymore, but one already persisted (and not yet
+    past its TTL) must not fall through to "no channel → deliver to everyone".
     """
-    target = msg.get("target_session")
-    if target:
-        return session_id == target
+    if msg.get("target_session"):
+        return False
     msg_channel = msg.get("channel")
     # Global messages (no channel) → always deliver
     if not msg_channel:
@@ -358,7 +360,6 @@ def create_broadcast(
     source: str = "operator",
     persistent: bool | None = None,
     channel: str | None = None,
-    target_session: str | None = None,
 ) -> str | None:
     """Publish a broadcast to the shared file (and Redis if configured).
 
@@ -376,11 +377,6 @@ def create_broadcast(
             sessions whose ``AGENTIHOOKS_BASE_CHANNELS`` env var includes this
             channel name (or contains the wildcard ``*``). When ``None``, the
             message is global and reaches every session regardless of subscription.
-        target_session: Optional directed delivery. When set, the message is
-            PRIVATE to that one session id — it reaches only that session (on its
-            next turn / tool call) and bypasses channel subscription; no other
-            session, wildcard-subscribed or not, receives it. This is the
-            substrate for agent-to-agent (``call_agent``) inbox delivery.
 
     Returns:
         The 12-char message ID on success, or ``None`` for empty input.
@@ -414,8 +410,6 @@ def create_broadcast(
     }
     if channel:
         entry["channel"] = channel
-    if target_session:
-        entry["target_session"] = target_session
     # Stable content hash decouples dedup from the random uuid above so the
     # brain adapter (which republishes the same content with fresh ids each
     # tick) does not generate false-novelty injections.
@@ -494,7 +488,7 @@ def get_pending_broadcasts(session_id: str) -> list[dict]:
     for m in msgs:
         if _is_expired(m):
             continue
-        if not _message_matches_channel(m, channels, session_id):
+        if not _message_matches_channel(m, channels):
             continue
         if session_id in m.get("acknowledged_by", []):
             continue
@@ -520,7 +514,7 @@ def get_critical_broadcasts(session_id: str) -> list[dict]:
         if m.get("severity") == "critical"
         and m.get("persistent")
         and not _is_expired(m)
-        and _message_matches_channel(m, channels, session_id)
+        and _message_matches_channel(m, channels)
         and session_id not in m.get("acknowledged_by", [])
     ]
 
@@ -542,20 +536,10 @@ def get_pretool_broadcasts(session_id: str) -> list[dict]:
     for m in msgs:
         if not m.get("persistent") or _is_expired(m) or session_id in m.get("acknowledged_by", []):
             continue
-        if m.get("target_session"):
-            # Directed (agent-to-agent) messages ALWAYS inject at PreToolUse,
-            # regardless of the critical-on-pretool gate — so an autonomous peer
-            # mid multi-tool turn (no fresh user prompt) sees it before its next
-            # tool call rather than waiting for a prompt that may never come.
-            # channel_acknowledge to silence it.
-            if m["target_session"] == session_id:
-                out.append(m)
-            continue
-        # Non-directed broadcasts still require the operator opt-in + severity.
         if (
             BROADCAST_CRITICAL_ON_PRETOOL
             and _SEVERITY_RANK.get(m.get("severity", "info"), 9) <= min_rank
-            and _message_matches_channel(m, channels, session_id)
+            and _message_matches_channel(m, channels)
         ):
             out.append(m)
     return out
@@ -657,7 +641,8 @@ def deregister_session(session_id: str) -> None:
 
 def mark_session_closed(session_id: str) -> None:
     """Flip a session to status=closed on clean SessionEnd. Keeps the entry
-    for the 24h retention window so the pool can still report on it."""
+    for the 24h crash-recovery retention window (see SESSION_MAX_AGE_SECONDS)
+    instead of deleting it outright."""
     with _file_lock(_sessions_path()):
         sessions = _load_sessions()
         entry = sessions.get(session_id)
@@ -870,9 +855,8 @@ def check_and_inject_broadcasts(session_id: str) -> None:
 
 
 def get_pretool_context(session_id: str) -> str | None:
-    # Not gated on BROADCAST_CRITICAL_ON_PRETOOL: directed agent-to-agent messages
-    # must inject here even when the operator hasn't opted broadcasts into
-    # PreToolUse. get_pretool_broadcasts applies that gate to non-directed ones.
+    # get_pretool_broadcasts owns the BROADCAST_CRITICAL_ON_PRETOOL gate; this
+    # layer only checks whether broadcasts are enabled at all.
     if not BROADCAST_ENABLED:
         return None
 

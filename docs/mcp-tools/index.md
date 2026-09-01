@@ -6,7 +6,7 @@ has_children: true
 
 # MCP Tools
 
-The AgentiHooks MCP server (`hooks-utils`) exposes tools across **3 categories**. The server runs `python -m hooks.mcp` and is registered automatically during `agentihooks init`.
+The AgentiHooks MCP server (`hooks-utils`) exposes tools across **2 categories**. The server runs `python -m hooks.mcp` and is registered automatically during `agentihooks init`.
 
 ## Categories
 
@@ -14,7 +14,6 @@ The AgentiHooks MCP server (`hooks-utils`) exposes tools across **3 categories**
 |----------|-------|
 | **Channels** | `channel_publish`, `channel_list`, `channel_acknowledge`, `channel_clear`, `brain_refresh`, `brain_status` — fleet-command broadcast + brain adapter |
 | **Enforcement** | `enforcement_set`, `enforcement_list`, `enforcement_clear` — doctrine reminder banners injected at PreToolUse |
-| **Agent pool** | `pool_list`, `pool_status`, `call_agent` — see which fleet agents are live, declare what you are working on, and message one peer directly |
 
 > Earlier releases shipped generic cloud-utility categories (aws, email, storage, database, compute, observability, utilities). These were removed; only the two agentihooks-native categories above ship now.
 
@@ -31,7 +30,7 @@ MCP_CATEGORIES=channels python -m hooks.mcp
 Valid values (comma-separated):
 
 ```
-channels, enforcement, agent_pool
+channels, enforcement
 ```
 
 Setting `MCP_CATEGORIES=all` (the default) loads every category.
@@ -47,8 +46,7 @@ daemon instead. See [MCP Transport]({{ site.baseurl }}/hooks/mcp-transport/).
 
 Two consequences of one process serving every session:
 
-- `pool_list`, `pool_status`, `call_agent` and `channel_acknowledge` need an
-  explicit `session_id`, because no environment lookup can identify the caller.
-  SessionStart names it for each session.
+- `channel_acknowledge` needs an explicit `session_id`, because no environment
+  lookup can identify the caller. SessionStart names it for each session.
 - `MCP_CATEGORIES` becomes machine-wide. Per-profile tool subsetting is
   stdio-only, since a url entry in `~/.claude.json` carries no `env` block.

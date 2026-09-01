@@ -105,11 +105,8 @@ Under stdio, Claude Code spawns one server process per session, so the process
 environment identifies the caller. Under a network transport one process serves
 every session and no environment lookup can tell callers apart.
 
-Four tools therefore take an explicit `session_id`:
+One tool therefore takes an explicit `session_id`:
 
-- `call_agent`
-- `pool_list`
-- `pool_status`
 - `channel_acknowledge`
 
 SessionStart injects a banner naming the session's own id so the agent can pass
@@ -133,10 +130,10 @@ Set `MCP_SESSION_ID_BANNER_ENABLED=false` to suppress the banner.
   is why the unit restarts on any exit.
 - **No authentication.** Both transports are plain HTTP with no token. The
   loopback bind *is* the boundary: any local process that can reach the port can
-  call every tool and enumerate live session ids via `pool_list`. On a
-  single-user workstation that is no worse than filesystem access to
-  `~/.agentihooks`. On a shared-account host it is a real exposure — keep
-  `MCP_HOST` on loopback, and do not widen it without adding a gate.
+  call every tool. On a single-user workstation that is no worse than
+  filesystem access to `~/.agentihooks`. On a shared-account host it is a real
+  exposure — keep `MCP_HOST` on loopback, and do not widen it without adding a
+  gate.
 
 ## Driving the daemon by hand
 
@@ -264,7 +261,7 @@ evidence of a fault, and reading it as one sends you debugging the wrong layer.
 journalctl --user -u agentihooks-mcp.service -f   # or: tail -f the nohup log
 ```
 
-In a live session, `pool_status("<what you are doing>", session_id="<your id>")`
+In a live session, `channel_acknowledge("<message id>", session_id="<your id>")`
 should return success, and a call with the argument omitted should return
 `no session id resolvable` — that error is the guard working, not a fault.
 
