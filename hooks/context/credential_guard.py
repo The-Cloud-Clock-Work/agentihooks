@@ -193,13 +193,38 @@ NEUTRAL_STAGE = re.compile(r"^\s*(sort|uniq|column|tr)\b")
 
 
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1.*?^\s*\2\s*$", re.S | re.M)
-SEGMENT_DELIM = re.compile(r"(&&|\|\||;|\n)")
-STAGE_DELIM = re.compile(r"((?<!\|)\|(?!\|))")
+SEGMENT_DELIM = re.compile(r"&&|\|\||;|\n")
+STAGE_DELIM = re.compile(r"(?<!\|)\|(?!\|)")
 SUBSTITUTION = re.compile(r"\$\(([^()]*)\)|`([^`]*)`|<\(([^()]*)\)")
 VERB_PREFIX = re.compile(
     r"^(\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*|command\s+)?(?:\S*/)?(grep|egrep|fgrep|rg))(?=\s)"
 )
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def split_outside_quotes(delim, text):
+    """Like ``re.split`` with a capturing group, but a delimiter inside quotes is data."""
+    parts, start, i, quote = [], 0, 0, None
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\" and quote == '"':
+                i += 1
+            elif ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "\\":
+            i += 1
+        else:
+            m = delim.match(text, i)
+            if m:
+                parts.extend((text[start:i], m.group(0)))
+                start = i = m.end()
+                continue
+        i += 1
+    parts.append(text[start:])
+    return parts
 
 
 def strip_heredocs(cmd):
@@ -714,7 +739,7 @@ def find_fed_verdict(ctx, roots):
 
 def segment_verdict(segment, ctx):
     ctx.find_filters = None
-    parts = STAGE_DELIM.split(segment)
+    parts = split_outside_quotes(STAGE_DELIM, segment)
     changed = False
     for i in range(0, len(parts), 2):
         if not parts[i].strip():
@@ -734,7 +759,7 @@ def decide_bash(tool_input, ctx=None):
         return ALLOW
     ctx = ctx or Context()
     command = strip_heredocs(command)
-    parts = SEGMENT_DELIM.split(command)
+    parts = split_outside_quotes(SEGMENT_DELIM, command)
     changed = False
     for i in range(0, len(parts), 2):
         seg = parts[i]

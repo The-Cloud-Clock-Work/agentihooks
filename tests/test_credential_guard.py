@@ -196,6 +196,11 @@ class TestRecursiveRewrite:
         v = evaluate(_bash("LC_ALL=C /usr/bin/grep -R X src"), allow_rewrite=True)
         assert v.rewrite == {"command": "LC_ALL=C /usr/bin/grep " + GREP_EXCLUDES + " -R X src"}
 
+    def test_quoted_delimiters_are_data(self):
+        cmd = 'echo "a && grep -r x ." && git commit -m "b | rg y ."'
+        assert evaluate(_bash(cmd), allow_rewrite=True).rewrite is None
+        assert decide(_bash('echo "x; cat .env"')) is None
+
     def test_non_recursive_grep_untouched(self):
         assert evaluate(_bash("grep -n X file.py"), allow_rewrite=True) == (None, None, None)
 
