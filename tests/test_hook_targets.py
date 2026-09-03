@@ -542,10 +542,10 @@ class TestCopilotCapabilities:
         for event in ("PreToolUse", "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"):
             assert can_inject_context(event, target="copilot") is True
 
-    def test_arg_mutation_copilot_only(self):
+    def test_arg_mutation_targets(self):
         assert supports_arg_mutation("copilot") is True
         assert supports_arg_mutation("codex") is False
-        assert supports_arg_mutation("claude") is False
+        assert supports_arg_mutation("claude") is True
 
     def test_envelope_block_required_only_for_copilot(self):
         # Settled live on v1.0.80: preToolUse denies on exit 2 alone;

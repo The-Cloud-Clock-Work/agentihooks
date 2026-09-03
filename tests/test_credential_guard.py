@@ -4,9 +4,11 @@ These cases came from the bundle hook's own selftest, which ran only on Claude.
 The guard now runs on every target, so they run in CI instead of by hand.
 """
 
+import json
+
 import pytest
 
-from hooks.context.credential_guard import decide
+from hooks.context.credential_guard import GREP_EXCLUDES, RG_EXCLUDES, decide, evaluate
 
 pytestmark = pytest.mark.unit
 
@@ -98,6 +100,63 @@ CASES = [
         {"tool_name": "Bash", "tool_input": {"command": "python3 - <<'PY'\nprint('read the .env file')\nPY"}},
         False,
     ),
+    # naming a credential file is not reading it
+    (
+        "find names dotenv",
+        {"tool_name": "Bash", "tool_input": {"command": 'find . -name ".env" | grep -v example'}},
+        False,
+    ),
+    (
+        "grep regex in source",
+        {"tool_name": "Bash", "tool_input": {"command": "grep -rn '\\.env' scripts/install.py"}},
+        False,
+    ),
+    (
+        "find split quotes",
+        {"tool_name": "Bash", "tool_input": {"command": "find . -name '.en''v' -printf '%h\\n' | sort -u"}},
+        False,
+    ),
+    ("rg absolute dir", {"tool_name": "Bash", "tool_input": {"command": "rg -n pat /abs/dir"}}, False),
+    ("ls dot", {"tool_name": "Bash", "tool_input": {"command": "ls -la ."}}, False),
+    (
+        "grep secret name in source",
+        {"tool_name": "Bash", "tool_input": {"command": "grep -rn 'API_KEY' src/main.py"}},
+        False,
+    ),
+    ("find py xargs cat", {"tool_name": "Bash", "tool_input": {"command": "find . -name '*.py' | xargs cat"}}, False),
+    ("echo dot", {"tool_name": "Bash", "tool_input": {"command": "echo . && ls"}}, False),
+    ("grep exclude dotenv", {"tool_name": "Bash", "tool_input": {"command": "grep -rn --exclude=.env X ."}}, False),
+    ("rg negative glob", {"tool_name": "Bash", "tool_input": {"command": "rg -g '!.env' X ."}}, False),
+    ("git add dotenv", {"tool_name": "Bash", "tool_input": {"command": "git add .env"}}, False),
+    ("docker env-file", {"tool_name": "Bash", "tool_input": {"command": "docker run --env-file .env img"}}, False),
+    # reads that the operand-aware rules must still catch
+    ("cat redirect dotenv", {"tool_name": "Bash", "tool_input": {"command": "cat < .env"}}, True),
+    ("cat attached redirect", {"tool_name": "Bash", "tool_input": {"command": "cat <.env"}}, True),
+    ("grep in dotenv file", {"tool_name": "Bash", "tool_input": {"command": "grep TOKEN .env"}}, True),
+    ("git diff no-index", {"tool_name": "Bash", "tool_input": {"command": "git diff --no-index .env x"}}, True),
+    ("git show rev path", {"tool_name": "Bash", "tool_input": {"command": "git show HEAD:.env"}}, True),
+    ("git grep dotenv", {"tool_name": "Bash", "tool_input": {"command": "git grep X -- .env"}}, True),
+    ("git -C diff dotenv", {"tool_name": "Bash", "tool_input": {"command": "git -C /repo diff .env"}}, True),
+    (
+        "git blame option value",
+        {"tool_name": "Bash", "tool_input": {"command": "git blame --ignore-revs-file=.env f"}},
+        True,
+    ),
+    ("bash -c cat", {"tool_name": "Bash", "tool_input": {"command": "bash -c 'cat .env'"}}, True),
+    ("source zshrc", {"tool_name": "Bash", "tool_input": {"command": "source ~/.zshrc"}}, True),
+    ("find dotenv xargs cat", {"tool_name": "Bash", "tool_input": {"command": "find . -name .env | xargs cat"}}, True),
+    (
+        "find dotenv exec cat",
+        {"tool_name": "Bash", "tool_input": {"command": "find . -name '.env*' -exec cat {} \\;"}},
+        True,
+    ),
+    ("process substitution", {"tool_name": "Bash", "tool_input": {"command": "awk 1 <(cat .env)"}}, True),
+    ("dollar redirect", {"tool_name": "Bash", "tool_input": {"command": 'echo "$(<.env)"'}}, True),
+    ("command substitution", {"tool_name": "Bash", "tool_input": {"command": 'echo "$(cat .env)"'}}, True),
+    ("cat dotfile glob", {"tool_name": "Bash", "tool_input": {"command": "cat .*"}}, True),
+    ("grep -r home", {"tool_name": "Bash", "tool_input": {"command": "grep -r X ~"}}, True),
+    ("grep -f attached", {"tool_name": "Bash", "tool_input": {"command": "sed -n 1p -f.env x"}}, True),
+    ("ssh sudo cat", {"tool_name": "Bash", "tool_input": {"command": "ssh host sudo cat /root/.netrc"}}, True),
 ]
 
 
@@ -110,6 +169,129 @@ def test_guard_decision(label, payload, should_block):
 def test_guard_never_raises_on_garbage():
     for payload in ({}, {"tool_name": None}, {"tool_input": "notadict"}, {"tool_name": "Bash", "tool_input": None}):
         decide(payload)
+        evaluate(payload, allow_rewrite=True)
+
+
+def _bash(command, cwd=""):
+    return {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": cwd}
+
+
+class TestRecursiveRewrite:
+    """Under bypass on claude the search keeps running; credential files leave it."""
+
+    def test_grep_r_gains_excludes(self):
+        v = evaluate(_bash("grep -rn X ."), allow_rewrite=True)
+        assert v.block is None
+        assert v.rewrite == {"command": "grep " + GREP_EXCLUDES + " -rn X ."}
+
+    def test_rg_gains_negative_globs(self):
+        v = evaluate(_bash("rg foo ."), allow_rewrite=True)
+        assert v.rewrite == {"command": "rg " + RG_EXCLUDES + " foo ."}
+
+    def test_compound_keeps_its_cd(self):
+        v = evaluate(_bash("cd src && grep -r X . | head -5"), allow_rewrite=True)
+        assert v.rewrite == {"command": "cd src && grep " + GREP_EXCLUDES + " -r X . | head -5"}
+
+    def test_env_prefix_and_path_survive(self):
+        v = evaluate(_bash("LC_ALL=C /usr/bin/grep -R X src"), allow_rewrite=True)
+        assert v.rewrite == {"command": "LC_ALL=C /usr/bin/grep " + GREP_EXCLUDES + " -R X src"}
+
+    def test_non_recursive_grep_untouched(self):
+        assert evaluate(_bash("grep -n X file.py"), allow_rewrite=True) == (None, None, None)
+
+    def test_filename_only_grep_untouched(self):
+        assert evaluate(_bash("grep -rl X ."), allow_rewrite=True).rewrite is None
+
+    def test_file_operands_untouched(self, tmp_path):
+        (tmp_path / "a.py").write_text("x")
+        assert evaluate(_bash("grep -rn X a.py", cwd=str(tmp_path)), allow_rewrite=True).rewrite is None
+
+    def test_decide_never_rewrites(self):
+        assert decide(_bash("grep -rn X .")) is None
+
+
+class TestRecursiveTreeScan:
+    """Without the rewrite channel, a tree holding a credential file is blocked."""
+
+    def test_dotenv_in_tree_blocks(self, tmp_path):
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / ".env").write_text("A=1\n")
+        v = evaluate(_bash("grep -rn X .", cwd=str(tmp_path)))
+        assert v.block and "sub/.env" in v.block and "--exclude=.env" in v.block
+
+    def test_clean_tree_allows(self, tmp_path):
+        (tmp_path / "a.py").write_text("x")
+        assert evaluate(_bash("rg X .", cwd=str(tmp_path))) == (None, None, None)
+
+    def test_pruned_dirs_are_skipped(self, tmp_path):
+        (tmp_path / "node_modules").mkdir()
+        (tmp_path / "node_modules" / ".env").write_text("A=1\n")
+        assert evaluate(_bash("grep -r X .", cwd=str(tmp_path))).block is None
+
+    def test_cd_moves_the_root(self, tmp_path):
+        (tmp_path / "app").mkdir()
+        (tmp_path / "app" / ".env").write_text("A=1\n")
+        assert evaluate(_bash("cd app && grep -r X .", cwd=str(tmp_path))).block
+        assert evaluate(_bash("grep -r X docs", cwd=str(tmp_path))).block is None
+
+    def test_find_without_name_filter_scans(self, tmp_path):
+        (tmp_path / ".env").write_text("A=1\n")
+        assert evaluate(_bash("find . -type f | xargs cat", cwd=str(tmp_path))).block
+        assert evaluate(_bash("find . -name '*.py' | xargs cat", cwd=str(tmp_path))).block is None
+
+    def test_decide_skips_the_walk(self, tmp_path):
+        (tmp_path / ".env").write_text("A=1\n")
+        assert decide(_bash("grep -rn X .", cwd=str(tmp_path))) is None
+
+
+class TestStandaloneLauncher:
+    """The bundle runs this file by path as a second process."""
+
+    GUARD = str(__import__("pathlib").Path(__file__).resolve().parents[1] / "hooks" / "context" / "credential_guard.py")
+
+    def _run(self, payload, tmp_path, env=None):
+        import os
+        import subprocess
+        import sys
+
+        return subprocess.run(
+            [sys.executable, self.GUARD, "--deny-only"],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            cwd=str(tmp_path),
+            env={**os.environ, "PYTHONPATH": "", **(env or {})},
+        )
+
+    def test_explicit_read_exits_2(self, tmp_path):
+        r = self._run(_bash("cat .env"), tmp_path)
+        assert r.returncode == 2 and "BLOCKED" in r.stderr and r.stdout == ""
+
+    def test_search_exits_0(self, tmp_path):
+        (tmp_path / ".env").write_text("A=1\n")
+        assert self._run(_bash("grep -rn X .", cwd=str(tmp_path)), tmp_path).returncode == 0
+
+    def test_switch_off(self, tmp_path):
+        assert self._run(_bash("cat .env"), tmp_path, {"CREDENTIAL_GUARD_ENABLED": "false"}).returncode == 0
+
+    def test_garbage_near_credential_exits_2(self, tmp_path):
+        import subprocess
+        import sys
+
+        r = subprocess.run(
+            [sys.executable, self.GUARD],
+            input='{"tool_name": "Bash", "tool_input": {"command": "cat .env"',
+            capture_output=True,
+            text=True,
+        )
+        assert r.returncode == 2 and "internal error" in r.stderr
+
+    def test_garbage_elsewhere_exits_0(self, tmp_path):
+        import subprocess
+        import sys
+
+        r = subprocess.run([sys.executable, self.GUARD], input="{not json", capture_output=True, text=True)
+        assert r.returncode == 0
 
 
 class TestRunsOnEveryTarget:

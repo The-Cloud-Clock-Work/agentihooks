@@ -22,6 +22,21 @@ from hooks.targets import buffers_single_envelope
 from hooks.targets.capabilities import can_inject_context
 
 _buffer: list[str] = []
+_forced = False
+
+
+def force_buffer() -> None:
+    """Buffer on a target that normally prints raw (claude PreToolUse).
+
+    A PreToolUse decision envelope is only parsed when it is the whole of
+    stdout, so every context line printed ahead of it would discard it.
+    """
+    global _forced
+    _forced = True
+
+
+def forced() -> bool:
+    return _forced
 
 
 def buffer_context(content: str) -> None:
@@ -59,7 +74,7 @@ def flush(event_name: str) -> None:
         return
     content = "\n".join(_buffer)
     _buffer.clear()
-    if not buffers_single_envelope():
+    if not buffers_single_envelope() and not _forced:
         # Claude path never buffers; guard against misuse.
         print(content)
         return

@@ -8,6 +8,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The credential-read guard is operand-aware and fails closed near a
+  credential path.** A sensitive path now blocks only when a reader actually
+  consumes it — positional operand, `<` redirect, option value, `git` revision
+  path (`git show HEAD:.env`, `git diff --no-index .env x`), interpreter
+  one-liner, `find … -exec`/`xargs` fed by a matching `-name`. Naming the file
+  (`find -name .env`, `grep '\\.env' src.py`, `ls -la .`) no longer blocks; `.`
+  and `source` left the reader set (`.` was the search root of every `find .`
+  and `grep X .`). A recursive search (`grep -r`, `rg`) over a tree holding a
+  credential file is rewritten with `--exclude`/`-g '!…'` via PreToolUse
+  `updatedInput` on claude under `bypassPermissions`, and tree-scanned and
+  blocked elsewhere. A guard crash while the tool input names a credential
+  path raises `BlockAction` instead of logging and allowing; other crashes now
+  print the same stderr `WARNING … guard bypassed` as the other guards.
+  `hooks/context/credential_guard.py` gained `evaluate()` (`Verdict`) and a
+  `main()` so the bundle's `credential-guard.sh` runs the same file as a
+  second, deny-only process. Claude Code 2.1.259 widened `Read()` deny
+  matching to `grep -r`/`cp -r` operands, which turned the anton profile's
+  `Read(//**/.env)` globs into a prompt on every repo search; the deny list is
+  now home-anchored only and the guard carries repo-tree coverage.
+- **Claude PreToolUse stdout is one JSON envelope.** `emitter.force_buffer()`
+  makes `inject_context` buffer on claude for that event, so a secrets NOTE or
+  tool-memory block printed ahead of the decision envelope can no longer make
+  the host discard it; buffered context is folded into the block message on
+  the deny path. `emit_permission_decision` accepts `updated_input` and
+  `additional_context`; `hooks.targets.capabilities` lists claude as an
+  arg-mutation target (`updatedInput`; copilot keeps `modifiedArgs`).
+
+### Removed
+
+- `ANTON_CREDENTIAL_GUARD`. It was read by the bundle's duplicate copy only;
+  `CREDENTIAL_GUARD_ENABLED` is the single switch.
+
 - **Bundles now author settings and MCP in each harness's OWN file format**,
   replacing the Claude-settings translation. codex reads
   `.codex/config.overrides.toml`, copilot reads `.copilot/settings.overrides.json`

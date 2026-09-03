@@ -240,9 +240,9 @@ def inject_context(content: str, also_log: bool = True, skip_compression: bool =
     # concatenating raw lines, so under those targets the content is buffered
     # and flushed once by main().
     try:
-        from hooks.targets import buffers_single_envelope
+        from hooks.targets import buffers_single_envelope, emitter
 
-        _envelope = buffers_single_envelope()
+        _envelope = buffers_single_envelope() or emitter.forced()
     except Exception:
         _envelope = False
     if _envelope:

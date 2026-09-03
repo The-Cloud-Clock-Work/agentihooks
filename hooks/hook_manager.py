@@ -23,6 +23,7 @@ to reduce startup time for frequent events like PreToolUse/PostToolUse.
 
 import json
 import os
+import re
 import sys
 import time
 from contextlib import contextmanager
@@ -1070,23 +1071,35 @@ def on_pre_tool_use(payload: dict) -> None:
     # protection at all. Reading is the exposure — a value reaching the
     # transcript has to be rotated, not deleted — so this blocks rather than
     # redacts, and bypass mode does not lift it.
+    _credential_rewrite: tuple[dict, str] | None = None
     try:
         from hooks.config import CREDENTIAL_GUARD_ENABLED
 
         if CREDENTIAL_GUARD_ENABLED:
-            from hooks.context.credential_guard import decide as _credential_decide
+            from hooks.context.credential_guard import evaluate as _credential_evaluate
+            from hooks.targets import current_target as _current_target
 
-            _reason = _credential_decide(payload)
-            if _reason:
+            _verdict = _credential_evaluate(
+                payload,
+                allow_rewrite=_current_target() == "claude" and payload.get("permission_mode") == "bypassPermissions",
+            )
+            if _verdict.block:
                 otel.emit_event(
                     "agentihooks.guardrail.credential_read_blocked",
                     {"session.id": payload.get("session_id", ""), "tool_name": tool_name},
                 )
-                raise BlockAction(_reason)
+                raise BlockAction(_verdict.block)
+            if _verdict.rewrite:
+                _credential_rewrite = (_verdict.rewrite, _verdict.note or "")
     except BlockAction:
         raise
-    except Exception as e:  # NOSONAR — a guard that crashes must not crash the hook
+    except Exception as e:  # NOSONAR — a guard that crashes must not crash the hook, unless a credential is in play
+        if _near_credential(payload.get("tool_input") or {}):
+            raise BlockAction(
+                f"BLOCKED: credential guard internal error near a credential path — refusing ({e})."
+            ) from e
         log("credential_guard failed", {"error": str(e)})
+        print(f"WARNING: credential_guard check failed ({e}) — guard bypassed", file=sys.stderr)
 
     # File read deduplication
     if tool_name == "Read":
@@ -1196,7 +1209,23 @@ def on_pre_tool_use(payload: dict) -> None:
         except Exception as e:
             log("enforcement pretool failed", {"error": str(e)})
 
-    if _pretool_blocks:
+    from hooks.targets import emitter as _emitter
+
+    if _emitter.forced():
+        _drained = _emitter.drain()
+        if _drained:
+            _pretool_blocks.insert(0, _drained)
+
+    if _credential_rewrite:
+        _updated, _note = _credential_rewrite
+        emit_permission_decision(
+            "PreToolUse",
+            "allow",
+            _note,
+            updated_input={**(payload.get("tool_input") or {}), **_updated},
+            additional_context="\n\n".join(_pretool_blocks) or None,
+        )
+    elif _pretool_blocks:
         from hooks.targets.capabilities import can_inject_context
 
         if can_inject_context("PreToolUse"):
@@ -1219,6 +1248,23 @@ def on_pre_tool_use(payload: dict) -> None:
                 "pretool context dropped — no PreToolUse context channel on this target",
                 {"blocks": len(_pretool_blocks)},
             )
+
+
+_NEAR_CREDENTIAL = re.compile(
+    r"\.env\b|\.env\.|\.netrc|\.npmrc|\.pypirc|\.git-credentials|\.pgpass"
+    r"|\.bashrc|\.bash_profile|\.bash_login|\.profile|\.zshrc|\.zprofile|\.zshenv"
+    r"|\.bash_history|\.zsh_history|\.aws/credentials"
+)
+
+
+def _near_credential(tool_input: dict) -> bool:
+    """Whether a tool input names a credential path — decides fail-closed vs fail-open."""
+    try:
+        from hooks.context.credential_guard import near_credential
+
+        return near_credential(tool_input)
+    except Exception:  # NOSONAR — the guard module itself may be what broke
+        return bool(_NEAR_CREDENTIAL.search(json.dumps(tool_input, default=str)))
 
 
 def _trace_mark(phase: str, tool_name: str, session_id: str = "") -> None:
@@ -1853,7 +1899,14 @@ def on_permission_request(payload: dict) -> None:
     log(f"Permission requested: {tool_name}", {"tool": tool_name})
 
 
-def emit_permission_decision(event_name: str, decision: str, reason: str = "") -> None:
+def emit_permission_decision(
+    event_name: str,
+    decision: str,
+    reason: str = "",
+    *,
+    updated_input: dict | None = None,
+    additional_context: str | None = None,
+) -> None:
     """Print a ``hookSpecificOutput.permissionDecision`` envelope.
 
     The single legal call site for emitting a permission decision — route any
@@ -1867,12 +1920,20 @@ def emit_permission_decision(event_name: str, decision: str, reason: str = "") -
     fast-path can't leak through it.
     """
     from hooks.targets import current_target
-    from hooks.targets.capabilities import allowed_permission_decisions
+    from hooks.targets.capabilities import allowed_permission_decisions, arg_mutation_field, supports_arg_mutation
 
     target = current_target()
     if decision not in allowed_permission_decisions(target):
         log(
             "permission decision dropped — not allowed on this target",
+            {"target": target, "event": event_name, "decision": decision},
+        )
+        return
+    # An allow whose rewrite the host cannot apply would approve the ORIGINAL
+    # call — drop the whole decision rather than half of it.
+    if updated_input is not None and not supports_arg_mutation(target):
+        log(
+            "permission decision dropped — target cannot mutate tool input",
             {"target": target, "event": event_name, "decision": decision},
         )
         return
@@ -1904,6 +1965,10 @@ def emit_permission_decision(event_name: str, decision: str, reason: str = "") -
     }
     if reason:
         output["hookSpecificOutput"]["permissionDecisionReason"] = reason
+    if updated_input is not None:
+        output["hookSpecificOutput"][arg_mutation_field(target)] = updated_input
+    if additional_context:
+        output["hookSpecificOutput"]["additionalContext"] = additional_context
     print(json.dumps(output))
 
 
@@ -1967,6 +2032,9 @@ def main() -> None:
 
         from hooks.targets import buffers_single_envelope, emitter
 
+        if event_name == "PreToolUse" and not buffers_single_envelope():
+            emitter.force_buffer()
+
         try:
             if handler:
                 handler(payload)
@@ -1996,7 +2064,7 @@ def main() -> None:
             # (every call site there prints immediately), so this is a no-op
             # on that target and the message is unchanged.
             reason = str(e)
-            if buffers_single_envelope():
+            if buffers_single_envelope() or emitter.forced():
                 drained = emitter.drain()
                 if drained:
                     reason = f"{reason}\n\n{drained}"

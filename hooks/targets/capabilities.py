@@ -31,8 +31,10 @@ _PERMISSION_DECISIONS = {
     "copilot": frozenset({"allow", "deny", "ask"}),
 }
 
-# Targets whose PreToolUse channel can rewrite the tool's arguments in flight.
-_ARG_MUTATION_TARGETS = frozenset({"copilot"})
+# Targets whose PreToolUse channel can rewrite the tool's arguments in flight,
+# and the envelope field each one reads the replacement from.
+_ARG_MUTATION_TARGETS = frozenset({"claude", "copilot"})
+_ARG_MUTATION_FIELD = {"claude": "updatedInput", "copilot": "modifiedArgs"}
 
 # Targets that cannot be trusted to treat exit code 2 as a block on every
 # event, so a guardrail must also state its denial in the stdout envelope.
@@ -53,6 +55,10 @@ def allowed_permission_decisions(target: str | None = None) -> frozenset[str]:
 
 def supports_arg_mutation(target: str | None = None) -> bool:
     return (target or current_target()) in _ARG_MUTATION_TARGETS
+
+
+def arg_mutation_field(target: str | None = None) -> str | None:
+    return _ARG_MUTATION_FIELD.get(target or current_target())
 
 
 # Events where a stdout decision envelope is meaningful. Emitting one on,

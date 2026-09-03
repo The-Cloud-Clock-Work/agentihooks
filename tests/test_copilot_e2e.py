@@ -283,7 +283,7 @@ class TestCopilotPreToolUseChannel:
 
         assert supports_arg_mutation("copilot") is True
         assert supports_arg_mutation("codex") is False
-        assert supports_arg_mutation("claude") is False
+        assert supports_arg_mutation("claude") is True
 
 
 class TestGarbledStdin:
