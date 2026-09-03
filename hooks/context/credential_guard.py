@@ -271,7 +271,12 @@ PREAMBLE = (
     "an exposed credential has to be rotated, not deleted."
 )
 
-EXCLUDE_BASENAMES = [".env", ".env.*", "*.env"] + sorted(CREDENTIAL_FILES) + sorted(SHELL_RC)
+# Shell rc basenames stay OUT of the injected exclusions. The harness parses an
+# option value as a file operand (2.1.259), so `--exclude=.bashrc` matches the
+# Read(~/.bashrc) deny rule and prompts on every recursive search. Those paths
+# are already fail-closed in permissions.deny, and a home-wide recursion is
+# blocked outright rather than rewritten.
+EXCLUDE_BASENAMES = [".env", ".env.*", "*.env"] + sorted(CREDENTIAL_FILES)
 GREP_EXCLUDES = " ".join("--exclude=" + shlex.quote(b) for b in EXCLUDE_BASENAMES)
 RG_EXCLUDES = " ".join("-g " + shlex.quote("!" + b) for b in EXCLUDE_BASENAMES)
 

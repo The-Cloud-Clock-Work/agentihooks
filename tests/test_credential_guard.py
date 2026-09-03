@@ -196,6 +196,15 @@ class TestRecursiveRewrite:
         v = evaluate(_bash("LC_ALL=C /usr/bin/grep -R X src"), allow_rewrite=True)
         assert v.rewrite == {"command": "LC_ALL=C /usr/bin/grep " + GREP_EXCLUDES + " -R X src"}
 
+    def test_excludes_never_name_a_denied_home_path(self):
+        # An option value is a file operand to the harness: --exclude=.bashrc
+        # matches Read(~/.bashrc) and prompts. Keep those basenames out.
+        from hooks.context.credential_guard import SHELL_RC
+
+        for rc in SHELL_RC:
+            assert rc not in GREP_EXCLUDES, rc
+            assert rc not in RG_EXCLUDES, rc
+
     def test_quoted_delimiters_are_data(self):
         cmd = 'echo "a && grep -r x ." && git commit -m "b | rg y ."'
         assert evaluate(_bash(cmd), allow_rewrite=True).rewrite is None
