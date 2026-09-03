@@ -1,45 +1,39 @@
+#!/usr/bin/env python3
 """Credential-read guard — blocks a read whose OUTPUT would be a secret value.
 
-Ported from the bundle's Claude-only PreToolUse hook so it runs on every
-target. It previously reached Claude alone: it was wired through Claude's
-settings `hooks` array, and the companion `permissions.deny` rules are a Claude
-key too. codex and copilot consumed neither, so credential-file reads were
-unguarded there — copilot's own `permissions.deny` is enterprise-managed and
-inert in user settings (verified live on v1.0.80: a bare `read` deny did not
-block a read).
+Runs on every target (it was Claude-only when wired through the settings
+``hooks`` array, and Claude's ``permissions.deny`` is a Claude key too).
 
 Reading IS the exposure: a value that reaches the transcript is published and
 has to be rotated, not deleted. The guard therefore blocks the read rather than
-redacting the output.
+redacting the output. It covers what ``permissions.deny`` provably cannot:
+shell sourcing, environment dumps, interpreter reads, container/remote reads,
+value-rendering platform commands, and emitting a secret-named variable.
 
-``decide(payload)`` returns a block reason, or None to allow. It reads
+Decisions are operand-aware: a sensitive path blocks only when a reader
+actually consumes it — as a positional operand, a ``<`` redirect target, an
+option value, a ``git`` revision path, or inside an interpreter one-liner.
+Naming the file (``find -name .env``, ``grep '\\.env' src.py``) is not a read.
+
+A recursive search (``grep -r``, ``rg``) over a tree that holds a credential
+file would print its lines. Under ``allow_rewrite`` the guard returns the same
+command with exclusions injected; otherwise it walks the tree and blocks when a
+credential file is present.
+
+``evaluate(payload, ...)`` returns a ``Verdict``; ``decide(payload)`` is the
+block-only view used by the standalone launcher and the test table. Both read
 ``tool_name``/``tool_input``, which hooks.targets.normalizer already fills for
-codex and copilot, so no target-specific handling is needed here.
+codex and copilot. The module has no intra-package imports so it also runs by
+file path as the bundle's second, independent PreToolUse process.
 """
 
-#!/usr/bin/env python3
-"""Credential-file read guard — PreToolUse.
-
-Keeps credential *values* out of the transcript. The transcript is indexed and
-permanent, so a value that reaches context is published: the remedy is rotating
-the credential, not deleting the file. Doctrine lives in
-``.claude/rules/credential-files.md``; this script is its enforcement.
-
-Contract: a PreToolUse payload arrives on stdin. Exit 0 allows the call; exit 2
-blocks it and the stderr text is shown to the agent — the same contract every
-agentihooks guard uses. Any internal error exits 0, because a guard bug must
-never brick a session.
-
-Covers what ``permissions.deny`` provably cannot: shell sourcing, environment
-dumps, interpreter reads, container/remote reads, value-rendering platform
-commands, and emitting a secret-named variable.
-
-Run ``--selftest`` to exercise the decision table.
-"""
-
+import fnmatch
+import json
 import os
 import re
 import shlex
+import sys
+from typing import NamedTuple
 
 # --- what counts as sensitive -------------------------------------------------
 
@@ -63,6 +57,7 @@ KIND_DOTENV = "dotenv"
 KIND_SHELLRC = "shellrc"
 KIND_CREDENTIAL = "credential"
 KIND_ENVIRONMENT = "environment"  # a live value, not a file on disk
+KIND_RECURSIVE = "recursive"  # a tree that holds one of the above
 
 
 def sensitive_kind(token):
@@ -82,6 +77,20 @@ def sensitive_kind(token):
     if base == "credentials" and ".aws" in token:
         return KIND_CREDENTIAL
     return None
+
+
+# One representative basename per rule in sensitive_kind, for glob matching.
+SENSITIVE_EXEMPLARS = (".env", ".env.local", "stack.env", "credentials") + tuple(SHELL_RC) + tuple(CREDENTIAL_FILES)
+
+GLOB_CHARS = re.compile(r"[*?\[]")
+
+
+def glob_could_match_sensitive(pattern):
+    pattern = pattern.strip().strip("'\"")
+    if not GLOB_CHARS.search(pattern):
+        return False
+    base = pattern.rstrip("/").split("/")[-1]
+    return any(fnmatch.fnmatchcase(ex, base) for ex in SENSITIVE_EXEMPLARS)
 
 
 SECRETISH_NAME = re.compile(
@@ -122,28 +131,45 @@ READER_VERBS = {
     "vim",
     "nano",
     "view",
-    "source",
-    ".",
-    "python",
-    "python3",
-    "node",
-    "ruby",
-    "perl",
-    "php",
+    "git",
     "dotenv",
     "scp",
     "rsync",
     "sftp",
-    "xargs",
     "diff",
     "cmp",
 }
 
+SOURCERS = {"source", "."}
+INTERPRETERS = {"python", "python2", "python3", "node", "ruby", "perl", "php", "sh", "bash", "zsh", "dash"}
+GREP_FAMILY = {"grep", "egrep", "fgrep", "rg", "ack"}
+PAGERS = {"cat", "head", "tail", "less", "more", "bat", "tac", "nl"}
+WRAPPERS = {"docker", "podman", "nerdctl", "kubectl", "ssh"}
+GIT_READ_SUBCOMMANDS = {"diff", "show", "grep", "log", "blame", "cat-file", "difftool"}
+PATTERN_FLAGS = {"-e", "--regexp"}
+FIND_NAME_FLAGS = {
+    "-name",
+    "-iname",
+    "-path",
+    "-ipath",
+    "-wholename",
+    "-iwholename",
+    "-regex",
+    "-iregex",
+    "-lname",
+    "-ilname",
+}
+FIND_EXEC_FLAGS = {"-exec", "-execdir", "-ok", "-okdir"}
+# Options whose value names what to SKIP; the value is never a read.
+EXCLUSION_OPTS = re.compile(r"^--?(?:exclude|exclude-dir|exclude-from|glob|iglob|ignore|ignore-file|g)$")
+GIT_VALUE_FLAGS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace"}
+
 # grep/rg flags that emit counts or filenames rather than matching lines
 NON_CONTENT_GREP = re.compile(r"(?:^|\s)-[A-Za-z]*[clLq]")
+RECURSIVE_GREP_FLAG = re.compile(r"(?:^|\s)(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)(?=\s|$)")
+NO_IGNORE_FLAG = re.compile(r"(?:^|\s)(?:-[A-Za-z]*u[A-Za-z]*|--no-ignore\S*)(?=\s|$)")
 
 # A sensitive path can hide inside a larger token — python3 -c "open('.env')".
-# Sweep the raw command for the vocabulary itself when tokenizing finds nothing.
 SENSITIVE_FRAGMENT = re.compile(
     r"[\w./~-]*(?:"
     r"\.env(?:\.[\w-]+)*"
@@ -167,6 +193,38 @@ NEUTRAL_STAGE = re.compile(r"^\s*(sort|uniq|column|tr)\b")
 
 
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1.*?^\s*\2\s*$", re.S | re.M)
+SEGMENT_DELIM = re.compile(r"&&|\|\||;|\n")
+STAGE_DELIM = re.compile(r"(?<!\|)\|(?!\|)")
+SUBSTITUTION = re.compile(r"\$\(([^()]*)\)|`([^`]*)`|<\(([^()]*)\)")
+VERB_PREFIX = re.compile(
+    r"^(\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:sudo\s+(?:-\S+\s+)*|command\s+)?(?:\S*/)?(grep|egrep|fgrep|rg))(?=\s)"
+)
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def split_outside_quotes(delim, text):
+    """Like ``re.split`` with a capturing group, but a delimiter inside quotes is data."""
+    parts, start, i, quote = [], 0, 0, None
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\" and quote == '"':
+                i += 1
+            elif ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "\\":
+            i += 1
+        else:
+            m = delim.match(text, i)
+            if m:
+                parts.extend((text[start:i], m.group(0)))
+                start = i = m.end()
+                continue
+        i += 1
+    parts.append(text[start:])
+    return parts
 
 
 def strip_heredocs(cmd):
@@ -189,12 +247,21 @@ def tokens_of(text):
         return text.split()
 
 
-def verb_of(tokens):
-    for tok in tokens:
-        if tok in ("sudo", "command", "env") and len(tokens) > 1:
+def verb_index(tokens):
+    for i, tok in enumerate(tokens):
+        if tok in ("sudo", "command", "env") and len(tokens) > i + 1:
             continue
-        return tok.split("/")[-1]
-    return ""
+        if ASSIGNMENT.match(tok) and len(tokens) > i + 1:
+            continue
+        if tok.startswith("-") and i > 0 and tokens[i - 1] == "sudo":
+            continue
+        return i
+    return len(tokens)
+
+
+def verb_of(tokens):
+    i = verb_index(tokens)
+    return tokens[i].split("/")[-1] if i < len(tokens) else ""
 
 
 # --- message construction -----------------------------------------------------
@@ -203,6 +270,15 @@ PREAMBLE = (
     "A value read here enters the transcript, which is indexed and permanent — "
     "an exposed credential has to be rotated, not deleted."
 )
+
+# Shell rc basenames stay OUT of the injected exclusions. The harness parses an
+# option value as a file operand (2.1.259), so `--exclude=.bashrc` matches the
+# Read(~/.bashrc) deny rule and prompts on every recursive search. Those paths
+# are already fail-closed in permissions.deny, and a home-wide recursion is
+# blocked outright rather than rewritten.
+EXCLUDE_BASENAMES = [".env", ".env.*", "*.env"] + sorted(CREDENTIAL_FILES)
+GREP_EXCLUDES = " ".join("--exclude=" + shlex.quote(b) for b in EXCLUDE_BASENAMES)
+RG_EXCLUDES = " ".join("-g " + shlex.quote("!" + b) for b in EXCLUDE_BASENAMES)
 
 ALTERNATIVE = {
     KIND_DOTENV: (
@@ -222,6 +298,9 @@ ALTERNATIVE = {
         'To test one variable:  test -n "${VAR:-}" && echo set || echo unset\n'
         'To use a value, reference the variable ("$VAR") so the shell expands it at '
         "execution instead of printing it."
+    ),
+    KIND_RECURSIVE: (
+        "Exclude credential files from the search:\n  grep " + GREP_EXCLUDES + " …\n  rg " + RG_EXCLUDES + " …"
     ),
 }
 
@@ -257,24 +336,39 @@ def block(what, kind, path=None):
     return "\n".join(lines)
 
 
+class Verdict(NamedTuple):
+    block: "str | None" = None
+    rewrite: "dict | None" = None
+    note: "str | None" = None
+
+
+ALLOW = Verdict()
+
+
+def read_block(target, kind):
+    return Verdict(block=block("reading {} via shell".format(target), kind, target if kind == KIND_DOTENV else None))
+
+
 # --- per-tool decisions -------------------------------------------------------
 
 
-def decide_read(tool_input):
+def decide_read(tool_input, ctx=None):
     path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
     kind = sensitive_kind(path)
     if kind:
-        return block("reading {}".format(path), kind, path)
-    return None
+        return Verdict(block=block("reading {}".format(path), kind, path))
+    return ALLOW
 
 
-def decide_grep(tool_input):
+def decide_grep(tool_input, ctx=None):
     for field in ("path", "glob", "pattern"):
         value = tool_input.get(field) or ""
         kind = sensitive_kind(value)
         if kind:
-            return block("searching the contents of {}".format(value), kind, value if field == "path" else None)
-    return None
+            return Verdict(
+                block=block("searching the contents of {}".format(value), kind, value if field == "path" else None)
+            )
+    return ALLOW
 
 
 def env_dump_verdict(command):
@@ -358,45 +452,338 @@ def renderer_verdict(command):
     return None
 
 
-def reader_verdict(command):
-    toks = tokens_of(command)
-    if not toks:
-        return None
-    target = None
-    kind = None
-    for tok in toks:
-        k = sensitive_kind(tok)
-        if k:
-            target, kind = tok, k
+# --- operand-aware reader detection ------------------------------------------
+
+
+class Context:
+    def __init__(self, cwd="", recursive=False, allow_rewrite=False):
+        self.cwd = cwd
+        self.recursive = recursive
+        self.allow_rewrite = allow_rewrite
+        self.find_filters = None  # name filters of the last find stage in this pipeline
+
+    def resolve(self, path):
+        path = os.path.expanduser(path.strip().strip("'\""))
+        if os.path.isabs(path):
+            return path
+        return os.path.join(self.cwd, path) if self.cwd else ""
+
+    def track_cd(self, segment):
+        toks = tokens_of(segment)
+        if toks and verb_of(toks) == "cd":
+            args = [t for t in toks[verb_index(toks) + 1 :] if not t.startswith("-")]
+            self.cwd = self.resolve(args[0]) if args else os.path.expanduser("~")
+
+
+def first_sensitive(candidates):
+    for tok in candidates:
+        kind = sensitive_kind(tok)
+        if kind:
+            return tok, kind
+    return None, None
+
+
+def redirect_targets(toks):
+    out = []
+    for i, tok in enumerate(toks):
+        if tok in ("<", "0<") and i + 1 < len(toks):
+            out.append(toks[i + 1])
+        elif re.match(r"^0?<(?![<(])", tok) and len(tok) > 1:
+            out.append(tok.lstrip("0<"))
+    return out
+
+
+def operands_of(toks, verb, pattern_first=False):
+    """Tokens a reader consumes: positionals, option values, ``-fVALUE``, ``@file``."""
+    start = verb_index(toks) + 1
+    body = toks[start:]
+    if verb == "git":
+        body = git_operand_tokens(body)
+        if body is None:
+            return []
+    out = []
+    pattern_seen = not pattern_first or any(t in PATTERN_FLAGS for t in body)
+    skip_next = False
+    for i, tok in enumerate(body):
+        if skip_next:
+            skip_next = False
+            continue
+        if tok == "--":
+            continue
+        if tok in ("<", "0<", ">", ">>", "2>", "2>>", "&>"):
+            skip_next = True
+            continue
+        if tok in PATTERN_FLAGS:
+            skip_next = True
+            continue
+        if EXCLUSION_OPTS.match(tok):
+            skip_next = True
+            continue
+        if tok.startswith("--"):
+            name, eq, value = tok.partition("=")
+            if eq and not EXCLUSION_OPTS.match(name):
+                out.append(value)
+            continue
+        if tok.startswith("-") and len(tok) > 1:
+            if len(tok) > 2 and not tok.startswith("-g") and sensitive_kind(tok[2:]):
+                out.append(tok[2:])
+            continue
+        if tok.startswith("@") and len(tok) > 1:
+            out.append(tok[1:])
+            continue
+        if tok.startswith("!") or re.match(r"^\d*[<>]", tok):
+            continue
+        if not pattern_seen:
+            pattern_seen = True
+            continue
+        out.append(tok.split(":", 1)[1] if verb == "git" and ":" in tok and not tok.startswith("/") else tok)
+    return out
+
+
+def git_operand_tokens(body):
+    i = 0
+    while i < len(body):
+        tok = body[i]
+        if tok in GIT_VALUE_FLAGS:
+            i += 2
+            continue
+        if tok.startswith("-"):
+            i += 1
+            continue
+        if tok not in GIT_READ_SUBCOMMANDS:
+            return None
+        rest = body[i + 1 :]
+        if tok == "grep":
+            rest = ["-e"] + rest if not any(t in PATTERN_FLAGS for t in rest) else rest
+        return rest
+    return None
+
+
+def inner_command(toks):
+    """For container/remote wrappers, the tokens from the first reader-ish verb on."""
+    for i, tok in enumerate(toks[1:], 1):
+        base = tok.split("/")[-1]
+        if base in READER_VERBS or base in SOURCERS or base in INTERPRETERS:
+            return toks[i:]
+    return None
+
+
+def find_filters(toks):
+    filters = []
+    for i, tok in enumerate(toks):
+        if tok in FIND_NAME_FLAGS and i + 1 < len(toks):
+            filters.append(toks[i + 1])
+    return filters
+
+
+def find_roots(toks):
+    roots = []
+    for tok in toks[verb_index(toks) + 1 :]:
+        if tok.startswith("-") or tok in ("(", "!", "\\(", "\\)", ")"):
             break
-    if not kind:
-        for frag in SENSITIVE_FRAGMENT.findall(command) or []:
-            k = sensitive_kind(frag)
-            if k:
-                target, kind = frag, k
-                break
-    if not kind:
-        return None
-    verbs = {t.split("/")[-1] for t in toks} | {t for t in toks}
-    reader = verbs & READER_VERBS
-    if not reader:
-        return None
-    if reader <= {"grep", "egrep", "fgrep", "rg", "ack"} and NON_CONTENT_GREP.search(command):
-        return None  # -c/-l/-q emit counts or filenames, not content
-    return block("reading {} via shell".format(target), kind, target if kind == KIND_DOTENV else None)
+        roots.append(tok)
+    return roots or ["."]
 
 
-def decide_bash(tool_input):
+def filters_verdict(filters):
+    """None = a filter names or could match a credential file; True = safe; False = no filter."""
+    if not filters:
+        return False
+    tok, kind = first_sensitive(filters)
+    if kind or any(glob_could_match_sensitive(f) for f in filters):
+        return None
+    return True
+
+
+def recursive_verdict(kind_hint, roots, ctx, no_ignore=False):
+    """Walk *roots* for credential files; block when one is present."""
+    if not ctx.recursive:
+        return ALLOW
+    for root in roots:
+        resolved = ctx.resolve(root)
+        if not resolved or not os.path.isdir(resolved):
+            continue
+        found, capped = tree_has_sensitive(resolved)
+        if found:
+            return Verdict(block=block("searching a tree that holds {}".format(found), KIND_RECURSIVE))
+        if capped and no_ignore:
+            return Verdict(
+                block=block("searching a tree too large to verify with ignore files disabled", KIND_RECURSIVE)
+            )
+    return ALLOW
+
+
+SCAN_PRUNE = {".git", ".hg", "node_modules", ".venv", "venv", "__pycache__", "dist", "build"}
+SCAN_MAX_DEPTH = 6
+SCAN_MAX_ENTRIES = 20000
+HOME_ROOTS = re.compile(r"^(/|/home|/home/[^/]+|/root)/?$")
+
+
+def tree_has_sensitive(root):
+    seen = 0
+    base_depth = root.rstrip("/").count("/")
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = [d for d in dirnames if d not in SCAN_PRUNE]
+        if dirpath.count("/") - base_depth >= SCAN_MAX_DEPTH:
+            dirnames[:] = []
+        for name in filenames:
+            seen += 1
+            if sensitive_kind(name) or (name == "credentials" and dirpath.endswith(".aws")):
+                return os.path.join(dirpath, name), False
+            if seen >= SCAN_MAX_ENTRIES:
+                return None, True
+    return None, False
+
+
+def is_home_root(path):
+    expanded = os.path.expanduser(path.strip().strip("'\""))
+    return path.strip("'\"") in ("~", "$HOME", "${HOME}") or bool(HOME_ROOTS.match(expanded))
+
+
+def rewrite_stage(stage_text, verb):
+    excludes = RG_EXCLUDES if verb == "rg" else GREP_EXCLUDES
+    return VERB_PREFIX.sub(lambda m: m.group(1) + " " + excludes, stage_text, count=1)
+
+
+def stage_verdict(stage_text, ctx):
+    for m in SUBSTITUTION.finditer(stage_text):
+        inner = next(g for g in m.groups() if g is not None).strip()
+        if inner.startswith("<"):
+            tok, kind = first_sensitive([inner[1:].strip()])
+            if kind:
+                return read_block(tok, kind)
+        else:
+            v = segment_verdict(inner, Context(ctx.cwd, ctx.recursive, False))
+            if v.block:
+                return v
+
+    toks = tokens_of(stage_text)
+    if not toks:
+        return ALLOW
+    verb = verb_of(toks)
+
+    if verb in WRAPPERS:
+        inner = inner_command(toks)
+        if inner is None:
+            return ALLOW
+        toks, verb = inner, inner[0].split("/")[-1]
+
+    tok, kind = first_sensitive(redirect_targets(toks))
+    if kind and verb != "wc":
+        return read_block(tok, kind)
+
+    if verb in SOURCERS:
+        tok, kind = first_sensitive(t for t in toks[verb_index(toks) + 1 :] if not t.startswith("-"))
+        return read_block(tok, kind) if kind else ALLOW
+
+    if verb == "find":
+        ctx.find_filters = find_filters(toks)
+        for i, t in enumerate(toks[:-1]):
+            if t in FIND_EXEC_FLAGS and toks[i + 1].split("/")[-1] in READER_VERBS:
+                return find_fed_verdict(ctx, find_roots(toks))
+        return ALLOW
+
+    if verb == "xargs":
+        rest = [t for t in toks[verb_index(toks) + 1 :] if not t.startswith("-")]
+        if rest and rest[0].split("/")[-1] in READER_VERBS:
+            return find_fed_verdict(ctx, ["."]) if ctx.find_filters is not None else ALLOW
+        return ALLOW
+
+    if verb in INTERPRETERS:
+        tok, kind = first_sensitive(operands_of(toks, verb))
+        if not kind:
+            tok, kind = first_sensitive(SENSITIVE_FRAGMENT.findall(stage_text))
+        return read_block(tok, kind) if kind else ALLOW
+
+    if verb not in READER_VERBS:
+        return ALLOW
+    if verb in GREP_FAMILY and NON_CONTENT_GREP.search(stage_text):
+        return ALLOW  # -c/-l/-q emit counts or filenames, not content
+
+    operands = operands_of(toks, verb, pattern_first=verb in GREP_FAMILY)
+    tok, kind = first_sensitive(operands)
+    if kind:
+        return read_block(tok, kind)
+
+    if verb in PAGERS:
+        for op in operands:
+            if glob_could_match_sensitive(op):
+                return read_block(op, KIND_DOTENV)
+        return ALLOW
+
+    if verb in GREP_FAMILY:
+        recursive = verb in ("rg", "ack") or bool(RECURSIVE_GREP_FLAG.search(stage_text))
+        if not recursive:
+            return ALLOW
+        for op in operands:
+            if is_home_root(op):
+                return Verdict(block=block("searching the whole home directory ({})".format(op), KIND_RECURSIVE))
+        targets = [op for op in operands if not os.path.isfile(ctx.resolve(op) or "")] if ctx.cwd else operands
+        if operands and not targets:
+            return ALLOW
+        if ctx.allow_rewrite and verb != "ack":
+            return Verdict(
+                rewrite=rewrite_stage(stage_text, verb), note="credential files excluded from recursive search"
+            )
+        return recursive_verdict(
+            KIND_RECURSIVE, targets or ["."], ctx, no_ignore=bool(NO_IGNORE_FLAG.search(stage_text))
+        )
+
+    return ALLOW
+
+
+def find_fed_verdict(ctx, roots):
+    safe = filters_verdict(ctx.find_filters or [])
+    if safe is None:
+        tok, kind = first_sensitive(ctx.find_filters)
+        return read_block(tok or ctx.find_filters[0], kind or KIND_DOTENV)
+    if safe:
+        return ALLOW
+    return recursive_verdict(KIND_RECURSIVE, roots, ctx)
+
+
+def segment_verdict(segment, ctx):
+    ctx.find_filters = None
+    parts = split_outside_quotes(STAGE_DELIM, segment)
+    changed = False
+    for i in range(0, len(parts), 2):
+        if not parts[i].strip():
+            continue
+        v = stage_verdict(parts[i], ctx)
+        if v.block:
+            return v
+        if v.rewrite:
+            parts[i] = v.rewrite
+            changed = True
+    return Verdict(rewrite="".join(parts)) if changed else ALLOW
+
+
+def decide_bash(tool_input, ctx=None):
     command = tool_input.get("command") or ""
     if not command:
-        return None
+        return ALLOW
+    ctx = ctx or Context()
     command = strip_heredocs(command)
-    for single in split_commands(command):
-        for check in (env_dump_verdict, echo_secret_verdict, renderer_verdict, reader_verdict):
-            verdict = check(single)
-            if verdict:
-                return verdict
-    return None
+    parts = split_outside_quotes(SEGMENT_DELIM, command)
+    changed = False
+    for i in range(0, len(parts), 2):
+        seg = parts[i]
+        if not seg.strip():
+            continue
+        for check in (env_dump_verdict, echo_secret_verdict, renderer_verdict):
+            reason = check(seg)
+            if reason:
+                return Verdict(block=reason)
+        v = segment_verdict(seg, ctx)
+        if v.block:
+            return v
+        if v.rewrite:
+            parts[i] = v.rewrite
+            changed = True
+        ctx.track_cd(seg)
+    if changed:
+        return Verdict(rewrite={"command": "".join(parts)}, note="credential files excluded from recursive search")
+    return ALLOW
 
 
 DISPATCH = {
@@ -407,15 +794,55 @@ DISPATCH = {
 }
 
 
-def decide(payload):
+def evaluate(payload, *, recursive=True, allow_rewrite=False):
     handler = DISPATCH.get(payload.get("tool_name"))
     if handler is None:
-        return None
-    return handler(payload.get("tool_input") or {})
+        return ALLOW
+    tool_input = payload.get("tool_input") or {}
+    if not isinstance(tool_input, dict):
+        return ALLOW
+    ctx = Context(cwd=str(payload.get("cwd") or ""), recursive=recursive, allow_rewrite=allow_rewrite)
+    return handler(tool_input, ctx)
 
 
-def disabled():
-    return os.environ.get("ANTON_CREDENTIAL_GUARD", "").strip().lower() in {"off", "0", "false", "no"}
+def decide(payload):
+    """Block reason or None. Explicit reads only — no tree walk, no rewrite."""
+    return evaluate(payload, recursive=False).block
 
 
-# --- selftest -----------------------------------------------------------------
+def near_credential(tool_input):
+    return bool(SENSITIVE_FRAGMENT.search(json.dumps(tool_input, default=str)))
+
+
+# --- standalone entry point ---------------------------------------------------
+
+
+def enabled():
+    return os.environ.get("CREDENTIAL_GUARD_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def main(argv=None):
+    if not enabled():
+        return 0
+    raw = sys.stdin.read()
+    try:
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            return 0
+        reason = decide(payload)
+    except Exception as exc:  # NOSONAR — a guard bug must not brick a session, unless a credential is in play
+        if SENSITIVE_FRAGMENT.search(raw):
+            print(
+                "BLOCKED: credential guard internal error near a credential path — refusing ({}).".format(exc),
+                file=sys.stderr,
+            )
+            return 2
+        return 0
+    if reason:
+        print(reason, file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
